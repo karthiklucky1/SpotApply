@@ -225,6 +225,40 @@ _DEGREE_REQ_RE = re.compile(
     re.I)
 
 
+# Hire-probability signals (section 6). Each is matched per CLAUSE by
+# `RuleFilter._required_signal`, never against the whole description.
+# "compiler engineer" is singular on purpose: "alongside compiler engineers"
+# names colleagues. `\b` cannot follow "c++" ("+" is not a word character).
+_SYSTEMS_SIGNAL_RE = re.compile(
+    r"\b(?:cuda|gpu|triton)\s+kernels?\b|\bwrit(?:e|ing)\s+cuda\b|"
+    r"\bkernel\s+(?:developer|engineer|development|engineering)\b|\bsystems programming\b|"
+    r"\bmemory allocators?\b|\bcompiler engineer\b|\bcompiler (?:development|backend)\b|"
+    r"\bllvm\b|\bmlir\b", re.I)
+_LOW_LEVEL_LANG = r"(?:c\+\+(?![\w+])|rust\b)"
+_CPP_RUST_REQUIRED_RE = re.compile(
+    rf"\b{_LOW_LEVEL_LANG}\s+(?:is\s+)?required\b|\bproficien(?:cy|t)\s+(?:in|with)\s+{_LOW_LEVEL_LANG}|"
+    rf"\b(?:strong|deep|expert(?:ise)?(?:\s+in)?)\s+{_LOW_LEVEL_LANG}|"
+    rf"\bprimary language is\s+{_LOW_LEVEL_LANG}", re.I)
+_RESEARCH_SIGNALS = (
+    ("phd", re.compile(r"\bph\.?\s?d\.?(?:\s+\w+){0,4}\s+(?:is\s+)?required\b|"
+                       r"\brequires?\s+an?\s+ph\.?\s?d\b|\bdoctoral degree (?:is\s+)?required\b", re.I)),
+    ("publications", re.compile(r"\bpublication record\b|\bpublications? (?:at|in) (?:top|leading|peer|major|premier)|"
+                                r"\bfirst[- ]author\b|\bpublish(?:ing)? (?:original )?research\b|"
+                                r"\btrack record of publi", re.I)),
+    # One kind however many are listed. No "ACL": access control lists.
+    ("venues", re.compile(r"\b(?:neurips|icml|iclr|cvpr|emnlp)\b", re.I)),
+)
+_RESEARCH_TITLE_RE = re.compile(r"\b(?:research scientist|postdoc|post-doc|postdoctoral)\b")
+_SOFT_SIGNAL_RE = re.compile(
+    r"\b(?:preferred|preferably|nice[- ]to[- ]have|a plus|bonus|ideally|desired|desirable|"
+    r"familiar(?:ity)?|exposure to|advantage|not required)\b")
+_PERK_SIGNAL_RE = re.compile(
+    r"\b(?:showcase|present|share)\s+(?:your|our)\s+work\b|\bconference (?:travel|budget)\b|"
+    r"\b(?:attend|participate in)\s+(?:\w+\s+){0,4}conferences\b|"
+    r"\b(?:we|our (?:team|researchers))\s+(?:publish|have published)\b")
+_ALTERNATIVES_RE = re.compile(r"\bor\b|and/or|such as|e\.g\.|\bincluding\b|/")
+
+
 def _degree_level(text: str) -> Optional[int]:
     t = (text or "").lower()
     best = None
@@ -301,6 +335,8 @@ class RuleFilter:
 
         # Skills the user actually has → don't reject roles that need them.
         self.user_skills = (getattr(profile, "key_skills", "") or "").lower()
+        self._skill_tokens = [s.strip() for s in re.split(r"[,;\n]", self.user_skills)
+                              if len(s.strip()) >= 2]
         self.user_degree = (getattr(profile, "degree", "") or "").lower()
 
         # Job-type preference: "full_time" | "internship" | "both". Only enforced
@@ -461,26 +497,30 @@ class RuleFilter:
 
         # 3. Experience Gap Filter — only active when resume-extracted years are
         #    known (>0). Skipped for new users/students until resume is parsed.
-        #    Gap is +4 to allow stretch roles; skips "preferred" mentions.
+        #    Gap is +4 to allow stretch roles. The requirement is read AS
+        #    WRITTEN (tailoring/requirements.py): a range by its lower bound, a
+        #    degree ladder by the candidate's rung, never a preference or the
+        #    employer's own history — a bare "N years" scan read "6–8 years" as
+        #    8 and "has over 50 years of experience in aviation" as a requirement.
         if self.cand_years > 0:
             _exp_cutoff = self.cand_years + (2 if self.profile is None else 4)
-            _preferred_words = ("preferred", "nice to have", "plus", "ideally", "bonus")
-            for m in re.finditer(r'(\d+)\+?\s*years?', desc_low):
-                years = int(m.group(1))
-                context = desc_low[max(0, m.start() - 20): m.start() + 80]
-                if 'experience' in context and years >= _exp_cutoff:
-                    if any(w in context for w in _preferred_words):
-                        continue
-                    return FilterResult(
-                        passed=False,
-                        reason=f"Experience pre-filtered: requires {years}+ years (candidate has {self.cand_years})",
-                        score_override=15
-                    )
+            from app.tailoring.requirements import minimum_years_required
+            _req = minimum_years_required(job.description, degree_level=_degree_level(self.user_degree))
+            if _req and _req[0] >= _exp_cutoff:
+                return FilterResult(
+                    passed=False,
+                    reason=(f"Experience pre-filtered: requires {_req[0]:g}+ years (candidate has "
+                            f"{self.cand_years}) — \"{_req[1][:120]}\""),
+                    score_override=15
+                )
 
         # 4. Senior/staff titles — only filtered for non-senior candidates.
+        #    "Member of Technical Staff" is the ordinary engineer title at many
+        #    AI labs, not a staff-level role.
         if self.block_senior_titles:
+            _title_for_level = re.sub(r"\b(?:member of )?technical staff\b", " ", title_low)
             for t in STAFF_TITLES:
-                if title_low.startswith(t) or f" {t}" in title_low:
+                if _title_for_level.startswith(t) or f" {t}" in _title_for_level:
                     return FilterResult(
                         passed=False,
                         reason=f"Title pre-filtered: '{job.title}' is a senior/staff-level role",
@@ -508,43 +548,42 @@ class RuleFilter:
                 )
 
         # 6. Hire-probability filter — block roles the candidate can't credibly
-        #    fill, but ONLY when the required skill isn't in their stack.
+        #    fill, but ONLY when the posting REQUIRES a skill outside their
+        #    stack. A signal counts only in a clause stating a requirement of
+        #    THIS role (`_required_signal`): substring matches on the whole
+        #    description blocked "working alongside compiler engineers",
+        #    "systems programming languages such as Python and Rust",
+        #    "proficiency in C++ and/or Python" and "showcase your work at
+        #    ICLR, ICML and NeurIPS" for a Python developer (2026-10-28).
         #    a) Low-level systems / GPU kernel engineering
-        systems_signals = [
-            "cuda kernel", "gpu kernel", "write cuda", "triton kernel",
-            "systems programming", "kernel developer", "kernel engineer",
-            "bare metal", "memory allocator", "compiler engineer", "llvm", "mlir",
-        ]
         if not self._has_skill("cuda", "gpu", "kernel", "compiler", "llvm", "systems programming"):
-            if any(s in desc_low for s in systems_signals):
+            hit = self._required_signal(job.description, _SYSTEMS_SIGNAL_RE)
+            if hit:
                 return FilterResult(
                     passed=False,
-                    reason="Hire-probability: GPU/kernel/compiler systems role — not in candidate stack",
+                    reason=f"Hire-probability: GPU/kernel/compiler systems role — not in candidate stack — \"{hit[:120]}\"",
                     score_override=12
                 )
 
         #    b) C++ or Rust listed as a hard requirement (not nice-to-have)
         if not self._has_skill("c++", "cpp", "rust"):
-            cpp_rust_required = [
-                "c++ required", "proficiency in c++", "strong c++", "expert in c++",
-                "rust required", "proficiency in rust", "strong rust", "expert in rust",
-                "primary language is c++", "primary language is rust",
-            ]
-            if any(pat in desc_low for pat in cpp_rust_required):
+            hit = self._required_signal(job.description, _CPP_RUST_REQUIRED_RE)
+            if hit:
                 return FilterResult(
                     passed=False,
-                    reason="Hire-probability: C++/Rust listed as required — not in candidate stack",
+                    reason=f"Hire-probability: C++/Rust listed as required — not in candidate stack — \"{hit[:120]}\"",
                     score_override=12
                 )
 
         #    c) Pure research / PhD roles — skip the block for users who hold a PhD.
+        #       Two DIFFERENT kinds of evidence; a list of conference names is
+        #       one kind, and "PhD preferred" is none.
         if "phd" not in self.user_degree and "doctor" not in self.user_degree:
-            research_signals = [
-                "phd required", "phd preferred", "doctoral degree required",
-                "publishing research", "publish original research",
-                "first-author publication", "neurips", "icml", "iclr publication",
-            ]
-            if sum(1 for s in research_signals if s in desc_low) >= 2:
+            kinds = {name for name, pat in _RESEARCH_SIGNALS
+                     if self._required_signal(job.description, pat)}
+            if _RESEARCH_TITLE_RE.search(title_low):
+                kinds.add("title")
+            if len(kinds) >= 2:
                 return FilterResult(
                     passed=False,
                     reason="Hire-probability: pure research role requiring publications/PhD",
@@ -552,3 +591,23 @@ class RuleFilter:
                 )
 
         return FilterResult(passed=True, reason="Passed all rule filters")
+
+    def _required_signal(self, description: str, pattern: "re.Pattern") -> Optional[str]:
+        """The first clause where `pattern` is a REQUIREMENT of this role, else None.
+
+        Not under a "Preferred"/"Nice to have" heading, not softened in its own
+        clause ("familiarity with", "a plus"), not an alternative the candidate
+        already has ("C++ and/or Python", "languages such as Python and Rust"),
+        and not a perk ("showcase your work at NeurIPS")."""
+        from app.tailoring.requirements import stated_clauses
+        for clause, heading_pref in stated_clauses(description):
+            if not pattern.search(clause):
+                continue
+            low = clause.lower()
+            if heading_pref is False or _SOFT_SIGNAL_RE.search(low) or _PERK_SIGNAL_RE.search(low):
+                continue
+            if _ALTERNATIVES_RE.search(low) and any(
+                    re.search(rf"(?<![\w+#]){re.escape(s)}(?![\w+#])", low) for s in self._skill_tokens):
+                continue
+            return " ".join(clause.split())
+        return None

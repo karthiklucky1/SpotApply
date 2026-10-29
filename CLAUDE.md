@@ -811,6 +811,18 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   7 ahead; ProfileUpdate refuses others, forms blank them) and the OPT clock needs
   one — it used to start from the status alone and read a 2002 date as "expired
   8,966 days ago". Guard: `test_opt_clock_dates`.
+- **The cheap gates drop only what the user truly cannot take** (2026-10-28; a
+  replay of one profile's 839 drained jobs found 183 dropped wrongly). Years are
+  read AS WRITTEN (`requirements.minimum_years_required`: a range by its lower
+  bound, a degree ladder by the user's rung; never a preference, a benefit or the
+  employer's history). "Member of Technical Staff" is not staff. A hire-probability
+  signal counts only in a clause that REQUIRES it. No door-match gate (advisory by
+  contract; it read "dental insurance" as "enterprise"). Tier-1 does not judge
+  location: `reranker._overrule_cleared_blocker` sends a location or silent-
+  sponsorship claim on a verified-eligible job to Tier-2 at the gate. `find_refusal`
+  reads markup, wrapped lines and ITAR lists. "City, Region, DE" is Germany, not
+  Delaware (`geo._trailing_iso_country`). Recent stamps re-open once per user
+  (`pipeline._reopen_misjudged_prefilter_stamps`). Guard: `test_prefilter_accuracy`.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
   allied health, education, HR, sales and legal. The title filter's junk list

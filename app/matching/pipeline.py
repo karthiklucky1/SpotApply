@@ -436,6 +436,93 @@ def _reset_incident_frozen_scores(user_id: str | None) -> int:
     return cleared
 
 
+_PREFILTER_FIX_MARKER = "prefilter_fix_2026_10_28"
+_PREFILTER_FIX_MAX_ROWS = 600
+#: Stamps written by the gates fixed on 2026-10-28 (see RuleFilter sections 3,
+#: 4 and 6, `reranker._overrule_cleared_blocker`, and the removed door gate).
+_PREFILTER_FIX_PREFIXES = ("Wrong Door:%", "Rule filtered: Experience pre-filtered:%",
+                           "Pre-screened (Tier-1 fit %")
+
+
+def _reopen_misjudged_prefilter_stamps(user_id: str | None, profile) -> int:
+    """One-time per user: put back in the queue the RECENT jobs that the gates
+    fixed on 2026-10-28 would now keep.
+
+    On one AI-developer profile those gates had drained, among others,
+    "Applied AI Engineer" (Wrong Door: "enterprise", from a dental-insurance
+    benefit), "Senior Full-Stack Engineer" ("6–8 years" read as 8), "Member of
+    Technical Staff" (read as staff-level) and 108 US jobs the cheap model
+    called "not in the United States". A stamp keeps a job out of the queue
+    for good, so the fixes alone would only help postings found after deploy.
+
+    Each candidate is RE-JUDGED with the new rules and only those they keep
+    are re-opened; the rest keep their stamp. No LLM call here — a re-opened
+    job is scored by the lanes like any unscored one. Bounded to jobs inside
+    the scoring window and `_PREFILTER_FIX_MAX_ROWS`; guarded by a persisted
+    marker so restarts don't re-scan. Non-fatal."""
+    import json as _json
+    from sqlalchemy import or_
+    from app.common import freshness
+    from app.db.models import FunnelEvent
+    from app.matching.reranker import _overrule_cleared_blocker
+
+    if profile is None:
+        return 0
+    marker = f"user={user_id}"
+    reopened = 0
+    try:
+        with get_session() as session:
+            if session.exec(select(FunnelEvent.id).where(
+                    FunnelEvent.stage == _PREFILTER_FIX_MARKER,
+                    FunnelEvent.reason == marker).limit(1)).first():
+                return 0
+            cutoff = datetime.utcnow() - timedelta(days=max(1, settings.scoring_max_job_age_days))
+            owner = (Job.user_id == user_id) if user_id else Job.user_id.is_(None)
+            rows = session.exec(
+                select(Job).options(load_only(
+                    Job.id, Job.source, Job.external_id, Job.title, Job.company, Job.location,
+                    Job.remote, Job.description, Job.eligibility, Job.eligibility_reason,
+                    Job.rerank_score, Job.rerank_reasoning, Job.scored_at, Job.prescore,
+                    Job.prescored_at))
+                .where(owner, Job.rerank_score.isnot(None),  # type: ignore[union-attr]
+                       Job.is_closed == False,  # noqa: E712
+                       or_(*[Job.rerank_reasoning.like(p) for p in _PREFILTER_FIX_PREFIXES]),
+                       freshness.known_on_or_after_expr(cutoff))
+                .order_by(Job.id.desc())
+                .limit(_PREFILTER_FIX_MAX_ROWS)
+            ).all()
+            rf = RuleFilter(profile=profile)
+            for job in rows:
+                reason = job.rerank_reasoning or ""
+                m = re.match(r"Pre-screened \(Tier-1 fit (\d+(?:\.\d+)?)\): (.*)", reason, re.S)
+                if not rf.filter(job).passed:
+                    continue                  # the new rules still reject it
+                if m and not re.match(r"(?:Experience|Title) pre-filtered|Hire-probability", m.group(2)):
+                    # A cheap-model verdict: re-open only a claim the gates settled.
+                    old = float(m.group(1))
+                    if _overrule_cleared_blocker(old, m.group(2), job, profile)[0] == old:
+                        continue
+                job.rerank_score = None
+                job.rerank_reasoning = None
+                job.scored_at = None
+                job.prescore = None
+                job.prescored_at = None
+                session.add(job)
+                reopened += 1
+            session.add(FunnelEvent(
+                job_id=None, stage=_PREFILTER_FIX_MARKER, passed=True, reason=marker,
+                metadata_json=_json.dumps({"examined": len(rows), "reopened": reopened}),
+            ))
+            session.commit()
+    except Exception as e:
+        log.warning("Pre-filter fix re-open failed (non-fatal): %s", e)
+        return 0
+    if reopened:
+        log.info("Re-opened %d job(s) the 2026-10-28 gate fixes now keep (user=%s)",
+                 reopened, user_id)
+    return reopened
+
+
 def _held_verdicts() -> list:
     """Stamped verdicts the re-shortlist backstop does not re-offer: refused
     outright, or held while `geo_hold_unresolved` is on."""
@@ -603,6 +690,9 @@ def run_matching(user_id: str | None = None) -> List[int]:
         _user_profile = _get_or_create_profile(user_id=user_id)
     except Exception as _pe:
         log.debug("RuleFilter profile unavailable (using legacy defaults): %s", _pe)
+    # One-time: re-open recent jobs the 2026-10-28 gate fixes now keep, BEFORE
+    # retrieval so this very pass can see them.
+    _reopen_misjudged_prefilter_stamps(user_id, _user_profile)
 
     # Retrieval runs over UNSCORED jobs only (newest first): scored jobs never
     # need another retrieval pass, and letting them compete starved fresh
@@ -626,14 +716,6 @@ def run_matching(user_id: str | None = None) -> List[int]:
                      "so this user's fresh jobs still get scored", soft_floor, len(candidates))
 
     rule_filter = RuleFilter(profile=_user_profile)
-    candidate = None
-    if _user_profile:
-        try:
-            from app.intelligence.door_match import CandidateProfile
-            candidate = CandidateProfile.from_user_profile(_user_profile)
-        except Exception as _ce:
-            log.warning("Could not create CandidateProfile for door filter: %s", _ce)
-
     embedding_filter = EmbeddingFilter(matcher=matcher)
 
     # Interaction learning: revealed preferences (dismissals/applies) calibrate
@@ -762,24 +844,16 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 session.commit()
                 continue
 
-            # 4. Door Filter (Cheap JD-only check)
-            if candidate:
-                try:
-                    from app.intelligence.role_bar import build_role_bar
-                    from app.intelligence.door_match import classify_door
-                    bar = build_role_bar(job.title, job.description or "")
-                    verdict = classify_door(candidate, bar, winners_n=0, data_quality="thin")
-                    if verdict.wrong_door:
-                        log.info("Job '%s' @ '%s' filtered by door match: %s", job.title, job.company, verdict.top_reason)
-                        job.similarity_score = sim
-                        job.rerank_score = 20.0
-                        job.rerank_reasoning = f"Wrong Door: {verdict.top_reason}"
-                        job.scored_at = datetime.utcnow()
-                        session.add(job)
-                        session.commit()
-                        continue
-                except Exception as de:
-                    log.warning("Door filter check failed for job %d: %s", job.id, de)
+            # No door-match gate here (removed 2026-10-28). `classify_door` is
+            # advisory by its own contract ("does NOT hide or filter jobs") and
+            # with JD text alone (no winners, confidence LOW) its axis reader
+            # called every posting with "dental insurance" in its benefits
+            # "enterprise" and every salary over $200k "elite-outlier": on one
+            # AI-developer profile it stamped "Applied AI Engineer", "Mid Level
+            # AI Engineer", "Backend Software Engineer (Python)" and "Full Stack
+            # Developer (Python, React.js)" Wrong Door — and only this lane ran
+            # it, so a job's fate depended on which lane found it. Years,
+            # seniority and location are decided by RuleFilter and the scorers.
 
             # Survived all cheap gates — persist similarity + ghost score, queue for LLM.
             job.similarity_score = sim

@@ -48,7 +48,7 @@ from app.common.eligibility import (
 )
 from app.common.geo import (
     _SITE_SPLIT, country_named_in, detect_country, detect_region, detect_us_state,
-    resolve_country_value,
+    resolve_country_value, site_code_names_country,
 )
 from app.config import settings
 from app.discovery.base import GeoEvidence, RawJob
@@ -442,8 +442,12 @@ def derive(raw: RawJob) -> Geography:
         if c:
             countries.append(c)
             evidence_source, evidence_field = "ats_structured", ev.country_field or "country"
+    structured = countries[0] if countries else ""
     for site in sites:
         c = detect_country(site)
+        if (c == "united states" and structured and structured != "united states"
+                and site_code_names_country(site, structured)):
+            c = structured            # "Darmstadt, DE" under country=DE is Germany's code
         if c and c not in countries:
             countries.append(c)
             if evidence_source == "none":

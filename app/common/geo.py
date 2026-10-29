@@ -550,6 +550,37 @@ def _match_country(loc: str, table: dict) -> str:
 _SITE_SPLIT = re.compile(r"\s*(?:·|\||;|/|\n)\s*")
 
 
+def _trailing_iso_country(loc: str) -> str:
+    """The country a one-site "City, Region, XX" address ends in, or ''.
+
+    Structured ATS and JSON-LD addresses put the ISO-2 country LAST, after a
+    region ("Heusweiler, SAARLAND, DE", "San Ġiljan, Europe, MT"). Read as a US
+    state code that was Delaware and Montana, and 191 German postings resolved
+    to [germany, united states] — eligible for every US user (2026-10-28). Only
+    with a third part that is not itself a US state: "Dover, DE" stays
+    Delaware, "Kansas City, Missouri, MO" stays Missouri.
+    """
+    if re.search(r"[·|;/\n]", loc):
+        return ""                         # several sites: each is read on its own
+    parts = [p.strip() for p in loc.split(",") if p.strip()]
+    if len(parts) < 3:
+        return ""
+    code, middle = parts[-1], parts[-2]
+    if not re.fullmatch(r"[a-z]{2}", code) or code == "us" or code not in ISO2_COUNTRIES:
+        return ""
+    if middle in _US_STATE_CODES or any(rx.search(f" {middle} ") for rx, _c in _US_STATE_NAME_RES):
+        return ""
+    return ISO2_COUNTRIES[code]
+
+
+def site_code_names_country(site: str, country: str) -> bool:
+    """Does ``site`` end in ", XX" where XX is ``country``'s own ISO-2 code?
+    "Darmstadt, DE" under a structured country of Germany is Germany's code,
+    not Delaware's."""
+    m = re.search(r",\s*([A-Za-z]{2})\s*$", site or "")
+    return bool(m) and ISO2_COUNTRIES.get(m.group(1).lower()) == norm_country(country)
+
+
 def detect_country(location: str) -> str:
     """Best-effort country guess from a free-text location. '' when unknown.
 
@@ -573,6 +604,10 @@ def detect_country(location: str) -> str:
     named = _match_country(loc, _NAME_RES)
     if named:
         return named
+
+    iso = _trailing_iso_country(loc)
+    if iso:
+        return iso
 
     city = _match_country(loc, _CITY_RES)
 
@@ -602,6 +637,9 @@ def stated_country(location: str) -> str:
     named = _match_country(loc, _NAME_RES)
     if named:
         return named
+    iso = _trailing_iso_country(loc)
+    if iso:
+        return iso
     city = _match_country(loc, _CITY_RES)
     state_codes = {c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES}
     if state_codes and not (city and _ISO2_US_STATE_COLLISIONS.get(city) in state_codes):
@@ -625,6 +663,8 @@ def detect_us_state(text: str) -> str:
     for rx, code in _US_STATE_NAME_RES:
         if rx.search(loc):
             return code
+    if _trailing_iso_country(loc):
+        return ""                 # "Zwickau, SAXONY, DE" ends in Germany, not Delaware
     codes = [c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES]
     if codes:
         city = _match_country(loc, _CITY_RES)
@@ -689,6 +729,24 @@ def country_named_in(text: str, country: str) -> bool:
         if any(r.search(loc) for r in table.get(country, ())):
             return True
     return False
+
+
+_MEA_RE = re.compile(r"(?<![a-z])mea(?![a-z])")
+
+
+def foreign_places_named(text: str, home_country: str) -> set:
+    """Countries (canonical names, by name or city) and regions ('emea',
+    'apac', …) that ``text`` names, other than ``home_country``. Used to
+    check a model's location claim against the posting: "located in Germany"
+    stands only if the posting itself names Germany."""
+    home = norm_country(home_country)
+    loc = " " + (text or "").lower() + " "
+    out = {c for table in (_NAME_RES, _CITY_RES) for c, res in table.items()
+           if c != home and any(r.search(loc) for r in res)}
+    out |= {region for region in _REGION_ORDER if any(r.search(loc) for r in _REGION_RES[region])}
+    if _MEA_RE.search(loc):
+        out.add("emea")
+    return out
 
 
 def location_allowed(location: str, remote: bool, preferred_country: str, remote_ok: bool) -> bool:

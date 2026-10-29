@@ -35,6 +35,7 @@ still counts as a refusal.
 """
 from __future__ import annotations
 
+import html
 import re
 from typing import List, NamedTuple, Optional
 
@@ -126,6 +127,18 @@ _REFUSAL_PATTERN_SOURCES = [
      r"\b(?:will\s+not|won't|cannot|can't|are\s+not|is\s+not)\s+(?:be\s+)?(?:considered|eligible)\b"),
     ("without requiring sponsorship",
      r"\bwithout\s+(?:requiring|needing|the\s+need\s+(?:of|for)|need\s+of)\s+(?:\w+\s+){0,2}sponsorship\b"),
+    # "This role does not qualify for employer-sponsored work authorization."
+    ("role does not qualify for sponsorship",
+     r"\b(?:does|do|will)\s+not\s+qualify\s+for\s+(?:\w+[-\s])?sponsor\w*"),
+    # "Nationwide does not participate in the STEM OPT Extension program."
+    ("does not participate in STEM OPT",
+     r"\b(?:does|do|will)\s+not\s+(?:participate\s+in|support|accept)\s+(?:the\s+)?(?:stem\s+)?opt\b"),
+    # Export control: "applicant must be a (i) U.S. citizen or national, (ii)
+    # U.S. lawful, permanent resident …" — the same meaning as the phrase "us
+    # citizen or permanent resident" above, written as an ITAR list.
+    ("US persons only (export control)",
+     r"\bmust\s+(?:be|qualify\s+as)\s+(?:an?\s+)?(?:\(i\)\s*)?(?:us|united\s+states)\s+"
+     r"(?:citizen\s+or\s+(?:national|permanent\s+resident)|persons?)\b"),
     ("must be a US citizen",
      r"\bmust\s+(?:be|hold|possess|have)\s+(?:a\s+|an\s+)?(?:us|united\s+states)\s+citizen"),
     # Not the employer-wide line "…required for all positions with a government
@@ -185,8 +198,24 @@ _ABBREVIATIONS = [(re.compile(r"\bU\.\s?S\.\s?A\.", re.IGNORECASE), "USA"),
                   (re.compile(r"\be\.g\.", re.IGNORECASE), "eg")]
 
 
+_TAG_RE = re.compile(r"</?[A-Za-z][^<>]{0,300}>")
+#: A line broken mid-sentence: "This role \ndoes not\n qualify for …" is one
+#: sentence, and splitting on its newlines hid the refusal (Nationwide,
+#: 2026-10-28). Only after a word no line can end on — callers pass lowercased
+#: text, so the case of the next line cannot tell a wrap from a new bullet.
+_SOFT_WRAP_RE = re.compile(
+    r"\b(not|no|the|a|an|to|for|of|and|or|is|are|be|will|would|does|do|can|cannot|must|"
+    r"may|in|on|with|without|requires?|eligible|unable)[ \t]*\r?\n[ \t]*(?=[a-z])", re.I)
+
+
 def _sentences(text: str) -> List[str]:
-    text = text or ""
+    # Markup is not text: "<strong>not</strong> eligible for sponsorship" and
+    # "not&nbsp;eligible" are the same sentence as the plain one.
+    text = html.unescape(_TAG_RE.sub(" ", text or ""))
+    # One space between words, or the cancellers' "not " look-behinds miss
+    # "not\xa0 eligible" and veto the refusal they exist to spare.
+    text = re.sub(r"[ \t\xa0]+", " ", text)
+    text = _SOFT_WRAP_RE.sub(r"\1 ", text)
     for rx, repl in _ABBREVIATIONS:
         text = rx.sub(repl, text)
     return [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
