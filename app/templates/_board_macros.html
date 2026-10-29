@@ -49,9 +49,6 @@
                         <!-- Company snapshot (funding, who runs it, hiring record) -->
                         <div class="company-profile-placeholder"></div>
                         </div> <aside class="jd-rail">
-                        <!-- Right-door check -->
-                        <div class="autopsy-placeholder"></div>
-                        
                         <!-- Alumni referral (warmest intro) -->
                         <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Alumni Referral</span> <span class="ref-pill">Warmest intro</span> </div> <p class="ref-text">People from <b>your university</b> working at {{ job.company or 'this company' }} — shared school is the easiest ice-breaker and the most-answered referral ask.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}', 'alumni')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find alumni from your school at this company">Find Alumni Contacts</button> </div> </div>
                         <!-- Standard referral -->

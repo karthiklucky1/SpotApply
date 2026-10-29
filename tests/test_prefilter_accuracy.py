@@ -262,6 +262,70 @@ def test_the_tier_one_prompt_no_longer_asks_the_model_to_judge_place():
     assert "Remote:" not in prompt
 
 
+# ── the final score answers to the posting's stated years and level ─────────
+# From the same profile's 60-job board: every case below was shortlisted at
+# 72-92 although the posting itself said otherwise.
+
+def _final(desc, title="Software Engineer", score=72.0, **kw):
+    return rr.reconcile_with_profile((score, "fit", ["gap"], {}), _profile(**kw), desc, title=title)
+
+
+@pytest.mark.parametrize("title,desc", [
+    ("Software Engineer, Senior", "Required Qualifications\nMinimum of 7 years of professional "
+     "software development experience.\nAdvanced proficiency in PHP."),
+    ("Senior Software Engineer, Portal Application", "6+ years of overall software development "
+     "experience, preferably secure, scalable web applications with NodeJS, TypeScript, React."),
+])
+def test_a_stated_gap_of_two_years_is_a_stretch_not_a_match(title, desc):
+    score, _r, concerns, _b = _final(desc, title)
+    assert score == rr.STRETCH_OVERALL_CAP
+    assert concerns[0].startswith("Posting asks") and "about 4" in concerns[0]
+
+
+@pytest.mark.parametrize("title,desc", [
+    ("Junior AI Engineer - Magna International", "0–2 years of professional software development, "
+     "data, automation, or AI experience. Programming experience with Python."),
+    ("Associate Software Engineer", "Proficiency in at least one programming language, such as C# or Python."),
+    ("Software Engineer, Cloud", "As a Software Engineer I, Cloud, you'll work on full-stack development."),
+])
+def test_an_entry_role_is_below_four_years(title, desc):
+    score, _r, concerns, _b = _final(desc, title, score=92.0)
+    assert score == rr.STRETCH_OVERALL_CAP and concerns[0].startswith("Entry-level role")
+
+
+def test_what_is_left_alone():
+    # "Senior …, 4+ years" asks for 4: no gap (the model had written "typically 7+").
+    assert _final("You have 4+ years of experience designing backend systems in Python.",
+                  "Senior Software Engineer, Backend (AI Platform)")[0] == 72.0
+    # One year short is a judgement for the scorer, not a cap.
+    assert _final("5+ years of experience in software engineering.")[0] == 72.0
+    # A senior associate is not an entry role.
+    assert _final("Consulting delivery.", "AI Consulting Engineer - Senior Associate")[0] == 72.0
+    # An entry role is not "below" a candidate who is starting out.
+    assert _final("0–2 years of experience.", "Junior AI Engineer", score=88.0,
+                  years_experience=1)[0] == 88.0
+
+
+def test_the_final_scorer_reads_years_as_stated_and_alternatives_as_alternatives():
+    sp = rr._profile_system_prompt(_profile())
+    assert "Judge years ONLY against a number the posting STATES" in sp
+    assert '"Python or Go"' in sp and "met by any one of them" in sp
+    assert "PRIMARY language or platform" in sp
+
+
+def test_the_board_holds_strong_matches_only():
+    from app.config import settings
+    assert settings.shortlist_score_threshold == 75 > rr.STRETCH_OVERALL_CAP
+
+
+def test_the_right_door_card_is_gone():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "app" / "templates"
+    for name in ("dashboard.html", "_board_macros.html"):
+        text = (root / name).read_text()
+        assert "Right-Door Check" not in text and "autopsy-placeholder" not in text
+
+
 # ── the one-time re-open of jobs these gates had drained ────────────────────
 
 UID = "pfa_user"
@@ -269,8 +333,10 @@ _P = "pfa_"
 
 
 def _clean():
+    from app.db.models import Application
     from app.matching.pipeline import _PREFILTER_FIX_MARKER
     with get_session() as s:
+        s.exec(delete(Application).where(Application.user_id == UID))
         s.exec(delete(Job).where(Job.external_id.like(f"{_P}%")))
         s.exec(delete(FunnelEvent).where(FunnelEvent.stage == _PREFILTER_FIX_MARKER,
                                          FunnelEvent.reason == f"user={UID}"))
@@ -326,6 +392,49 @@ def test_recent_jobs_the_new_gates_keep_are_reopened_once(stamped):
         marker = s.exec(select(FunnelEvent).where(FunnelEvent.reason == f"user={UID}")).all()
         assert len(marker) == 1
     assert _reopen_misjudged_prefilter_stamps(UID, prof) == 0      # once per user
+
+
+def test_the_current_shortlist_is_held_to_its_postings(stamped):
+    """Jobs already on the board kept scores written before the caps existed."""
+    from app.db.models import Application, ApplicationStatus
+    from app.matching.pipeline import _recheck_shortlisted_against_posting
+    seeds = {
+        "junior": ("Junior AI Engineer", "0–2 years of professional software development experience.", 92.0),
+        "gap": ("Software Engineer, Senior", "Minimum of 7 years of professional software development experience.", 72.0),
+        "refusal": ("AI Software Engineer", "U.S. Citizenship with eligibility for DoD Secret clearance.", 72.0),
+        "fits": ("Senior Software Engineer, Backend (AI Platform)",
+                 "You have 4+ years of experience designing backend systems in Python.", 72.0),
+    }
+    ids = {}
+    with get_session() as s:
+        for key, (title, desc, score) in seeds.items():
+            j = Job(user_id=UID, source=JobSource.GREENHOUSE, external_id=_P + "sl_" + key,
+                    company="Acme", title=title, url=f"https://x/sl/{key}", description=desc,
+                    location="Chicago, IL", rerank_score=score,
+                    rerank_reasoning="Strong fit.\nConcerns: something", first_seen=datetime.utcnow())
+            s.add(j)
+            s.commit()
+            s.refresh(j)
+            s.add(Application(job_id=j.id, user_id=UID, status=ApplicationStatus.SHORTLISTED))
+            ids[key] = j.id
+        s.commit()
+    try:
+        with get_session() as s:
+            assert _recheck_shortlisted_against_posting(s, UID, _profile(user_id=UID)) == 3
+            s.commit()
+        with get_session() as s:
+            got = {k: s.get(Job, i) for k, i in ids.items()}
+            assert got["junior"].rerank_score == rr.STRETCH_OVERALL_CAP
+            assert "Concerns: Entry-level role" in got["junior"].rerank_reasoning
+            assert got["gap"].rerank_score == rr.STRETCH_OVERALL_CAP
+            assert got["refusal"].rerank_score == rr.BLOCKER_OVERALL_CAP
+            assert got["fits"].rerank_score == 72.0
+            apps = s.exec(select(Application).where(Application.user_id == UID)).all()
+            assert {a.status for a in apps} == {ApplicationStatus.SHORTLISTED}   # nothing removed
+    finally:
+        with get_session() as s:
+            s.exec(delete(Application).where(Application.user_id == UID))
+            s.commit()
 
 
 def test_no_profile_reopens_nothing(stamped):

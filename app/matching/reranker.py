@@ -541,7 +541,9 @@ def _profile_system_prompt(profile) -> str:
   * JD requires roughly within {yoe}±1 years: score experience high (75-100).
   * JD requires up to ~{yoe + 2} years: moderate stretch (50-70).
   * JD requires more than ~{yoe + 3} years (or Staff/Principal/Distinguished with senior reqs): hard gap, experience ≤ 25.
-  * JD asks for less experience than the candidate, or is silent on years: score experience normally (not a penalty)."""
+  * JD asks for less experience than the candidate, or is silent on years: score experience normally (not a penalty).
+  * Judge years ONLY against a number the posting STATES. A title word (Senior, Staff, III, Lead)
+    never implies years the posting does not state: "Senior …, 4+ years" asks for 4."""
 
     if needs_sponsor:
         # An F-1 OPT/CPT student is authorized NOW and needs sponsorship LATER.
@@ -604,7 +606,10 @@ Candidate profile:
 {exp_rules}
 {auth_rule}
 {loc_rule}
-- Judge the SKILLS factor on overlap between the candidate's skills/target roles and the job's requirements.
+- Judge the SKILLS factor on overlap between the candidate's skills/target roles and the job's REQUIRED skills.
+  A requirement written as alternatives ("Python or Go", "Java, Python, or similar") is met by any one of them.
+  If the role is built on a PRIMARY language or platform the candidate's skills do not show (e.g. PHP/Laravel,
+  Apex/LWC, ASP.NET, a Java/Kotlin or Node.js backend), skills ≤ 50 and the overall ≤ 65.
 
 Be fair and realistic — do not invent disqualifications. Return JSON only."""
 
@@ -1026,22 +1031,51 @@ def tidy_years_claims(text: str) -> str:
 #: The contract's "a factor <=15 from an explicit blocker caps the overall at
 #: 25" — the same number card_match.BLOCKER_OVERALL_CAP enforces.
 BLOCKER_OVERALL_CAP = 25.0
+#: A posting that states 2+ more years than the resume shows, or is an entry
+#: role for someone with 4+ years: a real job, never a match for THIS resume.
+#: Under the shortlist bar, so it stays in All Jobs and off the board.
+STRETCH_OVERALL_CAP = 65.0
+
+_ENTRY_TITLE_RE = re.compile(
+    r"\b(?:junior|jr\.?|entry[- ]level|new grad(?:uate)?|graduate|apprentice)\b"
+    r"|(?<!senior )(?<!sr\. )(?<!sr )\bassociate\s+(?:\w+\s+){0,2}(?:engineer|developer)\b"
+    r"|\b(?:engineer|developer)\s+i\b(?!i)")
+#: "0–2 years", "0-1 year", "1-2 years" — the posting's own range for the role.
+_ENTRY_RANGE_RE = re.compile(r"\b[01]\s*(?:[-–—]|to)\s*[12]\s*\+?\s*(?:years?|yrs?)\b", re.I)
+_ENTRY_LEVEL_TEXT_RE = re.compile(
+    r"\b(?:as an? |this is an? )(?:software |ai |ml )?(?:engineer|developer) i\b(?!i)"
+    r"|\bentry[- ]level (?:role|position)\b|\bnew grad(?:uate)? (?:role|position)\b", re.I)
+
+
+def _entry_level(title: str, description: str) -> bool:
+    """The posting itself says it is for someone starting out."""
+    t = (title or "").lower()
+    if _ENTRY_TITLE_RE.search(t):
+        return True
+    return bool(_ENTRY_RANGE_RE.search(description or "") or _ENTRY_LEVEL_TEXT_RE.search(description or ""))
 
 
 def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
-                           description: str = "") -> Tuple[float, str, List[str], dict]:
+                           description: str = "", title: str = "") -> Tuple[float, str, List[str], dict]:
     """Hold a parsed verdict to facts we already hold, before it is stored:
     the work_auth factor to the user's visa status (work_auth.py) and years
     figures to what the resume can show. Never raises.
 
-    The overall score changes in ONE case: the posting itself refuses this
-    user (`find_refusal`: no sponsorship, U.S. citizens only, a required
-    security clearance) and the user needs sponsorship. Then it is capped at
-    BLOCKER_OVERALL_CAP, as the JSON contract promised and the model did not
-    deliver: on 2026-10-28 a posting requiring "U.S. Citizenship with
-    eligibility for DoD Secret clearance" came back work_auth 10, overall 72,
-    and reached an F-1 OPT user's board. The model's own judgement never
-    causes the cap — only the posting's words do."""
+    The overall score changes only on the POSTING's own words:
+      * it refuses this user (`find_refusal`: no sponsorship, U.S. citizens
+        only, a required security clearance) and the user needs sponsorship →
+        BLOCKER_OVERALL_CAP. On 2026-10-28 a posting requiring "U.S.
+        Citizenship with eligibility for DoD Secret clearance" came back
+        work_auth 10, overall 72, and reached an F-1 OPT user's board;
+      * it states 2+ more years than the resume shows ("6+ years", "minimum
+        of 7 years"), read as written by `minimum_years_required` →
+        STRETCH_OVERALL_CAP. The rubric's own band calls that a stretch, yet
+        "7+ years, advanced PHP" for a 4-year Python developer came back 72;
+      * it is an entry-level role (0–2 years, Junior, Associate, Engineer I)
+        and the resume shows 4+ years → STRETCH_OVERALL_CAP too. "Junior AI
+        Engineer, 0–2 years" came back 92, "Excellent match".
+    Each cap keeps the job (All Jobs still shows it) and says why; none of
+    them follows from the model's own judgement."""
     score, reason, concerns, breakdown = result
     try:
         reason = tidy_years_claims(reason)
@@ -1062,6 +1096,19 @@ def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
             if refusal is not None and score > BLOCKER_OVERALL_CAP and needs_sponsorship(profile):
                 score = BLOCKER_OVERALL_CAP
                 concerns = [f'Posting rules this out: "{refusal.sentence[:90]}"'] + list(concerns)[:2]
+            cand = int(getattr(profile, "years_experience", 0) or 0)
+            if cand > 0 and score > STRETCH_OVERALL_CAP:
+                from app.matching.filters.rule_filter import _degree_level
+                from app.tailoring.requirements import minimum_years_required
+                req = minimum_years_required(
+                    description, degree_level=_degree_level(getattr(profile, "degree", "") or ""))
+                if req and req[0] - cand >= 2:
+                    score = STRETCH_OVERALL_CAP
+                    concerns = ([f"Posting asks {req[0]:g}+ years; resume shows about {cand}"]
+                                + list(concerns)[:2])
+            if cand >= 4 and score > STRETCH_OVERALL_CAP and _entry_level(title, description):
+                score = STRETCH_OVERALL_CAP
+                concerns = ([f"Entry-level role; below your ~{cand} years"] + list(concerns)[:2])
         elif profile is not None and isinstance(breakdown, dict) \
                 and isinstance(breakdown.get("work_auth"), dict):
             # No posting text = not known, which is never "silent".
@@ -1593,7 +1640,8 @@ class Reranker:
                     # (visa status) before they are stored; the score changes
                     # only when the posting itself refuses this user.
                     result = reconcile_with_profile(result, self._profile,
-                                                    getattr(job, "description", "") or "")
+                                                    getattr(job, "description", "") or "",
+                                                    title=getattr(job, "title", "") or "")
                     # The verdict feeds the adaptive budget's marginal-yield
                     # test. Recorded AFTER the parse (a score is needed) but the
                     # spend above is recorded BEFORE it — an unparseable

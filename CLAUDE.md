@@ -279,12 +279,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   the session closes). Admin surfaces: `/api/admin/settings` (secrets shown only
   as `configured: bool` — guard: `test_admin_observability`) and
   `/api/admin/health` (breakers, budget, stripe mode, pool, memory, last ticks).
-- **Tuning lives in env/Settings:** `shortlist_score_threshold` (60 — of real
-  Claude finals 44.5% cleared 35 but only 11.6% cleared 65, so the old bar
-  shortlisted ~1,800 jobs/user that the board's own default filter
-  (`shortlist_strong_threshold`=65) then hid. **Raise `PRESCORE_ADVANCE_THRESHOLD`
-  in lockstep** — the Tier-1 gate is `min(advance, shortlist)`), `top_k_rerank`,
-  `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
+- **Tuning lives in env/Settings:** `shortlist_score_threshold` (75 since
+  2026-10-28 — the rubric's 60-74 band is "a visible stretch"; 35→60→70→75;
+  `shortlist_strong_threshold` and `fresh_alert_min_score` equal it,
+  `degraded_shortlist_threshold` stays above it; the Tier-1 gate is
+  `min(advance, shortlist)`), `top_k_rerank`, `MIN_MATCH_SCORE`,
+  `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
 - **Freshness has TWO bounds** (`app/common/freshness.py` — read it before
   touching any age gate): KNOWN age = `coalesce(first_seen, discovered_at)`,
   how long WE have held the posting (tight: `SCORING_MAX_JOB_AGE_DAYS` /
@@ -821,7 +821,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   location: `reranker._overrule_cleared_blocker` sends a location or silent-
   sponsorship claim on a verified-eligible job to Tier-2 at the gate. `find_refusal`
   reads markup, wrapped lines and ITAR lists. "City, Region, DE" is Germany, not
-  Delaware (`geo._trailing_iso_country`). Recent stamps re-open once per user
+  Delaware (`geo._trailing_iso_country`). The final score answers to the posting's
+  words (`reconcile_with_profile`): a stated gap of 2+ years, or an entry role
+  (0–2 years / Junior / Associate / Engineer I) for 4+ years, caps at
+  `STRETCH_OVERALL_CAP` (65, under the bar, still in All Jobs). Recent stamps
+  re-open, and the current shortlist is re-held to those caps, once per user
   (`pipeline._reopen_misjudged_prefilter_stamps`). Guard: `test_prefilter_accuracy`.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,

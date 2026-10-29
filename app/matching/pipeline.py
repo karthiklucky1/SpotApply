@@ -509,9 +509,11 @@ def _reopen_misjudged_prefilter_stamps(user_id: str | None, profile) -> int:
                 job.prescored_at = None
                 session.add(job)
                 reopened += 1
+            lowered = _recheck_shortlisted_against_posting(session, user_id, profile)
             session.add(FunnelEvent(
                 job_id=None, stage=_PREFILTER_FIX_MARKER, passed=True, reason=marker,
-                metadata_json=_json.dumps({"examined": len(rows), "reopened": reopened}),
+                metadata_json=_json.dumps({"examined": len(rows), "reopened": reopened,
+                                           "shortlist_lowered": lowered}),
             ))
             session.commit()
     except Exception as e:
@@ -521,6 +523,45 @@ def _reopen_misjudged_prefilter_stamps(user_id: str | None, profile) -> int:
         log.info("Re-opened %d job(s) the 2026-10-28 gate fixes now keep (user=%s)",
                  reopened, user_id)
     return reopened
+
+
+def _recheck_shortlisted_against_posting(session, user_id: str | None, profile) -> int:
+    """Hold the user's CURRENT shortlist to the posting's own words, once.
+
+    New verdicts pass through `reranker.reconcile_with_profile`; jobs already
+    on the board kept scores written before it read refusals, stated years
+    and entry-level roles ("Junior AI Engineer, 0–2 years" at 92). Same
+    function, same caps, no model call. Only the score and its stated reason
+    move — the application keeps its status, so nothing the user opened
+    disappears; below the bar it leaves the board's default view."""
+    from app.matching.reranker import reconcile_with_profile
+    owner = (Job.user_id == user_id) if user_id else Job.user_id.is_(None)
+    app_owner = (Application.user_id == user_id) if user_id else Application.user_id.is_(None)
+    rows = session.exec(
+        select(Job).options(load_only(Job.id, Job.title, Job.description, Job.rerank_score,
+                                      Job.rerank_reasoning))
+        .where(owner, Job.rerank_score.isnot(None),  # type: ignore[union-attr]
+               Job.id.in_(select(Application.job_id).where(
+                   app_owner, Application.status == ApplicationStatus.SHORTLISTED)))
+        .limit(_PREFILTER_FIX_MAX_ROWS)
+    ).all()
+    lowered = 0
+    for job in rows:
+        old = float(job.rerank_score)
+        new, _r, concerns, _b = reconcile_with_profile(
+            (old, "", [], {}), profile, job.description or "", title=job.title or "")
+        if new >= old or not concerns:
+            continue
+        reasoning = job.rerank_reasoning or ""
+        if "\nConcerns: " in reasoning:
+            reasoning = reasoning.replace("\nConcerns: ", f"\nConcerns: {concerns[0]}; ", 1)
+        else:
+            reasoning = f"{reasoning}\nConcerns: {concerns[0]}".strip()
+        job.rerank_score = new
+        job.rerank_reasoning = reasoning[:2000]
+        session.add(job)
+        lowered += 1
+    return lowered
 
 
 def _held_verdicts() -> list:

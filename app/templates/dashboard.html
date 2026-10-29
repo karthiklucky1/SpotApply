@@ -8409,10 +8409,6 @@
             if (matchPlaceholder) {
                 loadMatchPanel(appId, matchPlaceholder);
             }
-            const autopsyPlaceholder = body.querySelector('.autopsy-placeholder');
-            if (autopsyPlaceholder) {
-                renderAutopsyButton(appId, autopsyPlaceholder);
-            }
             if (sponsorPlaceholder) {
                 loadSponsorship(appId, sponsorPlaceholder);
             }
@@ -8870,43 +8866,6 @@
         } catch (e) {
             slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-rose-500">Failed to load sponsorship data.</div>`;
         }
-    }
-
-    function renderAutopsyButton(appId, slot) {
-        if (!slot) return;
-        slot.innerHTML = `<div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">🚪 Right-Door Check</span> <span class="ref-pill">Before you apply</span> </div> <p class="ref-text">Every role has a hidden hiring bar — the seniority, background and skills of the people who <b>actually got hired</b>. This check compares your profile against that bar and tells you if this is a door that can open for you, <b>before</b> you spend a tailored resume on it.</p> <button type="button" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5 mt-3 w-full">Check if this door opens for you</button> <div class="autopsy-result mt-2"></div> </div>`;
-        const btn = slot.querySelector('button');
-        btn.addEventListener('click', () => runAutopsy(appId, slot, btn));
-    }
-
-    async function runAutopsy(appId, slot, btn) {
-        const out = slot.querySelector('.autopsy-result');
-        btn.disabled = true; btn.textContent = 'Checking who actually gets hired here…';
-        try {
-            const token = localStorage.getItem('sb_token');
-            const r = await fetch('/application/' + appId + '/autopsy', { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
-            if (!r.ok) { btn.disabled = false; btn.textContent = 'Check if this door opens for you'; out.innerHTML = '<div class="text-[12.5px] text-rose-500 mt-1">Could not run the door check.</div>'; return; }
-            const d = await r.json();
-            btn.style.display = 'none';
-            out.innerHTML = renderAutopsyHtml(d);
-        } catch (e) {
-            btn.disabled = false; btn.textContent = 'Check if this door opens for you';
-        }
-    }
-
-    function renderAutopsyHtml(d) {
-        const esc = (s) => (s + '').replace(/</g, '&lt;');
-        const wrong = d.wrong_door;
-        const head = wrong ? `<span style="color:#f43f5e;"> WRONG DOOR</span>` : `<span style="color:#10b981;"> RIGHT DOOR — you fit</span>`;
-        const ic = { MATCH: '✓', STRETCH: '', BLOCKER: '', 'SILENT-LEAK': '' };
-        const findings = (d.findings || []).map(f => `<div style="font-size:12.5px;color:var(--ink-soft,#cbd5e1);line-height:1.5;">${ic[f.status] || '•'} <b>${esc(f.dim)}</b> — ${esc(f.note)}</div>`).join('');
-        const note = d.data_ok ? '' : `<div style="font-size:11px;color:#94a3b8;margin-top:6px;">Based on the job description only — add a people-search key for the full “who got hired” bar.</div>`;
-        const tail = wrong
-            ? `<div style="font-size:13px;color:var(--ink-soft,#cbd5e1);line-height:1.5;"><b style="color:#fb7185;">Why:</b> ${esc(d.top_reason)}</div><div style="font-size:13px;color:var(--ink-soft,#cbd5e1);line-height:1.5;margin-top:4px;"><b style="color:#34d399;"> Right door:</b> ${esc(d.right_door)}</div>`
-            : `<div style="font-size:13px;color:var(--ink-soft,#cbd5e1);line-height:1.5;">${esc(d.right_door)}</div>`;
-        return `<div class="rounded-2xl border border-rose-500/20 bg-slate-950/20 p-4" style="background:linear-gradient(135deg,rgba(244,63,94,0.05),rgba(244,63,94,0.01));"> <div class="font-extrabold text-[13px] uppercase tracking-wider mb-1" style="color:#fb7185;"> Rejection Autopsy · ${head}</div> <div style="font-size:11px;color:#94a3b8;margin-bottom:8px;">Confidence: ${esc(d.confidence || '')}</div> <div style="display:flex;flex-direction:column;gap:3px;margin-bottom:8px;">${findings}</div> ${tail}
-            ${note}
-        </div>`;
     }
 
     function switchDrawerTab(btn, tab, appId) {

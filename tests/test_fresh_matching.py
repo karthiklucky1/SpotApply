@@ -89,7 +89,7 @@ def test_run_matching_scores_fresh_job_and_reshortlists_scored():
              patch("app.matching.filters.EmbeddingFilter.filter",
                    return_value=(True, 0.7, "ok")), \
              patch("app.matching.reranker.Reranker.score",
-                   return_value=(70.0, "good fit", [], {})), \
+                   return_value=(80.0, "good fit", [], {})), \
              patch("app.discovery.verify.check_job_alive",
                    return_value=(True, None)), \
              patch("app.matching.pipeline.score_ghost") as mock_ghost:
@@ -107,7 +107,7 @@ def test_run_matching_scores_fresh_job_and_reshortlists_scored():
         assert scored_id in shortlisted
         with get_session() as s:
             fresh = s.get(Job, fresh_id)
-            assert fresh.rerank_score == 70.0
+            assert fresh.rerank_score == 80.0
             for jid in (fresh_id, scored_id):
                 app = s.exec(select(Application).where(Application.job_id == jid)).first()
                 assert app is not None and app.status == ApplicationStatus.SHORTLISTED
