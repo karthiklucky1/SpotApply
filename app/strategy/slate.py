@@ -20,9 +20,11 @@ THE RULE. While the slate has room, anything at or above the shortlist bar
 takes a free slot. Once it is full, a new job must beat the weakest REPLACEABLE
 entry by ``slate_displace_margin`` to take its place. If nothing is replaceable
 — every entry has been opened or acted on — a job that beats the weakest entry
-by the larger ``slate_overflow_margin`` is still delivered, up to
-``slate_overflow_daily`` extra jobs, because a user who has read all 35 and is
-still looking should not be denied the best job of the day.
+by the larger ``slate_overflow_margin`` can still be delivered, up to
+``slate_overflow_daily`` extra jobs. That allowance is 0 by default since
+2026-10-30 (founder: REPLACE ONLY): a job that cannot take a slot keeps its
+score and stays in All Jobs, where "Strong match · not on board" lists it, and
+so does the entry a challenger replaced — neither is hidden or closed.
 
 REPLACEABLE means SHORTLISTED, never viewed, delivered today, and not something
 the user asked for. Anything the user opened, tailored, auto-filled, submitted
@@ -70,6 +72,11 @@ PROTECTED_STATUSES = (
 # as an opinion (app/matching/preference_learning.py) and which delivered_today
 # still counts.
 SLATE_REPLACED_MARKER = "slate_replaced"
+# The challenger replacement's note, verbatim. All Jobs' "Strong match · not on
+# board" filter matches on it: a job a later, stronger one pushed off the board
+# is still a strong match the user may want, but an aggregator copy replaced by
+# the employer's own posting is the SAME role, already on the board.
+SLATE_CHALLENGER_NOTE = f"{SLATE_REPLACED_MARKER}: a stronger job arrived later today"
 
 
 @dataclass
@@ -373,7 +380,7 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
                 return _done(Placement(False, "company_cap", cutoff=weakest_score))
             weakest.status = ApplicationStatus.SKIPPED
             weakest.notes = ((weakest.notes or "") + (
-                f"\n{SLATE_REPLACED_MARKER}: a stronger job arrived later today "
+                f"\n{SLATE_CHALLENGER_NOTE} "
                 f"('{job.title}' at {float(score):.0f} vs {weakest_score:.0f}) and "
                 f"this one had not been opened.")).strip()
             session.add(weakest)

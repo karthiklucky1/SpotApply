@@ -131,7 +131,8 @@ between `gate` and `spend_gate` has been empty since it was built.
 `slate_displace_margin` displaces the weakest replaceable slate entry. The slate
 stays at `target`. If every entry is protected, a challenger that beats the
 cutoff by `slate_overflow_margin` is delivered anyway, up to
-`slate_overflow_daily` extra jobs.
+`slate_overflow_daily` extra jobs — **0 since 2026-10-30 (replace only, see
+§3a)**, so such a job keeps its score in All Jobs instead.
 
 **Replaceable** means: status SHORTLISTED, `viewed_at IS NULL`, created today.
 Anything the user opened, saved, tailored, auto-filled or applied to is
@@ -172,8 +173,39 @@ Pro user, target 35, slate full at 14:00 with a weakest replaceable entry of 71.
 | 14:05 | repost, Tier-1 44 | 71 | no final bought; job stamped and drained. Cost 0. |
 | 15:12 | direct-ATS role, 10 min old, Tier-1 88 | 71 | final bought → 92. 92 ≥ 71 + 5, so the 71 (unviewed) is displaced and the 92 is delivered. Slate still 35. Cost one final. |
 | 16:40 | good role, Tier-1 74, final 73 | 72 (cutoff moved) | 73 < 72 + 5 → not delivered, keeps its score, stays visible in All Jobs. |
-| 19:00 | strong role, final 90, but every slate entry has been viewed | 72 | 90 ≥ 72 + 15 → delivered as overflow (1 of 5). Slate 36. |
+| 19:00 | strong role, final 90, but every slate entry has been viewed | 72 | nothing replaceable; overflow is off by default (§3a), so it stays in All Jobs under "Strong match · not on board". With `SLATE_OVERFLOW_DAILY=5`: 90 ≥ 72 + 15 → overflow (1 of 5), slate 36. |
 | 20:00–00:00 | nothing above the cutoff | 72 | no finals bought. The old design also bought none, but it also stopped Tier-1. |
+
+### 3a. The staged ceiling, replace-only, and the Tier-1 cap (2026-10-30)
+
+Production 2026-10-30: one Pro board filled by 15:30 UTC, the 250 finals were
+spent, and 121 fresh jobs that had already passed Tier-1 waited for the next
+day. The same day the all-calls backstop (`USER_DAILY_PAID_CALL_CAP`, 2,000)
+stopped a first-day user at 12:36 UTC with 2,229 jobs never looked at.
+
+| Stage | Pro ceiling | Opens when |
+|---|---|---|
+| fill | 250 (`finals_daily`) | always |
+| challenge | 400 (+ `finals_challenge_extra`) | the board holds `shortlist_daily` |
+| engaged | 500 (+ `finals_engaged_extra`) | board full AND `finals_engaged_min_jobs` (2) tailored/submitted today |
+
+One counter (`UserUsage.finals_count`), three heights, decided in
+`finals_budget.staged_ceiling`; Free's extras are 0. Challenge finals are bought
+only at the challenger gate, so the extra is rarely all spent. The slate is
+replace-only (`slate_overflow_daily` = 0): a better job takes an UNOPENED slot;
+otherwise it — and any entry it replaced — stays in All Jobs, listed by the
+"Strong match · not on board" filter (`/api/jobs?status=not_on_board`, best
+first).
+
+Tier-1 has its own per-user cap (`app/matching/tier1_budget.py`): 2,000 real
+calls a day, 5,000 on a setup day (`seed_new_user`). A capped call returns
+`TIER1_DEFERRED` — never `None`, which is fail-open to Tier-2 — and the job stays
+queued; jobs already carrying a kept prescore still reach Tier-2. The backstop
+is now 7,000, above Tier-1 + the staged ceiling + prewarms.
+
+Measured unit costs (`llm_spend`, all metered, 2026-10-01..30): Tier-1 $0.00017,
+final $0.00336, prewarm ~$0.19/user-day. A heavy Pro day at the caps: 2,000 +
+500 = $2.21 (~$66/month); the measured average user-day is $0.57.
 
 ## 4. Ranking utility
 

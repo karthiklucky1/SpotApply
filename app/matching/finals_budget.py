@@ -61,6 +61,24 @@ THREE STOPS, in order:
 Nothing here chases the target. If the pool holds six jobs worth showing, the
 user gets six and the rest of the ceiling is never spent.
 
+THE CEILING IS STAGED (founder, 2026-10-30). One counter, three heights:
+
+    fill        finals_daily                      Pro 250  until the board is full
+    challenge   + finals_challenge_extra          Pro 400  board full: a later job may
+                                                           replace an UNOPENED one
+    engaged     + finals_engaged_extra            Pro 500  board full AND the user
+                                                           tailored/applied to
+                                                           `finals_engaged_min_jobs`
+                                                           jobs today
+
+Production 2026-10-30: the board filled by 15:30 UTC, the 250 were spent, and
+121 fresh jobs Tier-1 had already passed waited for the next day — the opposite
+of the "be first to apply" promise. The extras only open AFTER the board is
+full, so a thin day still stops at finals_daily; and challenge finals are only
+bought at the raised challenger gate, so the extra is rarely all spent. The
+engaged stage is the one that asks something of the user: more money goes to a
+person working the board, never to an account nobody is reading.
+
 DURABILITY. The counters that bound money are persisted to `UserUsage`
 (finals_count / finals_hits, one row per user per UTC day). In-memory counters
 reset on every deploy, which is why the Aug 14-21 stall appeared to "heal" on
@@ -94,10 +112,12 @@ log = logging.getLogger(__name__)
 # increment the cached value in place, so within one process it never lags.
 _day_cache: dict = {}
 _delivered_cache: dict = {}     # user_id -> {"day": date, "n": int, "at": monotonic}
+_engaged_cache: dict = {}       # user_id -> {"day": date, "n": int, "at": monotonic}
 _lock = threading.Lock()
 
 _DAY_CACHE_TTL = 30.0           # seconds
 _DELIVERED_TTL = 20.0           # shorter: this one decides when to STOP
+_ENGAGED_TTL = 60.0             # only read once a day's challenge stage is spent
 
 
 def _utc_now() -> datetime:
@@ -272,6 +292,67 @@ def delivered_today(user_id: Optional[str], cached: bool = True) -> int:
     return n
 
 
+def engaged_today(user_id: Optional[str]) -> int:
+    """How many of this user's jobs they TAILORED or SUBMITTED today — the
+    signal that opens the engaged stage of the ceiling.
+
+    Read from the two timestamps only a person's action writes (``tailored_at``,
+    ``submitted_at``), never ``updated_at``: the lanes bump that for everyone,
+    so it would read every account as busy. Email imports do not count — the
+    same rule as ``delivered_today``. A read failure answers 0, which keeps the
+    lower ceiling: not knowing is never evidence that the user is working the
+    board.
+    """
+    if not _ledgerable(user_id):
+        return 0
+    day = _utc_day()
+    now = time.monotonic()
+    with _lock:
+        c = _engaged_cache.get(user_id)
+        if c and c["day"] == day and (now - c["at"]) < _ENGAGED_TTL:
+            return c["n"]
+    try:
+        from sqlalchemy import func, or_
+        from sqlmodel import select
+        from app.db.init_db import get_session
+        from app.db.models import Application
+        start = datetime.combine(day, datetime.min.time())
+        with get_session() as session:
+            v = session.exec(select(func.count(Application.id)).where(
+                Application.user_id == user_id,
+                Application.apply_track != "email_import",
+                or_(Application.tailored_at >= start, Application.submitted_at >= start),
+            )).one()
+            n = int(v[0] if isinstance(v, tuple) else v)
+    except Exception as e:                                  # pragma: no cover
+        log.debug("engaged_today failed for %s: %s", user_id, e)
+        return 0
+    with _lock:
+        _engaged_cache[user_id] = {"day": day, "n": n, "at": now}
+    return n
+
+
+def staged_ceiling(user_id: Optional[str], base: int, spent: int, met: bool,
+                   challenge_extra: int = 0, engaged_extra: int = 0) -> tuple[int, str]:
+    """(today's ceiling, stage name). See the module docstring.
+
+    ``base`` <= 0 means no ceiling at all and stays that way. The extras open
+    only once the board is full (``met``) and challenge mode is on — a day that
+    never fills stops at the base, exactly as before. The engagement count is
+    read LAZILY, only once the challenge stage is spent: it is a query, and
+    until then it cannot change the answer.
+    """
+    if base <= 0 or not met or not settings.slate_challenge_enabled:
+        return base, "fill"
+    ceiling = base + max(0, int(challenge_extra or 0))
+    extra = max(0, int(engaged_extra or 0))
+    if extra and spent >= ceiling:
+        need = max(0, int(settings.finals_engaged_min_jobs))
+        if need == 0 or engaged_today(user_id) >= need:
+            return ceiling + extra, "engaged"
+    return ceiling, "challenge"
+
+
 def record_final(user_id: Optional[str]) -> None:
     """One authoritative Tier-2 call was paid for. Called from the reranker the
     moment the API returns, BEFORE the response is parsed — a call that returns
@@ -410,10 +491,12 @@ def challenger_gate(user_id: Optional[str]) -> int:
 
 
 def allowance(user_id: Optional[str], per_cycle_cap: int,
-              ceiling: int, target: int) -> Allowance:
+              ceiling: int, target: int, *,
+              challenge_extra: int = 0, engaged_extra: int = 0) -> Allowance:
     """The whole policy.
 
-    ``ceiling`` is the plan's hard daily cost cap (finals_daily); ``target`` is
+    ``ceiling`` is the plan's FILL-stage daily cost cap (finals_daily); the two
+    extras raise it once the board is full (``staged_ceiling``). ``target`` is
     the plan's daily shortlist promise (shortlist_daily).
 
     Full speed until the target lands. Then the day switches from FILL to
@@ -422,11 +505,11 @@ def allowance(user_id: Optional[str], per_cycle_cap: int,
     final is only bought for a candidate Tier-1 rates at or above what is
     already on the board. See docs/DELIVERY_ARCHITECTURE.md.
 
-    The money ceiling is checked FIRST because it now bounds both modes: what
-    challenge mode may spend is whatever is left of the plan's ceiling, and on
-    a day that filled the slate early there is not much of it left. That, plus
-    a gate at or above the shortlist bar, is the whole cost control — no second
-    counter, no second window.
+    The money ceiling is checked FIRST because it bounds both modes: what
+    challenge mode may spend is whatever is left of the STAGED ceiling (base +
+    challenge extra, + engaged extra for a user working the board). That, plus
+    a gate at or above the shortlist bar, is the whole cost control — one
+    counter, one window, three heights.
     """
     spent, _hits = day_counts(user_id)
     delivered = delivered_today(user_id)
@@ -434,11 +517,17 @@ def allowance(user_id: Optional[str], per_cycle_cap: int,
     # on every Allowance below. Every stop that can fire after this line can
     # fire on a day the user already has their jobs.
     met = bool(target > 0 and delivered >= target)
+    ceiling, stage = staged_ceiling(user_id, ceiling, spent, met,
+                                    challenge_extra, engaged_extra)
 
     if ceiling > 0 and spent >= ceiling:
+        hint = ""
+        if stage == "challenge" and engaged_extra > 0:
+            hint = (f" — {settings.finals_engaged_min_jobs} tailored/applied today "
+                    f"opens +{int(engaged_extra)}")
         return Allowance(0, normal_gate(),
-                         f"daily cost ceiling ({spent}/{ceiling} finals) at "
-                         f"{delivered}/{target} delivered", target_met=met)
+                         f"daily cost ceiling ({spent}/{ceiling} finals, {stage} stage) at "
+                         f"{delivered}/{target} delivered{hint}", target_met=met)
 
     rate, evidenced = recent_hit_rate(user_id)
     if evidenced and rate < settings.finals_yield_continue_rate:
@@ -457,7 +546,8 @@ def allowance(user_id: Optional[str], per_cycle_cap: int,
                              target_met=True)
         gate = challenger_gate(user_id)
         return Allowance(max(0, n), gate,
-                         f"slate full at {delivered}/{target} — still watching, but a "
+                         f"slate full at {delivered}/{target} — still watching "
+                         f"({stage} stage, {spent}/{ceiling} finals), but a "
                          f"final is only worth buying at prescore >= {gate}",
                          target_met=True)
 
@@ -469,3 +559,4 @@ def reset_state() -> None:
     with _lock:
         _day_cache.clear()
         _delivered_cache.clear()
+        _engaged_cache.clear()

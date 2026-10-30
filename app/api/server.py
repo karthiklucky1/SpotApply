@@ -48,6 +48,7 @@ from app.db.models import (
 )
 from app.discovery.pipeline import run_discovery
 from app.matching.pipeline import run_matching
+from app.strategy.slate import SLATE_CHALLENGER_NOTE
 from app.api.demo import PublicDemoRequest
 
 # ── Error tracking (Sentry) — dormant until SENTRY_DSN is set ──────────────────
@@ -3941,7 +3942,31 @@ _JOB_LIST_COLS = (
     # timestamp, so no egress concern — the ban is on `description` and whole
     # -entity selects.
     Application.tailored_at.label("app_tailored_at"),
+    # True when a stronger job later replaced this entry on the board — the
+    # row stays a strong match the user can still apply to. A boolean computed
+    # in SQL, so `notes` itself never leaves the database.
+    Application.notes.contains(SLATE_CHALLENGER_NOTE, autoescape=True).label("app_replaced"),
 )
+
+
+def _not_on_board_cond():
+    """All Jobs' "Strong match · not on board": a real verdict at or above the
+    shortlist bar whose job is NOT on the board — a challenger that could not
+    take a slot (replace-only, founder 2026-10-30), a company-cap refusal, or an
+    entry a stronger job replaced. A user's own dismissal is not listed (that is
+    their opinion), nor an aggregator copy replaced by the employer's posting
+    (the same role, already on the board). Expects the Application outer join.
+    """
+    from sqlalchemy import and_ as _and, or_ as _or
+    return _and(
+        Job.rerank_score >= settings.shortlist_score_threshold,
+        Job.expired_at.is_(None),
+        _or(
+            Application.id.is_(None),
+            _and(Application.status == ApplicationStatus.SKIPPED,
+                 Application.notes.contains(SLATE_CHALLENGER_NOTE, autoescape=True)),
+        ),
+    )
 
 
 def _score_kind(rerank, scored_at, prescored_at, expired_at) -> str:
@@ -4067,6 +4092,8 @@ def api_jobs(
         if status:
             if status == "unprocessed":
                 query = query.where(Application.id.is_(None))
+            elif status == "not_on_board":
+                query = query.where(_not_on_board_cond())
             else:
                 query = query.where(Application.status == status)
                 
@@ -4183,6 +4210,8 @@ def api_jobs(
         if status:
             if status == "unprocessed":
                 count_query = count_query.select_from(Job).outerjoin(Application, Application.job_id == Job.id).where(Application.id.is_(None))
+            elif status == "not_on_board":
+                count_query = count_query.select_from(Job).outerjoin(Application, Application.job_id == Job.id).where(_not_on_board_cond())
             else:
                 count_query = count_query.select_from(Job).join(Application, Application.job_id == Job.id).where(Application.status == status)
         if min_score is not None:
@@ -4315,7 +4344,7 @@ def api_jobs(
              jscored_at, jprescored_at, jexpired_at,
              jeligibility, jeligibility_reason,
              app_id, app_status, app_track, app_created, app_updated,
-             app_tailored_at) = row
+             app_tailored_at, app_replaced) = row
             _posted = jposted_at or jfirst_seen
             _seen = _tz_naive(jfirst_seen or jdiscovered_at)
             jobs_list.append({
@@ -4360,6 +4389,7 @@ def api_jobs(
                     "updated_at": app_updated.isoformat() if app_updated else None,
                     "tailored_at": (app_tailored_at.isoformat()
                                     if app_tailored_at else None),
+                    "replaced": bool(app_replaced),
                 } if app_id is not None else None
             })
             
@@ -9418,7 +9448,9 @@ def _budget_diagnostic(uid: str) -> dict:
 
     from app.billing import entitlement_expired, is_paid_entitlement, stripe_enabled
     from app.db.models import PLAN_LIMITS
-    from app.matching.finals_budget import allowance, day_counts, delivered_today
+    from app.matching.finals_budget import (
+        allowance, day_counts, delivered_today, engaged_today, staged_ceiling,
+    )
     from app.strategy.scoring_lane import _stop_bucket
 
     out: dict = {"user": (uid or "")[:8], "generated_at": _dtd.utcnow().isoformat() + "Z"}
@@ -9470,6 +9502,8 @@ def _budget_diagnostic(uid: str) -> dict:
     out["limits"] = {
         "shortlist_daily": limits.get("shortlist_daily"),
         "finals_daily": limits.get("finals_daily"),
+        "finals_challenge_extra": limits.get("finals_challenge_extra"),
+        "finals_engaged_extra": limits.get("finals_engaged_extra"),
         "tailor_daily": limits.get("tailor_daily"),
     }
 
@@ -9493,11 +9527,26 @@ def _budget_diagnostic(uid: str) -> dict:
         "yield_continue_rate": settings.finals_yield_continue_rate,
     }
 
+    challenge_extra = int(limits.get("finals_challenge_extra") or 0)
+    engaged_extra = int(limits.get("finals_engaged_extra") or 0)
     try:
-        allow = allowance(uid, settings.scoring_per_user_cap, ceiling, target)
+        allow = allowance(uid, settings.scoring_per_user_cap, ceiling, target,
+                          challenge_extra=challenge_extra, engaged_extra=engaged_extra)
+        staged, stage = staged_ceiling(uid, ceiling, spent,
+                                       target > 0 and delivered >= target,
+                                       challenge_extra, engaged_extra)
     except Exception as e:
         out["allowance"] = {"error": type(e).__name__}
         return out
+    out["today"]["ceiling_now"] = staged
+    out["today"]["stage"] = stage
+    out["today"]["engaged"] = engaged_today(uid)
+    try:
+        from app.matching import tier1_budget
+        out["today"]["tier1_used"] = tier1_budget.used_today(uid)
+        out["today"]["tier1_cap"] = tier1_budget.daily_cap(uid)
+    except Exception as e:
+        out["today"]["tier1_error"] = type(e).__name__
     out["allowance"] = {
         "n": allow.n,
         "gate": allow.gate,
@@ -9524,11 +9573,11 @@ def _budget_diagnostic(uid: str) -> dict:
     out["challenge"] = {
         "enabled": bool(settings.slate_challenge_enabled),
         "slate_full": target > 0 and delivered >= target,
-        "budget_remaining": max(0, ceiling - spent) if ceiling > 0 else None,
+        "budget_remaining": max(0, staged - spent) if staged > 0 else None,
         "cutoff": cut,
         "available": bool(settings.slate_challenge_enabled
                           and target > 0 and delivered >= target
-                          and (ceiling <= 0 or spent < ceiling)),
+                          and (staged <= 0 or spent < staged)),
     }
     return out
 

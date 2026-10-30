@@ -1477,12 +1477,12 @@ class Reranker:
             ],
             response_format={"type": "json_object"},
         )
-        # NOT counted against the user's prescore allowance. A gpt-4o-mini
-        # prescore is ~$0.0002 — one user's whole daily Tier-1 volume (~110
-        # calls) is $0.65/MONTH, so a per-user cap here buys nothing and is
-        # exactly what turned a provider outage into a feed outage. The
-        # allowance exists for the ANTHROPIC fallback (~$0.00185, 9x), which
-        # still registers below. See docs/research/capacity-one-user-2026-08.md.
+        # NOT counted against the user's ANTHROPIC prescore allowance — that
+        # one exists for the ~9x pricier fallback, which registers below. It IS
+        # counted (in prescore(), before this call) against the provider-
+        # agnostic Tier-1 daily cap (app/matching/tier1_budget.py, 2,000/day):
+        # sized at ~1.3x the busiest measured day, so it bounds a runaway, not
+        # an ordinary day, and a capped job waits queued rather than failing.
         #
         # It IS metered: the audit's estimate was 83% prescore at a flat
         # $0.001 nobody had ever checked, and this response carries the
@@ -1542,7 +1542,11 @@ class Reranker:
         """Tier-1 cheap bulk score. Returns (score 0-100, reason), or None on
         failure. IMPORTANT: None means "couldn't decide" — the caller must NOT
         drop the job on None; it should advance it to Tier-2 (fail-open) so a
-        cheap-model hiccup never silently buries a good match."""
+        cheap-model hiccup never silently buries a good match.
+
+        Returns ``tier1_budget.TIER1_DEFERRED`` when the user's Tier-1 daily cap
+        is reached: neither a score nor fail-open — the caller leaves the job
+        queued, untouched, for tomorrow's cap."""
         # A hard rule rejection is authoritative and saves even the cheap call.
         pre = self._pre_filter_job(job)
         if pre is not None:
@@ -1557,6 +1561,14 @@ class Reranker:
         # explicitly. Deterministic, free, unfoolable — and it saves the call.
         if len((job.description or "").strip()) < 40:
             return 60.0, "no description"
+        # The user's Tier-1 daily cap (app/matching/tier1_budget.py), counted
+        # HERE because this is where a provider is about to be asked — the rule
+        # rejection and the empty-JD guard above cost nothing and are not
+        # counted. A refusal is TIER1_DEFERRED, never None: None means "advance
+        # to Tier-2", and a capped job must stay queued, not be bought a final.
+        from app.matching.tier1_budget import TIER1_DEFERRED, take as _take_tier1
+        if not _take_tier1(self._user_id):
+            return TIER1_DEFERRED
         prompt = _build_prescore_prompt(resume_text, job)
         for name, call_fn in self._prescore_backends():
             # Anthropic Tier-1 draws from the finals budget (see
