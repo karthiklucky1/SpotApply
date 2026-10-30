@@ -92,6 +92,51 @@ def test_shared_pool_close_stops_when_the_batch_budget_runs_out():
     assert closed == 4, "max_batches did not bound the pass"
 
 
+def test_shared_pool_close_walks_past_closed_rows_without_rereading_them():
+    """Production 2026-10-28..29: 4 of 5 runs hit the statement timeout because
+    every batch re-walked the rows already closed, and the last one walked the
+    whole closed band. Closed rows above open ones must cost one read each."""
+    with get_session() as s:
+        for i in range(4):   # newest old rows: already closed by board absence
+            j = _shared(f"gone{i}", days_old=46, closed=True)
+            j.closed_reason = "Removed from company greenhouse ATS"
+            s.add(j)
+        for i in range(3):   # deeper: still open
+            s.add(_shared(f"deep{i}", days_old=50 + i))
+        s.commit()
+
+    closed = close_stale_shared_jobs(days=45, batch=2, max_batches=10, pause_seconds=0)
+    assert closed == 3
+    with get_session() as s:
+        rows = s.exec(select(Job).where(Job.external_id.like(f"{_P}%"))).all()
+    assert all(j.is_closed for j in rows)
+    gone = [j for j in rows if "gone" in j.external_id]
+    assert all(j.closed_reason.startswith("Removed from company") for j in gone), (
+        "a row closed for another reason was re-stamped as retention")
+
+
+def test_shared_pool_close_keyset_survives_identical_first_seen():
+    """One shared upsert stamps a batch with the same timestamp; the keyset on
+    (first_seen, id) must not skip the rest of a tie group."""
+    stamp = datetime.utcnow() - timedelta(days=50)
+    with get_session() as s:
+        for i in range(5):
+            j = _shared(f"tie{i}", days_old=50)
+            j.first_seen = stamp
+            s.add(j)
+        s.commit()
+    assert close_stale_shared_jobs(days=45, batch=2, max_batches=10, pause_seconds=0) == 5
+
+
+def test_shared_pool_close_stops_on_its_time_budget():
+    with get_session() as s:
+        for i in range(6):
+            s.add(_shared(f"t{i}", days_old=60 + i))
+        s.commit()
+    # A spent budget still runs one chunk (progress every run), then stops.
+    assert close_stale_shared_jobs(days=45, batch=2, max_seconds=0, pause_seconds=0) == 2
+
+
 def test_a_disabled_window_closes_nothing():
     with get_session() as s:
         s.add(_shared("keep", days_old=999))
