@@ -269,7 +269,9 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
 
 
 def _user_queue(user_id: Optional[str], cap: int,
-                only_unprescored: bool = False) -> List[int]:
+                only_unprescored: bool = False,
+                only_prescored: bool = False,
+                min_prescore: Optional[float] = None) -> List[int]:
     """A user's queued (unscored) job ids, MOST PROMISING FIRST across the whole
     queue, cut to ``cap``.
 
@@ -317,6 +319,19 @@ def _user_queue(user_id: Optional[str], cap: int,
             # normal slice. Re-picking it here would just re-pay/re-write the
             # same number every 90s.
             q = q.where(Job.prescore == None)  # noqa: E711
+        if only_prescored:
+            # The user's Tier-1 cap is spent today (app/matching/tier1_budget.py):
+            # only jobs Tier-1 already judged can move. Selecting the others would
+            # re-ask a refused reservation per job per cycle for nothing.
+            q = q.where(Job.prescore != None)  # noqa: E711
+        if min_prescore is not None:
+            # Challenge mode (the board is full): a kept prescore below the
+            # challenger gate cannot win a slot, so its final is never bought —
+            # re-selecting it each cycle only loads the row to keep it waiting.
+            # With the staged ceiling a full board stays in this mode all
+            # evening. Unjudged rows still come through (unless Tier-1 is spent).
+            from sqlalchemy import or_ as _or_p
+            q = q.where(_or_p(Job.prescore.is_(None), Job.prescore >= float(min_prescore)))
         # A copy whose location is still unverified is held, not scored: it
         # would take a slot from a job we can actually deliver, and it is what
         # the pre-cycle verification sweep exists to resolve. NULL = a row from
@@ -560,6 +575,11 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             pre = (float(job.prescore), "kept prescore")
         if pre is None:
             pre = ctx.reranker.prescore(ctx.resume, job)
+        from app.matching.tier1_budget import TIER1_DEFERRED
+        if pre is TIER1_DEFERRED:
+            # The user's Tier-1 cap for today is spent. NOT fail-open: the job
+            # stays queued, unjudged, and no final is bought for it.
+            return None
         if pre is not None and pre[0] < ctx.gate:
             reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
             if _stamp_job(jid, ghost, float(pre[0]), reasoning, prescore=float(pre[0])):
@@ -711,6 +731,40 @@ def _plan_budget(uid: Optional[str]) -> tuple[Optional[int], int]:
         return fallback, target
 
 
+_EXTRAS_TTL = 60.0
+_extras_cache: dict = {}        # uid -> (monotonic, (challenge, engaged))
+
+
+def _plan_extras(uid: Optional[str]) -> Tuple[int, int]:
+    """(challenge extra, engaged extra) — how far the day's finals ceiling may
+    rise once the board is full (finals_budget.staged_ceiling).
+
+    Asked only for a user whose board is full (``_finals_allowance``), and
+    cached briefly: with Stripe on it is a subscription read, and the lanes
+    decide per user per cycle. An unresolvable plan gets NO extras — unlike
+    ``_plan_budget``'s widest-plan fallback, which exists so an outage never
+    starves the FILL stage. The extras are more money for a known plan; a
+    Free user must not reach 270 because billing blinked.
+    """
+    if not uid or uid == "local":
+        return 0, 0
+    now = time.monotonic()
+    hit = _extras_cache.get(uid)
+    if hit and now - hit[0] < _EXTRAS_TTL:
+        return hit[1]
+    try:
+        from app.api.server import _get_user_plan
+        from app.db.models import PLAN_LIMITS
+        limits = PLAN_LIMITS[_get_user_plan(uid)]
+        out = (int(limits.get("finals_challenge_extra") or 0),
+               int(limits.get("finals_engaged_extra") or 0))
+    except Exception as e:
+        log.debug("plan extras lookup failed for %s (%s) — no extras", uid, e)
+        return 0, 0
+    _extras_cache[uid] = (now, out)
+    return out
+
+
 def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
     """How many jobs of ``uid``'s queue this cycle may take, and how promising a
     candidate must be to earn a final.
@@ -726,13 +780,22 @@ def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
     ceiling, target = _plan_budget(uid)
     if ceiling is None and target <= 0:
         return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
-    allow = allowance(uid, per_cycle_cap, int(ceiling or 0), target)
+    challenge_extra = engaged_extra = 0
+    if target > 0 and settings.slate_challenge_enabled:
+        # The extras only exist on a full board; delivered_today is the cached
+        # count allowance() is about to read anyway.
+        from app.matching import finals_budget as _fb
+        if _fb.delivered_today(uid) >= target:
+            challenge_extra, engaged_extra = _plan_extras(uid)
+    allow = allowance(uid, per_cycle_cap, int(ceiling or 0), target,
+                      challenge_extra=challenge_extra, engaged_extra=engaged_extra)
     # Every queue item costs a Tier-1 prescore before it can become a final, so
     # the slice is also bounded by the user's ANTHROPIC prescore allowance.
     # Prescores are counted separately from finals on purpose — see
     # reranker._user_prescores: charging a Haiku prescore as a final spent a PRO
     # user's whole day within 15 minutes of 00:00 UTC while OpenAI was out of
-    # credits. OpenAI prescores are not counted at all ($0.0002 each).
+    # credits. OpenAI prescores are not counted here; every provider's are,
+    # per call, against the Tier-1 daily cap (app/matching/tier1_budget.py).
     mult = int(getattr(settings, "prescore_budget_multiplier", 10) or 0)
     if mult > 0 and ceiling:
         from app.matching.reranker import user_prescores_today
@@ -1544,6 +1607,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         users = boosted + [u for u in users if u not in boosted]
         stats["boosted_users"] = len(boosted)
 
+    from app.matching import tier1_budget
     queues: List[List[Tuple[Optional[str], int]]] = []
     capped_out = 0      # stopped short: cost ceiling, collapsed yield, prescore allowance
     delivered_out = 0   # finished: the day's promised jobs are already on the board
@@ -1596,7 +1660,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             # allowance is the exhausted one — that path is metered.
             if (settings.scoring_drain_cap > 0
                     and settings.prescore_enabled
-                    and allow.reason != "anthropic prescore allowance"):
+                    and allow.reason != "anthropic prescore allowance"
+                    and not tier1_budget.exhausted(uid)):
                 dq = [(uid, jid) for jid in _user_queue(
                     uid, settings.scoring_drain_cap, only_unprescored=True)]
                 if dq:
@@ -1605,7 +1670,13 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
                     queues.append(dq)
             continue
         gate_by_user[uid] = allow.gate
-        q = [(uid, jid) for jid in _user_queue(uid, allow.n)]
+        _t1_spent = tier1_budget.exhausted(uid)
+        if _t1_spent:
+            stats["tier1_capped_users"] = stats.get("tier1_capped_users", 0) + 1
+        from app.matching.finals_budget import normal_gate as _normal_gate
+        _min_pre = allow.gate if (allow.target_met and allow.gate > _normal_gate()) else None
+        q = [(uid, jid) for jid in _user_queue(uid, allow.n, only_prescored=_t1_spent,
+                                               min_prescore=_min_pre)]
         if q:
             queues.append(q)
     if capped_out:

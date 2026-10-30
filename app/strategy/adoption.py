@@ -649,6 +649,14 @@ def seed_new_user(user_id: str | None) -> int:
     from app.strategy.welcome import begin as _begin_welcome
     from app.strategy import welcome as _welcome_mod
     _begin_welcome(user_id, "resume or roles saved")
+    # A setup day adopts a 14-day catch-up window, so it gets the higher Tier-1
+    # cap until 00:00 UTC (app/matching/tier1_budget.py). Measured 2026-10-30:
+    # one first day copied 7,200 jobs and needed ~4,200 Tier-1 looks.
+    try:
+        from app.matching.tier1_budget import mark_setup_day
+        mark_setup_day(user_id)
+    except Exception as e:
+        log.debug("onboarding: Tier-1 setup day not recorded for %s: %s", user_id or "local", e)
     # An explicit save (roles, or a widened search) may re-run the first
     # results even inside the same window: the user just changed what to find.
     _welcome_mod._FIRST_DONE.pop(user_id, None)

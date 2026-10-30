@@ -332,11 +332,23 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (guard: test_delivery_race). A challenger beating the cutoff by `slate_displace_margin`
   (5) replaces the weakest **replaceable** entry = SHORTLISTED, delivered today,
   `viewed_at IS NULL`; anything opened/tailored/applied/dismissed is permanent.
-  If nothing is replaceable, `slate_overflow_margin` (15) delivers it anyway, up
-  to `slate_overflow_daily` (5). Challenge spend is bounded by what is LEFT of
-  `finals_daily` — no second counter. `SLATE_CHALLENGE_ENABLED=0` restores the
-  old stop. Remaining stops: spent ≥ `finals_daily` (Free 120 / Pro 250 — the
-  cost ceiling); yield collapsed. **MEASURED over six days
+  **Replace only** since 2026-10-30 (`slate_overflow_daily` 0; 5 restores
+  overflow at `slate_overflow_margin` 15): a challenger that can't take a slot,
+  and the entry one replaced (`SLATE_CHALLENGER_NOTE`), stay in All Jobs under
+  "Strong match · not on board" (`/api/jobs?status=not_on_board`).
+  **The ceiling is STAGED** (`finals_budget.staged_ceiling`, one counter): Pro
+  250 fills the board and pays for replacements; it rises to **400, the max**,
+  only once the board is full AND the user tailored/submitted
+  `finals_engaged_min_jobs` (2; founder "2-5") jobs today (`finals_engaged_extra`
+  150, read lazily; `finals_challenge_extra` 0). Free's extras are 0. A board
+  that never fills stops at `finals_daily`. **Tier-1 has its own cap**
+  (`matching/tier1_budget.py`): 2,000 real calls/user/day, 5,000 on a setup day
+  (`seed_new_user`); a capped call is `TIER1_DEFERRED` — NEVER `None` (fail-open
+  to Tier-2) — and the job stays queued, kept prescores still get finals.
+  `USER_DAILY_PAID_CALL_CAP` (all calls) is 7,000 — at 2,000 it was the real
+  limit (guard: `test_tier1_budget`, `test_staged_budget`).
+  `SLATE_CHALLENGE_ENABLED=0` restores the old stop, extras included. Remaining
+  stops: spent ≥ the staged ceiling; yield collapsed. **MEASURED over six days
   2026-09-05..11** (supersedes the 5-hour sample that claimed 6.5): hit rate
   held at **15.2%** (738 finals → 112 shortlists) but **finals per delivered job
   was 15.6** for the user who hit the ceiling — 2.4x the design number, because

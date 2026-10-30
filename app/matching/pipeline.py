@@ -1215,6 +1215,19 @@ def run_matching(user_id: str | None = None) -> List[int]:
             and reranker.has_prescore_backend()
             and not llm_budget_exhausted()):
         prescore_pool = to_rerank[: settings.prescore_cap]
+        from app.matching import tier1_budget as _t1
+        if _t1.exhausted(user_id) and prescore_pool:
+            # Tier-1 cap spent today: only jobs that already carry a kept
+            # prescore can move. One projected query instead of a full-row load
+            # per candidate that would only come back TIER1_DEFERRED.
+            with get_session() as s:
+                _kept = {r if not isinstance(r, tuple) else r[0] for r in s.exec(
+                    select(Job.id).where(Job.id.in_([j for j, _ in prescore_pool]),
+                                         Job.prescore.is_not(None))).all()}
+            log.info("Cascade Tier-1: daily cap spent — %d of %d candidate(s) "
+                     "carry a kept prescore; the rest stay Queued",
+                     len(_kept), len(prescore_pool))
+            prescore_pool = [it for it in prescore_pool if it[0] in _kept]
         log.info("Cascade Tier-1: prescoring %d candidate(s) (gate=%d)",
                  len(prescore_pool), advance_gate)
 
@@ -1240,14 +1253,21 @@ def run_matching(user_id: str | None = None) -> List[int]:
 
         with ThreadPoolExecutor(max_workers=settings.prescore_workers) as ex:
             _pre_by_jid = dict(ex.map(_prescore_one, prescore_pool))
+        # The user's Tier-1 cap for today ran out (app/matching/tier1_budget.py):
+        # those jobs stay Queued, unjudged — neither advanced (that is fail-open,
+        # a final bought blind) nor stamped.
+        from app.matching.tier1_budget import TIER1_DEFERRED
+        _deferred_t1 = {jid for jid, pr in _pre_by_jid.items() if pr is TIER1_DEFERRED}
         # Keep every Tier-1 score, not just the rejects'. An advanced job's
         # prescore used to be dropped on the floor, which is exactly the pairing
         # needed to answer "is a stricter gate safe?".
         prescore_by_jid = {jid: float(pr[0]) for jid, pr in _pre_by_jid.items()
-                           if pr is not None}
+                           if pr is not None and jid not in _deferred_t1}
 
         advanced: list[tuple[int, float]] = []
         for jid, sim in prescore_pool:  # preserve fresh-first order
+            if jid in _deferred_t1:
+                continue                # Tier-1 cap: stays Queued for tomorrow
             pr = _pre_by_jid.get(jid)
             if pr is None:              # cheap-model failure → fail-open to Claude
                 advanced.append((jid, sim))
@@ -1262,9 +1282,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
             else:
                 prescore_rejects.append((jid, pr[0], pr[1]))
         log.info("Cascade Tier-1: %d advanced to Claude, %d drained (below %d), "
-                 "%d kept for the soft budget (below %d)",
+                 "%d kept for the soft budget (below %d), %d left queued (Tier-1 "
+                 "daily cap)",
                  len(advanced), len(prescore_rejects), drain_gate,
-                 len(prescore_kept), advance_gate)
+                 len(prescore_kept), advance_gate, len(_deferred_t1))
         to_rerank = advanced
 
     # ── Cascade Tier-2: Claude (authoritative) score, capped by the smaller of

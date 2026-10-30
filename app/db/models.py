@@ -614,14 +614,32 @@ PLAN_LIMITS = {
     #                    stop can fire; neither is a failure. Raising this is
     #                    cheap, but shortlist_daily caps what is SHOWN, so
     #                    raising one without the other changes nothing.
+    #   finals_challenge_extra / finals_engaged_extra  the STAGED ceiling
+    #                    (founder 2026-10-30, finals_budget.staged_ceiling).
+    #                    finals_daily is the FILL stage, and Pro's 250 also pays
+    #                    for replacing unopened jobs once the board is full. The
+    #                    ONLY way past it is the engaged extra: once the board is
+    #                    full AND the user has tailored or applied to
+    #                    `finals_engaged_min_jobs` (2) jobs today, Pro rises
+    #                    250 -> 400 — the hard maximum (founder: "no more than
+    #                    400"). Production 2026-10-30: the board filled by 15:30
+    #                    UTC, the 250 were gone, and 121 fresh jobs that had
+    #                    passed Tier-1 waited for tomorrow. Measured
+    #                    $0.00336/final: 400 is $1.34/day of finals. Free stays
+    #                    at its old ceiling. A challenge extra (an increase with
+    #                    no engagement asked) is supported but set to 0.
     PlanTier.FREE:   {"shortlist_daily": 20, "tailor_daily": 5,
-                      "autofill_weekly": 2,    "finals_daily": 120},
+                      "autofill_weekly": 2,    "finals_daily": 120,
+                      "finals_challenge_extra": 0, "finals_engaged_extra": 0},
     PlanTier.PRO:    {"shortlist_daily": 35, "tailor_daily": 35,
-                      "autofill_weekly": None, "finals_daily": 250},
+                      "autofill_weekly": None, "finals_daily": 250,
+                      "finals_challenge_extra": 0, "finals_engaged_extra": 150},
     PlanTier.BASIC:  {"shortlist_daily": 35, "tailor_daily": 35,
-                      "autofill_weekly": None, "finals_daily": 250},    # legacy -> PRO
+                      "autofill_weekly": None, "finals_daily": 250,
+                      "finals_challenge_extra": 0, "finals_engaged_extra": 150},    # legacy -> PRO
     PlanTier.AGENCY: {"shortlist_daily": 35, "tailor_daily": 35,
-                      "autofill_weekly": None, "finals_daily": 250},   # legacy -> PRO
+                      "autofill_weekly": None, "finals_daily": 250,
+                      "finals_challenge_extra": 0, "finals_engaged_extra": 150},   # legacy -> PRO
 }
 
 # USD per month. ONE paid plan: Pro, monthly, cancel any time (2026-09 launch

@@ -496,6 +496,14 @@ def _fast_path_user(uid: str, score_budget: int,
     # promise bar. Taking only the slice size would let burst money be spent
     # here under the everyday gate, which is exactly the spend the adaptive
     # budget's Test A exists to prevent (app/matching/finals_budget.py).
+    if settings.prescore_enabled:
+        # Every row this path selects is unprescored, so each would need a
+        # Tier-1 call; a user whose Tier-1 cap is spent today has nothing to do
+        # here (app/matching/tier1_budget.py — an in-process answer, no query),
+        # and the allowance below would read the board for nothing.
+        from app.matching import tier1_budget
+        if tier1_budget.exhausted(uid):
+            return 0, 0, 0
     allow = _finals_allowance(uid, score_budget)
     score_budget = allow.n
     if score_budget <= 0:
@@ -652,6 +660,12 @@ def _fast_path_user(uid: str, score_budget: int,
                     pre = (float(job.prescore), "kept prescore")
                 else:
                     pre = reranker.prescore(resume, job)
+                from app.matching.tier1_budget import TIER1_DEFERRED
+                if pre is TIER1_DEFERRED:
+                    # Tier-1 cap for today is spent: the new job stays Queued
+                    # unjudged (never fail-open to a final), and so does the
+                    # rest of this user's batch.
+                    break
                 if pre is not None:
                     prescore_val = float(pre[0])
                 if pre is not None and pre[0] < gate:

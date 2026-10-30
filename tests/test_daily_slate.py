@@ -160,9 +160,25 @@ def test_tailored_and_beyond_are_never_replaced():
 
 # ── When nothing is replaceable ──────────────────────────────────────────────
 
+def test_the_default_is_replace_only(monkeypatch):
+    """Founder 2026-10-30: a later job may REPLACE an unopened entry, never grow
+    the day past the plan. With every entry opened, even a 95 is not delivered —
+    it keeps its score and stays in All Jobs ("Strong match · not on board")."""
+    assert settings.slate_overflow_daily == 0
+    _fill([71, 72, 72, 73, 90], viewed=True)
+    with get_session() as s:
+        j = _job(s, "replaceonly", 95)
+        res = slate.place(s, j, 95, user_id=UID)
+        s.commit()
+    assert not res.created and res.outcome == "below_cutoff"
+    assert len(_slate_scores()) == CAP
+
+
 def test_an_exceptional_job_overflows_a_fully_read_slate(monkeypatch):
-    """Every entry has been opened. A user who has read all of today's jobs and
-    is still looking should not be denied the best one of the day."""
+    """Every entry has been opened. With overflow switched ON (the pre-10-30
+    behaviour, SLATE_OVERFLOW_DAILY=5), a user who has read all of today's jobs
+    and is still looking is not denied the best one of the day."""
+    monkeypatch.setattr(settings, "slate_overflow_daily", 5)
     _fill([71, 72, 72, 73, 90], viewed=True)
     with get_session() as s:
         j = _job(s, "overflow", 90)
@@ -172,7 +188,8 @@ def test_an_exceptional_job_overflows_a_fully_read_slate(monkeypatch):
     assert len(_slate_scores()) == CAP + 1
 
 
-def test_overflow_needs_a_much_bigger_margin_than_replacement():
+def test_overflow_needs_a_much_bigger_margin_than_replacement(monkeypatch):
+    monkeypatch.setattr(settings, "slate_overflow_daily", 5)
     _fill([71, 72, 72, 73, 90], viewed=True)
     with get_session() as s:
         j = _job(s, "notenough", 80)      # beats 71 by 9: enough to replace, not to overflow
