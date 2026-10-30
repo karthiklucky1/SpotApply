@@ -164,6 +164,25 @@ def test_the_matching_lane_consults_the_finals_allowance():
     )
 
 
+def test_the_matching_lane_skips_the_paid_cascade_for_a_search_that_cannot_spend():
+    """2026-10-30: an idle account's 15 candidates went through the cascade
+    every ~20 s for 14 hours — Tier-1 refused (None = fail-open, "advanced"),
+    Tier-2 refused all 15. The lane must ask the compute policy ONCE, before
+    Tier-1, and leave the jobs Queued. Source-level for the same reason as
+    above (the pass needs FAISS + the ML stack)."""
+    import ast
+    import inspect
+    from app.matching import pipeline
+
+    src = inspect.getsource(pipeline.run_matching)
+    fn = ast.parse(src).body[0]
+    calls = {n.func.id for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "paid_ai_allowed" in calls
+    assert src.index("paid_ai_allowed(user_id)") < src.index("Cascade Tier-1: prescoring"), (
+        "the spend check must come before Tier-1, or every pass still runs it")
+
+
 def test_prescores_cut_by_the_tier2_cap_are_kept_not_thrown_away():
     """WHERE THE QUEUE'S RANKING ACTUALLY COMES FROM, and it used to be dropped.
 

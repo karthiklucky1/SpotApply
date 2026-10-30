@@ -79,8 +79,10 @@ def close_stale_user_jobs(days: int = 7, batch: int = 2000, max_batches: int = 1
     return closed
 
 
-def close_stale_shared_jobs(days: int = 45, batch: int = 2000, max_batches: int = 200) -> int:
-    """Age-close shared-pool rows, in bounded batches.
+def close_stale_shared_jobs(days: int = 45, batch: int = 5000, max_batches: int = 200,
+                            max_seconds: float = 300.0, statement_seconds: int = 30,
+                            pause_seconds: float = 0.2) -> int:
+    """Age-close shared-pool rows, reading each old row ONCE per run.
 
     This was one unbounded ``UPDATE job SET is_closed = true WHERE user_id =
     '__shared__' AND first_seen < cutoff`` written inline in the maintenance
@@ -90,45 +92,84 @@ def close_stale_shared_jobs(days: int = 45, batch: int = 2000, max_batches: int 
     never purged either, and the table (and every scan's egress) grew without
     bound while the job reported itself as merely "failed".
 
-    The per-user close beside it has been batched since it shipped. This is the
-    same shape: select a page of ids, update exactly those, commit, repeat —
-    so no single statement can outrun the timeout, and a run that dies halfway
-    has still closed everything it touched.
+    The first fix batched it (select open ids LIMIT n, update, repeat) and it
+    still failed on 4 of 5 runs 2026-10-28..29. ``is_closed`` is not in
+    ``ix_job_user_firstseen``, so every batch re-walked the rows the batches
+    before it had just closed, and the LAST batch — the one that proves nothing
+    is left — walked the whole closed band between this cutoff and the 60-day
+    purge (~340k rows, a heap fetch each) inside one statement.
+
+    Now it is a keyset walk down ``(first_seen, id)`` from the cutoff: each
+    statement reads the next ``batch`` rows whatever their state, closes the
+    open ones among them, and moves on, so no row is read twice and no
+    statement reads more than ``batch`` rows (2.4 s per 5,000 cold, measured).
+    Each statement has its own ceiling and the run its own budget; what one
+    chunk committed stays committed, and the walk covers the whole band each
+    run, so a posting reopened below the cutoff is still found.
     """
+    import time as _time
+
+    from sqlalchemy import or_
+
     from app.db.init_db import get_session
     from app.db.models import Job
     from app.discovery.pipeline import SHARED_POOL_USER
+    from app.strategy.scoring_lane import _arm_statement_timeout, _is_statement_timeout
 
     if days <= 0:
         return 0
     cutoff = datetime.utcnow() - timedelta(days=days)
-    closed = 0
-    for _ in range(max_batches):
-        with get_session() as session:
-            ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
-                select(Job.id)
-                .where(
+    started = _time.monotonic()
+    closed = read = 0
+    cursor = None              # (first_seen, id) of the last row read
+    stopped = "complete"
+    for n in range(max_batches):
+        if n and _time.monotonic() - started >= max_seconds:
+            stopped = "budget"
+            break
+        try:
+            with get_session() as session:
+                _arm_statement_timeout(session, statement_seconds)
+                q = select(Job.id, Job.first_seen, Job.is_closed).where(
                     Job.user_id == SHARED_POOL_USER,
-                    Job.is_closed == False,          # noqa: E712
                     Job.first_seen < cutoff,
                 )
-                .limit(batch)
-            ).all()]
-            if not ids:
-                break
-            session.exec(
-                update(Job)
-                .where(Job.id.in_(ids))
-                .values(is_closed=True,
-                        closed_reason=f"shared-pool retention ({days}d)")
-            )
-            session.commit()
-            closed += len(ids)
-        if len(ids) < batch:
+                if cursor is not None:
+                    fs, last_id = cursor
+                    q = q.where(Job.first_seen <= fs,
+                                or_(Job.first_seen < fs, Job.id < last_id))
+                rows = session.exec(
+                    q.order_by(Job.first_seen.desc(), Job.id.desc()).limit(batch)
+                ).all()
+                if not rows:
+                    break
+                open_ids = [r[0] for r in rows if not r[2]]
+                if open_ids:
+                    session.exec(
+                        update(Job)
+                        .where(Job.id.in_(open_ids),
+                               Job.is_closed == False)  # noqa: E712 — closed meanwhile keeps its reason
+                        .values(is_closed=True,
+                                closed_reason=f"shared-pool retention ({days}d)")
+                    )
+                session.commit()
+        except Exception as e:
+            stopped = "statement_timeout" if _is_statement_timeout(e) else "error"
+            log.warning("Job retention: shared-pool close stopped (%s) after %d read, %d closed: %s",
+                        stopped, read, closed, type(e).__name__)
             break
-    if closed:
-        log.info("Job retention: closed %d stale shared-pool posting(s) older than %dd",
-                 closed, days)
+        read += len(rows)
+        closed += len(open_ids)
+        cursor = (rows[-1][1], rows[-1][0])
+        if len(rows) < batch:
+            break
+        if pause_seconds > 0:
+            _time.sleep(pause_seconds)
+    else:
+        stopped = "max_batches"
+    log.info("Job retention: closed %d stale shared-pool posting(s) older than %dd "
+             "(%d read, %s, %.0fs)", closed, days, read, stopped,
+             _time.monotonic() - started)
     return closed
 
 
