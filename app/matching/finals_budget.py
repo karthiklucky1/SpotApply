@@ -113,11 +113,13 @@ log = logging.getLogger(__name__)
 _day_cache: dict = {}
 _delivered_cache: dict = {}     # user_id -> {"day": date, "n": int, "at": monotonic}
 _engaged_cache: dict = {}       # user_id -> {"day": date, "n": int, "at": monotonic}
+_gate_cache: dict = {}          # user_id -> {"day": date, "gate": int, "at": monotonic}
 _lock = threading.Lock()
 
 _DAY_CACHE_TTL = 30.0           # seconds
 _DELIVERED_TTL = 20.0           # shorter: this one decides when to STOP
 _ENGAGED_TTL = 60.0             # only read once a day's challenge stage is spent
+_GATE_TTL = 20.0                # slate.cutoff reads every board entry; place() drops it
 
 
 def _utc_now() -> datetime:
@@ -479,15 +481,38 @@ def challenger_gate(user_id: Optional[str]) -> int:
     authoritative score is in hand.
 
     Floors at the shortlist bar: below it nothing can be delivered at all.
+
+    CACHED per user for ``_GATE_TTL``, and dropped by ``slate.place()`` whenever
+    the board changes (``forget_gate``). ``slate.cutoff`` reads every entry on
+    today's board, and with the staged ceiling a full board stays in challenge
+    mode for the rest of the day — every lane decision for that user, all
+    evening, used to repeat it.
     """
     floor = int(settings.shortlist_score_threshold)
+    key = user_id or "__anon__"
+    day = _utc_day()
+    now = time.monotonic()
+    with _lock:
+        g = _gate_cache.get(key)
+        if g and g["day"] == day and (now - g["at"]) < _GATE_TTL:
+            return g["gate"]
     try:
         from app.strategy.slate import cutoff as _slate_cutoff
         c = _slate_cutoff(user_id)
     except Exception as e:                                  # pragma: no cover
         log.debug("challenger gate fell back to the shortlist bar for %s: %s", user_id, e)
-        c = None
-    return floor if c is None else int(max(floor, c))
+        return floor                    # not cached: the next call retries
+    gate = floor if c is None else int(max(floor, c))
+    with _lock:
+        _gate_cache[key] = {"day": day, "gate": gate, "at": now}
+    return gate
+
+
+def forget_gate(user_id: Optional[str]) -> None:
+    """The board just changed (a placement or a replacement): the next
+    challenger_gate() must read the new cutoff, not a cached one."""
+    with _lock:
+        _gate_cache.pop(user_id or "__anon__", None)
 
 
 def allowance(user_id: Optional[str], per_cycle_cap: int,
@@ -560,3 +585,4 @@ def reset_state() -> None:
         _day_cache.clear()
         _delivered_cache.clear()
         _engaged_cache.clear()
+        _gate_cache.clear()

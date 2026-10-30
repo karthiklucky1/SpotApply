@@ -1561,15 +1561,19 @@ class Reranker:
         # explicitly. Deterministic, free, unfoolable — and it saves the call.
         if len((job.description or "").strip()) < 40:
             return 60.0, "no description"
-        # The user's Tier-1 daily cap (app/matching/tier1_budget.py), counted
-        # HERE because this is where a provider is about to be asked — the rule
-        # rejection and the empty-JD guard above cost nothing and are not
-        # counted. A refusal is TIER1_DEFERRED, never None: None means "advance
-        # to Tier-2", and a capped job must stay queued, not be bought a final.
-        from app.matching.tier1_budget import TIER1_DEFERRED, take as _take_tier1
-        if not _take_tier1(self._user_id):
+        # The user's Tier-1 daily cap (app/matching/tier1_budget.py). A refusal
+        # is TIER1_DEFERRED, never None: None means "advance to Tier-2", and a
+        # capped job must stay queued, not be bought a final. The free check
+        # comes first; the unit itself is taken only once a provider is really
+        # about to be asked (below) — a provider cooldown, the platform cap or
+        # an idle search must not spend a user's day of Tier-1 on no calls.
+        from app.matching.tier1_budget import (
+            TIER1_DEFERRED, exhausted as _tier1_spent, take as _take_tier1,
+        )
+        if _tier1_spent(self._user_id):
             return TIER1_DEFERRED
         prompt = _build_prescore_prompt(resume_text, job)
+        counted = False
         for name, call_fn in self._prescore_backends():
             # Anthropic Tier-1 draws from the finals budget (see
             # _prescore_anthropic) — past the cap, don't call it. Fail-open:
@@ -1578,6 +1582,10 @@ class Reranker:
                 continue
             if not self._paid_call_allowed():
                 return None             # fail-open to Tier-2, which refuses the same way
+            if not counted:             # one unit per job, a fallback provider included
+                if not _take_tier1(self._user_id):
+                    return TIER1_DEFERRED
+                counted = True
             try:
                 call = _as_call(call_fn(prompt), self._prescore_model_for(name))
                 _note_provider_ok(name)

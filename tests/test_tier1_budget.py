@@ -153,6 +153,34 @@ def test_a_capped_prescore_is_deferred_not_fail_open(monkeypatch):
     assert len(calls) == 1, "a refused Tier-1 must not reach a provider"
 
 
+def test_no_unit_is_spent_when_no_provider_can_be_asked(monkeypatch):
+    """A provider cooldown, the platform budget or an idle search must not
+    spend the user's Tier-1 day on calls that never happen — the outage would
+    outlive itself as a feed outage until 00:00 UTC."""
+    uid = _P + "cool"
+    calls: list = []
+    rk = _reranker(uid, calls)
+    rk._prescore_backends = lambda: iter([])                 # every provider cooling down
+    assert rk.prescore("resume", _job_obj()) is None          # fail-open, as before
+    rk = _reranker(uid, calls)
+    rk._paid_call_allowed = lambda: False                     # platform cap / idle search
+    assert rk.prescore("resume", _job_obj()) is None
+    assert calls == [] and t1.used_today(uid) is None
+
+
+def test_a_fallback_provider_does_not_count_twice(monkeypatch):
+    uid = _P + "fallback"
+    rk = _reranker(uid, [])
+
+    def _fail(prompt):
+        raise RuntimeError("timeout")
+    rk._prescore_backends = lambda: iter([
+        ("openai", _fail), ("anthropic", lambda prompt: '{"score": 66, "reason": "ok"}')])
+    monkeypatch.setattr(settings, "llm_daily_final_cap", 0)
+    assert rk.prescore("resume", _job_obj())[0] == 66.0
+    assert t1.used_today(uid) == 1
+
+
 def test_free_verdicts_are_not_counted(monkeypatch):
     """The rule pre-filter and the empty-JD guard ask no provider."""
     calls: list = []
@@ -219,8 +247,16 @@ def test_the_cycle_asks_for_kept_prescores_and_no_drain_for_a_capped_user(monkey
     monkeypatch.setattr(sl, "_finals_allowance",
                         lambda u, cap: fb.Allowance(40, 40, "delivering 0/35"))
     stats = sl._run_scoring_cycle(None)
-    assert asked == [{"only_prescored": True}]
+    assert [kw["only_prescored"] for kw in asked] == [True]
+    assert asked[0]["min_prescore"] is None, "a filling board takes any promise"
     assert stats.get("tier1_capped_users") == 1
+
+    # Board full: only kept prescores that can beat the challenger gate.
+    asked.clear()
+    monkeypatch.setattr(sl, "_finals_allowance", lambda u, cap: fb.Allowance(
+        40, 82, "slate full at 35/35", target_met=True))
+    sl._run_scoring_cycle(None)
+    assert asked and asked[0]["min_prescore"] == 82
 
     asked.clear()
     monkeypatch.setattr(settings, "scoring_drain_cap", 20)
@@ -237,17 +273,27 @@ def test_pulse_fast_path_skips_a_capped_user_before_reading_rows(monkeypatch):
     _seed(uid, "pulse")
     monkeypatch.setattr("app.matching.pipeline._load_resume", lambda user_id=None: "resume")
 
-    made: list = []
+    asked: list = []
+    real_allowance = sl._finals_allowance
+
+    def _allow(u, cap):
+        asked.append(u)
+        return real_allowance(u, cap)
+    monkeypatch.setattr(sl, "_finals_allowance", _allow)
 
     class _Fake(_DeferringReranker):
         def __init__(self, profile=None, feedback=""):
             super().__init__()
-            made.append(self)
     monkeypatch.setattr("app.matching.reranker.Reranker", _Fake)
     monkeypatch.setattr(t1, "exhausted", lambda u: u == uid)
     assert pl._fast_path_user(uid, score_budget=10) == (0, 0, 0)
-    assert made, "the fast path returned before the Tier-1 check — this test proves nothing"
-    assert made[0].prescore_calls == 0
+    assert asked == [], "the allowance (a board read) was computed for a Tier-1-capped user"
+
+    # Not capped: the same call does reach the allowance, so the check above
+    # is what returned — not some earlier gate.
+    monkeypatch.setattr(t1, "exhausted", lambda u: False)
+    pl._fast_path_user(uid, score_budget=10)
+    assert asked == [uid]
 
 
 def test_pulse_fast_path_stops_at_a_deferred_prescore(monkeypatch):
@@ -288,6 +334,10 @@ def test_matching_lane_neither_advances_nor_stamps_a_deferred_job():
     i_open = src.index("if pr is None:              # cheap-model failure")
     assert i_def < i_open, "a deferred job must be skipped before fail-open can advance it"
     assert "jid not in _deferred_t1" in src, "a deferred job must not enter the promise map"
+    i_cap = src.index("_t1.exhausted(user_id)")
+    i_pool = src.index("ex.map(_prescore_one, prescore_pool)")
+    assert i_cap < i_pool, ("a capped user's pool must be cut to kept prescores BEFORE "
+                            "each candidate is loaded for a Tier-1 call")
 
 
 def test_a_setup_day_is_marked_by_seed_new_user():

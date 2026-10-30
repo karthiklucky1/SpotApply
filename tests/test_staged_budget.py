@@ -37,10 +37,12 @@ UID = "stg_user"
 @pytest.fixture(autouse=True)
 def _clean_state():
     fb.reset_state()
+    sl._extras_cache.clear()
     _clean()
     yield
     _clean()
     fb.reset_state()
+    sl._extras_cache.clear()
 
 
 def _clean():
@@ -178,14 +180,45 @@ def test_the_lane_passes_the_plans_extras(monkeypatch):
     assert sl._finals_allowance(UID, 40).n == 0
 
 
-def test_the_plan_extras_fall_back_to_the_widest_plan(monkeypatch):
+def test_an_unresolvable_plan_gets_no_extras(monkeypatch):
+    """Unlike the FILL ceiling (widest-plan fallback, so an outage never starves
+    a paying user), the extras are more money for a KNOWN plan: a Free user
+    must not climb to 270 because billing blinked."""
     import app.api.server as server
 
     def _down(uid):
         raise RuntimeError("billing unavailable")
     monkeypatch.setattr(server, "_get_user_plan", _down)
-    assert sl._plan_extras(UID) == (150, 100)
+    assert sl._plan_extras(UID) == (0, 0)
     assert sl._plan_extras("local") == (0, 0)
+
+
+def test_the_extras_are_only_looked_up_for_a_full_board(monkeypatch):
+    """A plan lookup is a subscription read with Stripe on; a filling board
+    cannot use the extras, so it must not pay for them."""
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (250, 35))
+    monkeypatch.setattr(settings, "prescore_budget_multiplier", 0)
+
+    def _boom(uid):
+        raise AssertionError("extras read for a board that is still filling")
+    monkeypatch.setattr(sl, "_plan_extras", _boom)
+    _day(monkeypatch, delivered=10, spent=100)
+    assert sl._finals_allowance(UID, 40).n == 40
+
+
+def test_the_challenger_gate_is_cached_and_a_placement_drops_it(monkeypatch):
+    """slate.cutoff reads every board entry; a full board stays in challenge
+    mode all evening, so every lane decision used to repeat that read."""
+    calls: list = []
+
+    def _cutoff(uid, session=None):
+        calls.append(uid)
+        return 81.0
+    monkeypatch.setattr(slate, "cutoff", _cutoff)
+    assert fb.challenger_gate(UID) == 81 and fb.challenger_gate(UID) == 81
+    assert len(calls) == 1
+    fb.forget_gate(UID)
+    assert fb.challenger_gate(UID) == 81 and len(calls) == 2
 
 
 # ── engaged_today reads what only a person writes ────────────────────────────
@@ -285,3 +318,22 @@ def test_all_jobs_lists_strong_matches_that_are_not_on_the_board():
     rows = {j["title"].rsplit(" ", 1)[-1]: j for j in r.json()["jobs"]}
     assert rows["onboard"]["application"]["replaced"] is False
     assert rows["dupe"]["application"]["replaced"] is False
+
+
+def test_a_full_board_queues_only_jobs_that_can_beat_the_gate():
+    """A kept prescore below the challenger gate is never bought a final, so
+    re-selecting it every 90 s cycle only re-loads the row — all evening, now
+    that a full board stays in challenge mode until 00:00 UTC."""
+    def _row(ext, prescore):
+        with get_session() as s:
+            j = Job(user_id=UID, source=JobSource.GREENHOUSE, external_id=_P + ext,
+                    company=f"Co-{ext}", title="zzstaged Engineer", url=f"https://x/{_P}{ext}",
+                    description="d", prescore=prescore, first_seen=datetime.utcnow())
+            s.add(j)
+            s.commit()
+            s.refresh(j)
+            return j.id
+    low, high, unknown = _row("low", 60.0), _row("high", 85.0), _row("unk", None)
+    assert set(sl._user_queue(UID, 10)) == {low, high, unknown}
+    assert set(sl._user_queue(UID, 10, min_prescore=80)) == {high, unknown}
+    assert sl._user_queue(UID, 10, only_prescored=True, min_prescore=80) == [high]

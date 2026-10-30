@@ -1215,6 +1215,19 @@ def run_matching(user_id: str | None = None) -> List[int]:
             and reranker.has_prescore_backend()
             and not llm_budget_exhausted()):
         prescore_pool = to_rerank[: settings.prescore_cap]
+        from app.matching import tier1_budget as _t1
+        if _t1.exhausted(user_id) and prescore_pool:
+            # Tier-1 cap spent today: only jobs that already carry a kept
+            # prescore can move. One projected query instead of a full-row load
+            # per candidate that would only come back TIER1_DEFERRED.
+            with get_session() as s:
+                _kept = {r if not isinstance(r, tuple) else r[0] for r in s.exec(
+                    select(Job.id).where(Job.id.in_([j for j, _ in prescore_pool]),
+                                         Job.prescore.is_not(None))).all()}
+            log.info("Cascade Tier-1: daily cap spent — %d of %d candidate(s) "
+                     "carry a kept prescore; the rest stay Queued",
+                     len(_kept), len(prescore_pool))
+            prescore_pool = [it for it in prescore_pool if it[0] in _kept]
         log.info("Cascade Tier-1: prescoring %d candidate(s) (gate=%d)",
                  len(prescore_pool), advance_gate)
 

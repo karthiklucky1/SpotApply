@@ -270,7 +270,8 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
 
 def _user_queue(user_id: Optional[str], cap: int,
                 only_unprescored: bool = False,
-                only_prescored: bool = False) -> List[int]:
+                only_prescored: bool = False,
+                min_prescore: Optional[float] = None) -> List[int]:
     """A user's queued (unscored) job ids, MOST PROMISING FIRST across the whole
     queue, cut to ``cap``.
 
@@ -323,6 +324,14 @@ def _user_queue(user_id: Optional[str], cap: int,
             # only jobs Tier-1 already judged can move. Selecting the others would
             # re-ask a refused reservation per job per cycle for nothing.
             q = q.where(Job.prescore != None)  # noqa: E711
+        if min_prescore is not None:
+            # Challenge mode (the board is full): a kept prescore below the
+            # challenger gate cannot win a slot, so its final is never bought —
+            # re-selecting it each cycle only loads the row to keep it waiting.
+            # With the staged ceiling a full board stays in this mode all
+            # evening. Unjudged rows still come through (unless Tier-1 is spent).
+            from sqlalchemy import or_ as _or_p
+            q = q.where(_or_p(Job.prescore.is_(None), Job.prescore >= float(min_prescore)))
         # A copy whose location is still unverified is held, not scored: it
         # would take a slot from a job we can actually deliver, and it is what
         # the pre-cycle verification sweep exists to resolve. NULL = a row from
@@ -722,23 +731,38 @@ def _plan_budget(uid: Optional[str]) -> tuple[Optional[int], int]:
         return fallback, target
 
 
+_EXTRAS_TTL = 60.0
+_extras_cache: dict = {}        # uid -> (monotonic, (challenge, engaged))
+
+
 def _plan_extras(uid: Optional[str]) -> Tuple[int, int]:
     """(challenge extra, engaged extra) — how far the day's finals ceiling may
-    rise once the board is full (finals_budget.staged_ceiling). Same lookup
-    and the same widest-plan fallback as ``_plan_budget``."""
+    rise once the board is full (finals_budget.staged_ceiling).
+
+    Asked only for a user whose board is full (``_finals_allowance``), and
+    cached briefly: with Stripe on it is a subscription read, and the lanes
+    decide per user per cycle. An unresolvable plan gets NO extras — unlike
+    ``_plan_budget``'s widest-plan fallback, which exists so an outage never
+    starves the FILL stage. The extras are more money for a known plan; a
+    Free user must not reach 270 because billing blinked.
+    """
     if not uid or uid == "local":
         return 0, 0
+    now = time.monotonic()
+    hit = _extras_cache.get(uid)
+    if hit and now - hit[0] < _EXTRAS_TTL:
+        return hit[1]
     try:
         from app.api.server import _get_user_plan
         from app.db.models import PLAN_LIMITS
         limits = PLAN_LIMITS[_get_user_plan(uid)]
-        return (int(limits.get("finals_challenge_extra") or 0),
-                int(limits.get("finals_engaged_extra") or 0))
+        out = (int(limits.get("finals_challenge_extra") or 0),
+               int(limits.get("finals_engaged_extra") or 0))
     except Exception as e:
-        from app.common.plan_limits import widest_plan_limit
-        log.debug("plan extras lookup failed for %s (%s) — widest plan", uid, e)
-        return (widest_plan_limit("finals_challenge_extra", 0),
-                widest_plan_limit("finals_engaged_extra", 0))
+        log.debug("plan extras lookup failed for %s (%s) — no extras", uid, e)
+        return 0, 0
+    _extras_cache[uid] = (now, out)
+    return out
 
 
 def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
@@ -756,7 +780,13 @@ def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
     ceiling, target = _plan_budget(uid)
     if ceiling is None and target <= 0:
         return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
-    challenge_extra, engaged_extra = _plan_extras(uid)
+    challenge_extra = engaged_extra = 0
+    if target > 0 and settings.slate_challenge_enabled:
+        # The extras only exist on a full board; delivered_today is the cached
+        # count allowance() is about to read anyway.
+        from app.matching import finals_budget as _fb
+        if _fb.delivered_today(uid) >= target:
+            challenge_extra, engaged_extra = _plan_extras(uid)
     allow = allowance(uid, per_cycle_cap, int(ceiling or 0), target,
                       challenge_extra=challenge_extra, engaged_extra=engaged_extra)
     # Every queue item costs a Tier-1 prescore before it can become a final, so
@@ -1643,7 +1673,10 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         _t1_spent = tier1_budget.exhausted(uid)
         if _t1_spent:
             stats["tier1_capped_users"] = stats.get("tier1_capped_users", 0) + 1
-        q = [(uid, jid) for jid in _user_queue(uid, allow.n, only_prescored=_t1_spent)]
+        from app.matching.finals_budget import normal_gate as _normal_gate
+        _min_pre = allow.gate if (allow.target_met and allow.gate > _normal_gate()) else None
+        q = [(uid, jid) for jid in _user_queue(uid, allow.n, only_prescored=_t1_spent,
+                                               min_prescore=_min_pre)]
         if q:
             queues.append(q)
     if capped_out:

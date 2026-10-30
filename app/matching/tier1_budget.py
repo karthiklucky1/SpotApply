@@ -14,9 +14,12 @@ upload, role save, Resume search (`adoption.seed_new_user`), the first day
 included — adopts a 14-day catch-up window: one first day copied 7,200 jobs and
 needed ~4,200 Tier-1 looks. Hence ``tier1_setup_day_cap`` that day.
 
-THE COUNT IS OF REAL CALLS. `take()` is called inside `Reranker.prescore` after
-the rule pre-filter and the empty-description guard, i.e. only where a provider
-is about to be asked. A rule rejection is free and is not counted.
+THE COUNT IS OF REAL CALLS. `take()` is called inside `Reranker.prescore` only
+once a provider is about to be asked: after the rule pre-filter and the
+empty-description guard (free verdicts), after the provider cooldown and the
+platform budget skips, and after the paid-call reservation. A provider outage
+must not spend a user's day of Tier-1 on calls that never happen — then the
+outage would outlive itself as a feed outage until 00:00 UTC.
 
 A REFUSAL LEAVES THE JOB QUEUED. `prescore()` returns ``None`` to mean "could
 not decide — advance to Tier-2" (fail-open), so a capped call must NOT look

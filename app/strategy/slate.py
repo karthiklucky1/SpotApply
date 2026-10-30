@@ -356,6 +356,11 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
         if p.eligibility is None:
             p.eligibility = _elig_meta
         if p.created:
+            try:                        # the board changed: the cutoff moved
+                from app.matching.finals_budget import forget_gate
+                forget_gate(user_id)
+            except Exception:
+                pass
             try:                        # once per user, ever (app/analytics/journey.py)
                 from app.analytics.journey import record as _journey
                 _journey(uid_arg, "first_shortlist", session=session)
