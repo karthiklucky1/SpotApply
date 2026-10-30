@@ -551,7 +551,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **Liveness: only REMOVED/EXPIRED mean dead** (`discovery/liveness.py`). 429 =
   RATE_LIMITED, 403 = BLOCKED: an endpoint refusing to answer says nothing about
   the vacancy, and treating it as death would close live jobs whenever a board
-  throttled the pulse lane. Free signal = absence from a COMPLETE board fetch;
+  throttled the pulse lane. A 200 body's notice counts only as a STATEMENT
+  (`liveness._states_gone`): in an until/once/at-which clause it is a live
+  posting's future — "until the job is filled" closed Everpure and Intuitive
+  everywhere (2026-10-30; `scripts/repair_body_gone_closures.py` reopens such
+  closures, guard `test_liveness_false_gone_repair`). Free signal = absence from a COMPLETE board fetch;
   an incomplete fetch records nothing. **The pulse lane closes on it**
   (2026-10-10, `discovery/board_absence.py`, `PULSE_GHOST_CLOSE_ENABLED`, on):
   the full pass rotates by `last_seen`, which the pulse bumps, so pulse-watched

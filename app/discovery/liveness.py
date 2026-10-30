@@ -39,14 +39,43 @@ _FILL = r"(?:\s+(?:is|has been|was|are|have been))?"
 _GONE_PATTERNS = tuple(re.compile(p, re.I) for p in (
     rf"\b(?:position|posting|job|vacancy|role|opportunity|listing){_FILL}\s+"
     r"(?:no longer (?:active|available|open|accepting)|closed|filled|expired|"
-    r"been filled|been closed|been removed)\b",
+    r"been filled|been closed|been removed)\b(?!-)",
     r"\bno longer accepting applications\b",
-    r"\bapplications?\s+(?:are|is|has been|have been)?\s*closed\b",
+    r"\bapplications?\s+(?:are|is|has been|have been)?\s*closed\b(?!-)",
     r"\bthe (?:job|position|page) you (?:are|were) looking for\b[^.]{0,40}"
     r"\b(?:no longer|not|cannot be found|doesn't exist|does not exist)\b",
     r"\bthis (?:job|position|posting) has expired\b",
     r"\bwe are no longer (?:hiring|accepting)\b",
 ))
+
+#: The same words in a CONDITION are a live posting describing its own future:
+#: "we accept applications on an ongoing basis until the job is filled"
+#: (Everpure, on every posting) and "based primarily on the job level at which
+#: the role is filled" (Intuitive). Both read REMOVED and were closed on every
+#: board on 2026-10-28/30 while their boards still listed them. A match counts
+#: only when its own clause — back to the nearest punctuation or markup — has
+#: no subordinator in front of it. Not "that" ("please note that this position
+#: has been filled" is a statement) and not a bare "as" (as in "because").
+_CLAUSE_BREAK = re.compile(r"[.!?;:,<>()\[\]|•\"]")
+_CLAUSE_LOOKBACK = 120
+_CONDITIONAL = re.compile(
+    r"\b(?:until|till|til|once|when|whenever|after|before|if|unless|whether|"
+    r"which|where|wherever|whereby|as soon as|as long as|so long as|"
+    r"in case|in the event)\b", re.I)
+#: "filled at the Senior level", "filled in Austin": how a vacancy is filled,
+#: not that it was. A dead page states it plainly.
+_FILLED_HOW = re.compile(
+    r"\s+(?:at|in|by|with|from|through|via|on|internally|remotely|locally)\b", re.I)
+
+
+def _states_gone(text: str, m: "re.Match") -> bool:
+    """Is this gone-pattern match a statement, rather than a condition?"""
+    clause = _CLAUSE_BREAK.split(text[max(0, m.start() - _CLAUSE_LOOKBACK):m.start()])[-1]
+    if _CONDITIONAL.search(clause):
+        return False
+    if m.group(0).lower().endswith("filled") and _FILLED_HOW.match(text, m.end()):
+        return False
+    return True
 
 #: A careers index or board home page served in place of the specific posting.
 #: Two independent signals: the final URL lost the job identifier, or the body
@@ -109,7 +138,9 @@ def classify(status: Optional[int], *, requested_url: str = "",
     # Collapse whitespace first: these strings are usually split across markup.
     head = re.sub(r"\s+", " ", (body or "")[:20000])
     for pattern in _GONE_PATTERNS:
-        if pattern.search(head):
+        # Every match, not the first: a dead page can carry the same
+        # "until the role is filled" boilerplate above its notice.
+        if any(_states_gone(head, m) for m in pattern.finditer(head)):
             return S.REMOVED.value, "body_no_longer_active"
 
     # Greenhouse answers a closed posting by redirecting to the board's own

@@ -519,6 +519,14 @@ def test_a_200_page_saying_the_position_is_gone_is_removed():
     "<p>The job you are looking for is no longer available.</p>",
     "This posting  has\n  been   closed",                   # split across markup
     "Applications are closed",
+    "Please note that this position has been filled.",      # "that" is no condition
+    "As of today this position is no longer available.",
+    "Thank you for your interest. Unfortunately this role has been filled.",
+    "This job is no longer accepting applications",
+    "Position Closed",
+    # The conditional boilerplate a page also carries does not hide its notice.
+    "<p>We accept applications until the job is filled.</p>"
+    "<h2>This job is no longer available.</h2>",
 ])
 def test_real_removal_wordings_are_all_caught(body):
     state, _ = lv.classify(200, requested_url="https://x/jobs/1", body=body)
@@ -530,6 +538,24 @@ def test_real_removal_wordings_are_all_caught(body):
     "We are hiring! This position is open and applications are welcome.",
     "Our reporting infrastructure is no longer built on Hadoop.",
     "This role has been designed for someone who closed big deals.",
+    # Production 2026-10-30, verbatim from the stored descriptions: both LIVE
+    # postings were closed on every board as REMOVED / body_no_longer_active.
+    "&nbsp;</em></p>\n<p><em>There is no application deadline and we accept "
+    "applications on an ongoing basis until the job is filled.</em></p>",   # Everpure
+    "Compensation will be based primarily on the job level at which the role is "
+    "filled and the\n\ncandidate’s qualifications, consistent with applicable law.",  # Intuitive
+    # The same class: a vacancy's future, or how it is filled, is not its end.
+    "Applications will be accepted until the position is filled.",
+    "Review of applications will continue until the position has been filled.",
+    "We'll let you know as soon as the position is filled.",
+    "Pay varies by the location in which the position is filled.",
+    "Compensation depends on the level the role is filled at.",
+    "This posting will be removed when we are no longer accepting applications.",
+    "Once applications are closed, we review every submission.",
+    "If this job is no longer available, you will see a notice here.",
+    "Apply before the role is filled!",
+    '{"description":"we accept applications until the job is filled"}',   # JSON-LD
+    "Our ML applications are closed-loop control systems.",
 ])
 def test_live_pages_that_talk_about_closing_are_still_live(body):
     state, _ = lv.classify(200, requested_url="https://x/jobs/1", body=body)
