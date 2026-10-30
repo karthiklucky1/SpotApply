@@ -337,10 +337,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   and the entry one replaced (`SLATE_CHALLENGER_NOTE`), stay in All Jobs under
   "Strong match · not on board" (`/api/jobs?status=not_on_board`).
   **The ceiling is STAGED** (`finals_budget.staged_ceiling`, one counter): Pro
-  250 fill → 400 once the board is full (`finals_challenge_extra`) → 500 once
-  the user tailored/submitted `finals_engaged_min_jobs` (2) today
-  (`finals_engaged_extra`; read lazily); Free's extras are 0. A board that never
-  fills stops at `finals_daily`. **Tier-1 has its own cap**
+  250 fills the board and pays for replacements; it rises to **400, the max**,
+  only once the board is full AND the user tailored/submitted
+  `finals_engaged_min_jobs` (2; founder "2-5") jobs today (`finals_engaged_extra`
+  150, read lazily; `finals_challenge_extra` 0). Free's extras are 0. A board
+  that never fills stops at `finals_daily`. **Tier-1 has its own cap**
   (`matching/tier1_budget.py`): 2,000 real calls/user/day, 5,000 on a setup day
   (`seed_new_user`); a capped call is `TIER1_DEFERRED` — NEVER `None` (fail-open
   to Tier-2) — and the job stays queued, kept prescores still get finals.

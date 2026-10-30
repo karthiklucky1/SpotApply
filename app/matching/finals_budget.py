@@ -61,15 +61,19 @@ THREE STOPS, in order:
 Nothing here chases the target. If the pool holds six jobs worth showing, the
 user gets six and the rest of the ceiling is never spent.
 
-THE CEILING IS STAGED (founder, 2026-10-30). One counter, three heights:
+THE CEILING IS STAGED (founder, 2026-10-30). One counter, up to three heights:
 
     fill        finals_daily                      Pro 250  until the board is full
-    challenge   + finals_challenge_extra          Pro 400  board full: a later job may
-                                                           replace an UNOPENED one
-    engaged     + finals_engaged_extra            Pro 500  board full AND the user
-                                                           tailored/applied to
+    challenge   + finals_challenge_extra          Pro 250  board full: a later job may
+                                                  (+0)     replace an UNOPENED one
+    engaged     + finals_engaged_extra            Pro 400  board full AND the user
+                                                  (+150)   tailored/applied to
                                                            `finals_engaged_min_jobs`
-                                                           jobs today
+                                                           (2) jobs today — the max
+
+Pro's challenge extra is 0 (founder: "after 250 those 150 only ... when the
+user fills 2 applications", "no more than 400"); the stage machinery keeps it
+because it costs nothing to carry.
 
 Production 2026-10-30: the board filled by 15:30 UTC, the 250 were spent, and
 121 fresh jobs Tier-1 had already passed waited for the next day — the opposite

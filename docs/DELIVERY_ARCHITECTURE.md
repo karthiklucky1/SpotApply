@@ -186,12 +186,14 @@ stopped a first-day user at 12:36 UTC with 2,229 jobs never looked at.
 | Stage | Pro ceiling | Opens when |
 |---|---|---|
 | fill | 250 (`finals_daily`) | always |
-| challenge | 400 (+ `finals_challenge_extra`) | the board holds `shortlist_daily` |
-| engaged | 500 (+ `finals_engaged_extra`) | board full AND `finals_engaged_min_jobs` (2) tailored/submitted today |
+| challenge | 250 (+ `finals_challenge_extra` = 0) | the board holds `shortlist_daily` — the rest of the 250 pays for replacements |
+| engaged | **400, the max** (+ `finals_engaged_extra` = 150) | board full AND `finals_engaged_min_jobs` (2) tailored/submitted today |
 
-One counter (`UserUsage.finals_count`), three heights, decided in
-`finals_budget.staged_ceiling`; Free's extras are 0. Challenge finals are bought
-only at the challenger gate, so the extra is rarely all spent. The slate is
+One counter (`UserUsage.finals_count`), decided in
+`finals_budget.staged_ceiling`; Free's extras are 0. Founder 2026-10-30: "after
+250 those 150 only ... when the user fills 2-5 applications", "no more than
+400" — so the only increase asks something of the user. Finals past the fill are
+bought only at the challenger gate, so the extra is rarely all spent. The slate is
 replace-only (`slate_overflow_daily` = 0): a better job takes an UNOPENED slot;
 otherwise it — and any entry it replaced — stays in All Jobs, listed by the
 "Strong match · not on board" filter (`/api/jobs?status=not_on_board`, best
@@ -205,7 +207,7 @@ is now 7,000, above Tier-1 + the staged ceiling + prewarms.
 
 Measured unit costs (`llm_spend`, all metered, 2026-10-01..30): Tier-1 $0.00017,
 final $0.00336, prewarm ~$0.19/user-day. A heavy Pro day at the caps: 2,000 +
-500 = $2.21 (~$66/month); the measured average user-day is $0.57.
+400 = $1.87 (~$56/month); the measured average user-day is $0.57.
 
 ## 4. Ranking utility
 

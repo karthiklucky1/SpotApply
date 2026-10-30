@@ -2,11 +2,11 @@
 
 Production 2026-10-30: one Pro user's board filled by 15:30 UTC, the day's 250
 finals were spent, and 121 fresh jobs that had already passed Tier-1 waited for
-the next day. The ceiling is now one counter at three heights:
+the next day. The ceiling is now one counter, and Pro's only increase asks
+something of the user (founder: "no more than 400"):
 
-    fill        250   until the board is full
-    challenge   400   board full — a later, better job may replace an UNOPENED one
-    engaged     500   board full AND the user tailored/applied to 2 jobs today
+    fill        250   fills the board, then pays for replacing UNOPENED entries
+    engaged     400   board full AND the user tailored/applied to 2 jobs today — the max
 
 and the slate is REPLACE ONLY: a strong job that cannot take a slot keeps its
 score and stays in All Jobs, under "Strong match · not on board", as does the
@@ -74,11 +74,13 @@ def _pro(uid=UID, cap=40):
 
 # ── the numbers ──────────────────────────────────────────────────────────────
 
-def test_pro_climbs_250_400_500_and_free_does_not_move():
+def test_pro_is_250_then_400_at_most_and_free_does_not_move():
     pro, free = PLAN_LIMITS[PlanTier.PRO], PLAN_LIMITS[PlanTier.FREE]
     base = pro["finals_daily"]
-    assert (base, base + pro["finals_challenge_extra"],
-            base + pro["finals_challenge_extra"] + pro["finals_engaged_extra"]) == (250, 400, 500)
+    assert base == 250
+    assert pro["finals_challenge_extra"] == 0, "no increase without the user's applications"
+    assert base + pro["finals_challenge_extra"] + pro["finals_engaged_extra"] == 400, \
+        "400 is the hard maximum (founder 2026-10-30)"
     assert free["finals_challenge_extra"] == free["finals_engaged_extra"] == 0
     assert settings.finals_engaged_min_jobs == 2
     for tier in (PlanTier.BASIC, PlanTier.AGENCY):          # legacy rows count as Pro
@@ -89,70 +91,86 @@ def test_pro_climbs_250_400_500_and_free_does_not_move():
 # ── fill ─────────────────────────────────────────────────────────────────────
 
 def test_a_board_that_never_fills_stops_at_the_base(monkeypatch):
-    """The extras exist to let a FULL board improve. A thin day — nothing good
-    enough to fill it — still stops at finals_daily, exactly as before."""
-    _day(monkeypatch, delivered=12, spent=250)
+    """The extra exists to let a FULL board improve. A thin day — nothing good
+    enough to fill it — still stops at finals_daily, exactly as before, even
+    for a user who applied to several jobs."""
+    _day(monkeypatch, delivered=12, spent=250, engaged=5)
     a = _pro()
     assert a.n == 0
     assert a.reason.startswith("daily cost ceiling") and "fill stage" in a.reason
     assert a.target_met is False
 
 
-# ── challenge ────────────────────────────────────────────────────────────────
+# ── board full: the rest of the 250 replaces unopened jobs ───────────────────
 
-def test_a_full_board_opens_the_challenge_stage(monkeypatch):
-    _day(monkeypatch, delivered=35, spent=250, gate=80)
+def test_a_full_board_keeps_spending_what_is_left_of_the_250(monkeypatch):
+    _day(monkeypatch, delivered=35, spent=150, gate=80)
     a = _pro()
-    assert a.n == 40, "the board is full and 250 are spent: the challenge stage must open"
+    assert a.n == 40, "the board is full but 100 of the 250 remain: keep challenging"
     assert a.gate == 80, "challenge finals are bought only at the raised challenger gate"
     assert "challenge stage" in a.reason and a.target_met is True
 
-    _day(monkeypatch, delivered=35, spent=390)
-    assert _pro().n == 10, "what is LEFT of the stage, not a final more"
+    _day(monkeypatch, delivered=35, spent=240)
+    assert _pro().n == 10, "what is LEFT of the 250, not a final more"
 
 
-def test_the_challenge_stage_ends_at_400_and_says_how_to_open_more(monkeypatch):
-    _day(monkeypatch, delivered=35, spent=400, engaged=0)
+def test_250_is_the_stop_until_the_user_applies_and_it_says_how_to_open_more(monkeypatch):
+    _day(monkeypatch, delivered=35, spent=250, engaged=0)
     a = _pro()
     assert a.n == 0
     assert a.reason.startswith("daily cost ceiling"), "the stop must keep its bucket name"
     assert sl._stop_bucket(a.reason) == "cost_ceiling"
-    assert "400/400" in a.reason and "challenge stage" in a.reason
-    assert "2 tailored/applied today opens +100" in a.reason
+    assert "250/250" in a.reason and "challenge stage" in a.reason
+    assert "2 tailored/applied today opens +150" in a.reason
     assert a.target_met is True, "a full board is a delivered day, whatever stopped the spend"
 
 
-# ── engaged ──────────────────────────────────────────────────────────────────
+# ── engaged: +150, and never past 400 ────────────────────────────────────────
 
-def test_working_the_board_opens_the_engaged_stage(monkeypatch):
-    _day(monkeypatch, delivered=35, spent=400, engaged=2)
+def test_two_applications_open_the_150_up_to_400(monkeypatch):
+    _day(monkeypatch, delivered=35, spent=250, engaged=2)
     a = _pro()
     assert a.n == 40 and "engaged stage" in a.reason
 
-    _day(monkeypatch, delivered=35, spent=500, engaged=5)
+    _day(monkeypatch, delivered=35, spent=390, engaged=2)
+    assert _pro().n == 10
+
+
+def test_400_is_the_hard_maximum_however_much_the_user_applies(monkeypatch):
+    _day(monkeypatch, delivered=35, spent=400, engaged=20)
     a = _pro()
-    assert a.n == 0 and "500/500" in a.reason and "engaged stage" in a.reason
+    assert a.n == 0 and "400/400" in a.reason and "engaged stage" in a.reason
+    assert fb.staged_ceiling(UID, 250, 9999, True, 0, 150)[0] == 400
 
 
-def test_one_tailored_job_is_not_enough(monkeypatch):
-    _day(monkeypatch, delivered=35, spent=400, engaged=1)
+def test_one_application_is_not_enough(monkeypatch):
+    _day(monkeypatch, delivered=35, spent=250, engaged=1)
     assert _pro().n == 0
 
 
-def test_engagement_is_read_only_once_the_challenge_stage_is_spent(monkeypatch):
-    """It is a query; until the challenge stage runs out it cannot change the
-    answer, so the lanes (one decision per user per cycle) must not pay for it."""
+def test_the_minimum_can_be_raised_to_five(monkeypatch):
+    """Founder: "min 2-5 applications" — 2 by default, one setting to make it 5."""
+    monkeypatch.setattr(settings, "finals_engaged_min_jobs", 5)
+    _day(monkeypatch, delivered=35, spent=250, engaged=4)
+    assert _pro().n == 0
+    _day(monkeypatch, delivered=35, spent=250, engaged=5)
+    assert _pro().n == 40
+
+
+def test_engagement_is_read_only_once_the_250_is_spent(monkeypatch):
+    """It is a query; until the 250 runs out it cannot change the answer, so the
+    lanes (one decision per user per cycle) must not pay for it."""
     def _boom(uid):
         raise AssertionError("engaged_today read before it could matter")
-    for delivered, spent in ((10, 100), (35, 260), (35, 399)):
+    for delivered, spent in ((10, 100), (35, 200), (35, 249)):
         _day(monkeypatch, delivered=delivered, spent=spent)
         monkeypatch.setattr(fb, "engaged_today", _boom)
         assert _pro().n > 0
 
 
-def test_min_jobs_zero_opens_the_engaged_extra_with_the_board(monkeypatch):
+def test_min_jobs_zero_opens_the_extra_with_the_board(monkeypatch):
     monkeypatch.setattr(settings, "finals_engaged_min_jobs", 0)
-    _day(monkeypatch, delivered=35, spent=400, engaged=0)
+    _day(monkeypatch, delivered=35, spent=250, engaged=0)
     assert _pro().n == 40
 
 
@@ -161,20 +179,20 @@ def test_the_kill_switch_also_removes_the_extras(monkeypatch):
     monkeypatch.setattr(settings, "slate_challenge_enabled", False)
     _day(monkeypatch, delivered=35, spent=100)
     assert _pro().n == 0
-    assert fb.staged_ceiling(UID, 250, 260, True, 150, 100) == (250, "fill")
+    assert fb.staged_ceiling(UID, 250, 260, True, 0, 150) == (250, "fill")
 
 
 def test_no_plan_ceiling_stays_unbounded_by_the_extras():
-    assert fb.staged_ceiling(UID, 0, 999, True, 150, 100) == (0, "fill")
+    assert fb.staged_ceiling(UID, 0, 999, True, 0, 150) == (0, "fill")
 
 
 # ── the lane wires the plan in ───────────────────────────────────────────────
 
 def test_the_lane_passes_the_plans_extras(monkeypatch):
     monkeypatch.setattr(sl, "_plan_budget", lambda uid: (250, 35))
-    monkeypatch.setattr(sl, "_plan_extras", lambda uid: (150, 100))
+    monkeypatch.setattr(sl, "_plan_extras", lambda uid: (0, 150))
     monkeypatch.setattr(settings, "prescore_budget_multiplier", 0)
-    _day(monkeypatch, delivered=35, spent=300)
+    _day(monkeypatch, delivered=35, spent=300, engaged=2)
     assert sl._finals_allowance(UID, 40).n == 40
     monkeypatch.setattr(sl, "_plan_extras", lambda uid: (0, 0))
     assert sl._finals_allowance(UID, 40).n == 0

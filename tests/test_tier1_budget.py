@@ -261,7 +261,7 @@ def test_the_cycle_asks_for_kept_prescores_and_no_drain_for_a_capped_user(monkey
     asked.clear()
     monkeypatch.setattr(settings, "scoring_drain_cap", 20)
     monkeypatch.setattr(sl, "_finals_allowance", lambda u, cap: fb.Allowance(
-        0, 40, "daily cost ceiling (400/400 finals, challenge stage) at 35/35 delivered",
+        0, 40, "daily cost ceiling (400/400 finals, engaged stage) at 35/35 delivered",
         target_met=True))
     sl._run_scoring_cycle(None)
     assert asked == [], "a drain slice is Tier-1-only work; a capped user gets none"
