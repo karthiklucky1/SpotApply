@@ -1,7 +1,7 @@
 """Interaction learning: dismissals/applies become per-user ranking signals."""
 from __future__ import annotations
 
-from sqlmodel import delete
+from sqlmodel import delete, select
 
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, JobSource
@@ -70,3 +70,67 @@ def test_no_history_means_no_signal():
     assert not p.has_signal
     assert p.feedback_note() == ""
     assert p.adjustment("AnyCo", "Any Title") == 0
+
+
+# System notes exactly as their writers produce them (slate.place,
+# pipeline company cap, shortlist_hygiene). None of them is the user's opinion.
+_SYSTEM_SKIP_NOTES = (
+    ("slate_replaced: a stronger job arrived later today ('Senior Software "
+     "Engineer' at 78 vs 72) and this one had not been opened."),
+    "slate_replaced: replaced by the employer's own posting of the same role.",
+    ("\nDisplaced by higher-scoring 'Associate Software Engineer' (82 vs 72) "
+     "under the per-company cap."),
+    ("Auto-removed from shortlist: outside the freshness window (held over 5d, "
+     "or posted over 30d ago)."),
+    "[roles-realign] Removed from the board: no longer one of your roles.",
+    "",
+    None,
+)
+
+
+def test_only_the_dismiss_marker_is_user_opinion():
+    """Production 2026-10-30: system skips were learned as dismissals and a
+    user who had dismissed nothing was told to Claude as someone who
+    'dismisses roles mentioning software, backend, full stack'."""
+    from app.matching.preference_learning import _is_user_dismissal
+
+    for notes in _SYSTEM_SKIP_NOTES:
+        row = Application(job_id=0, status=ApplicationStatus.SKIPPED, notes=notes)
+        assert not _is_user_dismissal(row), notes
+    marked = Application(job_id=0, status=ApplicationStatus.SKIPPED,
+                         notes="slate_replaced: ...\n" + USER_DISMISS_MARKER)
+    assert _is_user_dismissal(marked)
+    assert not _is_user_dismissal(Application(
+        job_id=0, status=ApplicationStatus.SHORTLISTED, notes=USER_DISMISS_MARKER))
+
+
+def test_system_skips_teach_nothing():
+    uid = "u_pref_system_skips"
+    titles = ("Senior Backend Engineer", "Software Engineer II - CIAM",
+              "Senior Software Engineer, Backend (AI Platform)",
+              "IT Full Stack Developer", "Full Stack Software Engineer II",
+              "Senior Software Engineer - AI Platform", "Software Engineer, Senior")
+    with get_session() as s:
+        for i, title in enumerate(titles):
+            j = Job(user_id=uid, source=JobSource.GREENHOUSE,
+                    external_id=f"{uid}-{i}", company="Affirm" if i < 3 else f"Co{i}",
+                    title=title, url=f"http://x/{uid}/{i}", description="d")
+            s.add(j)
+            s.commit()
+            s.refresh(j)
+            s.add(Application(job_id=j.id, status=ApplicationStatus.SKIPPED, user_id=uid,
+                              notes=_SYSTEM_SKIP_NOTES[i % 4]))
+        s.commit()
+    try:
+        p = build_preference_profile(uid)
+        assert p.dismissed_total == 0 and not p.has_signal
+        assert p.feedback_note() == ""
+        assert not p.disliked_companies
+        assert p.adjustment("Affirm", "Senior Backend Engineer") == 0
+    finally:
+        with get_session() as s:
+            ids = [a.id for a in s.exec(select(Application).where(Application.user_id == uid))]
+            if ids:
+                s.exec(delete(Application).where(Application.id.in_(ids)))
+            s.exec(delete(Job).where(Job.user_id == uid))
+            s.commit()

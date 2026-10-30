@@ -374,7 +374,13 @@ _ROLE_FAMILIES = (
      "ruby developer", "php developer", "scala developer", "rust developer",
      "backend", "back end", "back-end", "backend developer",
      "frontend", "front end", "front-end",
-     "full stack", "fullstack", "full-stack"),
+     "full stack", "fullstack", "full-stack",
+     # AI-lab and startup names for the same job. "Member of Technical Staff,
+     # Evals" (Harvey, Profound; 2026-10-29) carries no role word, so a
+     # Software Engineer / AI Engineer user never received it. Not "product
+     # engineer": in manufacturing that is a hardware role.
+     "member of technical staff", "mts", "forward deployed engineer",
+     "forward-deployed engineer", "founding engineer"),
     # AI / ML: an "AI Engineer" and an "ML Engineer" are shopping the same market.
     ("ai engineer", "ai", "artificial intelligence", "machine learning", "ml",
      "ml engineer", "mlops", "ml ops", "deep learning",

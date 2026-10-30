@@ -519,6 +519,9 @@ def test_a_200_page_saying_the_position_is_gone_is_removed():
     "<p>The job you are looking for is no longer available.</p>",
     "This posting  has\n  been   closed",                   # split across markup
     "Applications are closed",
+    # A condition elsewhere on the page does not excuse a real removal.
+    "This position has been filled. Applications were accepted until the role was filled.",
+    "Thanks for your interest. Unfortunately, this job is no longer available.",
 ])
 def test_real_removal_wordings_are_all_caught(body):
     state, _ = lv.classify(200, requested_url="https://x/jobs/1", body=body)
@@ -530,6 +533,14 @@ def test_real_removal_wordings_are_all_caught(body):
     "We are hiring! This position is open and applications are welcome.",
     "Our reporting infrastructure is no longer built on Hadoop.",
     "This role has been designed for someone who closed big deals.",
+    # Conditions, not removals: the boilerplate of LIVE postings. The first is
+    # verbatim from a posting closed a minute after delivery (2026-10-30).
+    "We accept applications on an ongoing basis until the job is filled.",
+    "Applications will be accepted until the position is filled.",
+    "Applications are reviewed on a rolling basis until the position has been filled.",
+    "The posting will remain open until such time as the role is filled.",
+    "This posting will be removed once the position is filled. Apply today!",
+    "We will reach out to every candidate when the role has been filled.",
 ])
 def test_live_pages_that_talk_about_closing_are_still_live(body):
     state, _ = lv.classify(200, requested_url="https://x/jobs/1", body=body)

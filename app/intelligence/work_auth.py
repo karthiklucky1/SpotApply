@@ -106,6 +106,12 @@ def _validity(profile) -> tuple[str, str]:
     end = _parse_end(raw)
     if end is None:
         return "unknown", raw
+    if plausible_end_date(raw) is None:
+        # A picker slip, not their card: the forms show it blank and the OPT
+        # clock ignores it, so it must not tell autofill "expired" either
+        # (a stored 2002-04-11 answered "authorised to work?" with "needs
+        # confirmation" and headlined "your end date has passed").
+        return "unknown", ""
     return ("current" if end >= date.today() else "expired"), raw
 
 
@@ -128,7 +134,7 @@ def remaining_days(profile) -> "int | None":
     """Days of authorisation left from the saved end date, or None when the
     date is absent/unreadable. Negative when it has passed."""
     from datetime import date
-    end = _parse_end((getattr(profile, "ead_end_date", "") or "").strip())
+    end = plausible_end_date((getattr(profile, "ead_end_date", "") or "").strip())
     return None if end is None else (end - date.today()).days
 
 

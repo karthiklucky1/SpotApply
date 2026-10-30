@@ -48,6 +48,28 @@ _GONE_PATTERNS = tuple(re.compile(p, re.I) for p in (
     r"\bwe are no longer (?:hiring|accepting)\b",
 ))
 
+#: A gone-phrase stated as a CONDITION is the boilerplate of a live posting:
+#: "we accept applications on an ongoing basis until the job is filled". The
+#: first pattern read that as "job is filled" and closed a live Greenhouse
+#: posting a minute after it reached the board (2026-10-30, scored 82); the
+#: phrase is common on enterprise, university and government postings, and the
+#: re-check only runs on jobs that already cleared the bar.
+_CONDITIONAL_LEAD = re.compile(
+    r"\b(?:until|till|once|when|whenever|after|before|as\s+soon\s+as|unless|if)"
+    r"(?:\s+(?:such\s+time\s+as|the|this|that|a|an|our|each|every|all|these|those))*\s*$",
+    re.I)
+
+
+def _states_removal(head: str) -> bool:
+    """Does the page SAY the posting is gone (not merely when it will be)?"""
+    for pattern in _GONE_PATTERNS:
+        for m in pattern.finditer(head):
+            # The clause leading into the phrase, within its own sentence.
+            lead = re.split(r"[.!?;:]\s", head[max(0, m.start() - 80):m.start()])[-1]
+            if not _CONDITIONAL_LEAD.search(lead):
+                return True
+    return False
+
 #: A careers index or board home page served in place of the specific posting.
 #: Two independent signals: the final URL lost the job identifier, or the body
 #: reads like a listing page.
@@ -108,9 +130,8 @@ def classify(status: Optional[int], *, requested_url: str = "",
     # 200 from here on. The body decides.
     # Collapse whitespace first: these strings are usually split across markup.
     head = re.sub(r"\s+", " ", (body or "")[:20000])
-    for pattern in _GONE_PATTERNS:
-        if pattern.search(head):
-            return S.REMOVED.value, "body_no_longer_active"
+    if _states_removal(head):
+        return S.REMOVED.value, "body_no_longer_active"
 
     # Greenhouse answers a closed posting by redirecting to the board's own
     # index (`/hasbro?error=true`, "The job you are looking for is no longer

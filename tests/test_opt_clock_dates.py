@@ -41,6 +41,21 @@ def test_an_impossible_date_is_no_clock():
     assert server._opt_clock_payload(_p(ead_end_date="not a date")) is None
 
 
+def test_an_impossible_date_is_not_an_expired_authorisation():
+    """The stored 2002 date the forms show blank must not tell autofill and
+    the framing that the user's OPT ran out (production profile, 2026-10-30)."""
+    from app.intelligence.work_auth import assess_profile, remaining_days
+    f = assess_profile(_p(work_auth_status="OPT", ead_end_date="2002-04-11"))
+    assert f.validity == "unknown" and f.valid_through == ""
+    assert "has passed" not in f.headline and "2002" not in f.headline
+    assert remaining_days(_p(ead_end_date="2002-04-11")) is None
+    # A card that ran out recently still reads expired: that is the user's fact.
+    past = (date.today() - timedelta(days=20)).isoformat()
+    g = assess_profile(_p(work_auth_status="OPT", ead_end_date=past))
+    assert g.validity == "expired" and g.authorized_now is False
+    assert remaining_days(_p(ead_end_date=past)) == -20
+
+
 def test_a_real_date_gives_the_clock_from_it():
     end = date.today() + timedelta(days=200)
     oc = server._opt_clock_payload(_p(ead_end_date=end.isoformat(), opt_unemployment_days_used=30))
