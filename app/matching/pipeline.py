@@ -1191,6 +1191,18 @@ def run_matching(user_id: str | None = None) -> List[int]:
         log.info("Matching lane: no finals allowance for %s (%s) — leaving %d "
                  "candidate(s) Queued", user_id, _allow.reason, len(to_rerank))
         to_rerank = []
+    # An IDLE search keeps its free work (retrieval, rule stamps, reshortlist)
+    # but no paid call: the Reranker refuses each one. Asking per job was the
+    # whole cascade run for nothing — Tier-1 returned None (fail-open), every
+    # job "advanced", and Tier-2 refused all 15 again on the next pass, every
+    # ~20 s for 14 hours (2026-10-30, one idle account). Same cached answer
+    # the Reranker reads.
+    if to_rerank:
+        from app.common.compute_policy import paid_ai_allowed
+        if not paid_ai_allowed(user_id):
+            log.info("Matching lane: search not spending for %s (idle or paused) — "
+                     "leaving %d candidate(s) Queued", user_id, len(to_rerank))
+            to_rerank = []
     drain_gate = min(settings.prescore_advance_threshold,
                      settings.shortlist_score_threshold)
     keep_gate = max(drain_gate, int(_allow.gate))
