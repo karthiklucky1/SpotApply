@@ -13,8 +13,10 @@ The profile produces (a) a deterministic score adjustment used when ranking
 the shortlist, and (b) a short natural-language note injected into the LLM
 reranker prompt so scoring itself calibrates to revealed preferences.
 
-System-generated SKIPPEDs (company-cap expiry, ghost closes) are NOT the
-user's opinion and are excluded via their notes markers.
+Only a SKIPPED that carries the user_dismissed marker is the user's opinion.
+Every system path that sets SKIPPED (slate replacement, company-cap
+displacement, freshness auto-removal, closed postings) is not, whatever its
+note says — see ``_is_user_dismissal``.
 """
 from __future__ import annotations
 
@@ -31,16 +33,6 @@ log = logging.getLogger(__name__)
 
 # Appended to Application.notes by the /skip endpoint for real user dismissals.
 USER_DISMISS_MARKER = "user_dismissed"
-
-# System paths that also set SKIPPED — never count these as user opinion.
-# A posting that turned out to be gone says nothing about whether the user
-# liked it: "job closed" covers the "no longer available" report and a dead
-# re-check; "click verification" is the drawer's own check (its note reads
-# "Job marked closed during click verification", which matched no hint, so
-# every posting it found dead was being learned as a dismissal).
-_SYSTEM_SKIP_HINTS = ("expired after", "job closed", "removed from company",
-                      "slot reopened", "dead at shortlist", "deactivated",
-                      "click verification")
 
 _ENGAGED_STATUSES = {
     ApplicationStatus.TAILORED, ApplicationStatus.AUTOFILLED,
@@ -113,15 +105,21 @@ class PreferenceProfile:
 
 
 def _is_user_dismissal(app) -> bool:
-    """``app`` needs only ``.status`` and ``.notes`` (an Application or a projected row)."""
+    """``app`` needs only ``.status`` and ``.notes`` (an Application or a projected row).
+
+    The marker is the ONLY evidence. This used to count every SKIPPED whose
+    note matched none of a list of system phrases, and the list fell behind
+    the writers: "slate_replaced: ...", "Auto-removed from shortlist: ..." and
+    "Displaced by higher-scoring ... under the per-company cap" matched
+    nothing. Production 2026-10-30: 17,432 system skips across 23 users were
+    learned as dismissals against ONE marked one, and a user who had
+    dismissed nothing was scored as someone who "dismisses roles mentioning
+    software, backend, full stack" — a backend role offering sponsorship came
+    back 32 and three companies were barred from the board.
+    """
     if app.status != ApplicationStatus.SKIPPED:
         return False
-    notes = (app.notes or "").lower()
-    if USER_DISMISS_MARKER in notes:
-        return True
-    # Legacy dismissals predate the marker: count them only when no system
-    # hint explains the skip.
-    return not any(h in notes for h in _SYSTEM_SKIP_HINTS)
+    return USER_DISMISS_MARKER in (app.notes or "").lower()
 
 
 # The profile is read on EVERY /dashboard render and every matching pass.
