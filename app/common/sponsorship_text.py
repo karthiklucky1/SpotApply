@@ -97,7 +97,10 @@ _CANCELLER_SOURCES = [
     # "Active Secret clearance preferred", "No clearance required".
     r"\b(clearance|citizen\w*)\b[^.]{0,40}\b(preferred|a\s+plus|nice[\s-]to[\s-]have|desired"
     r"|desirable|bonus|helpful|not\s+required|not\s+necessary)\b",
-    r"\b(preferred|a\s+plus|nice[\s-]to[\s-]have|bonus)\b[^.]{0,30}\b(clearance|citizen\w*)\b",
+    # 60, not 30: "Nice to have: active TS/SCI U.S. Government Security
+    # Clearance" puts 39 characters between the two once _CLEARANCE reads the
+    # qualifiers, and a preference must stay a preference.
+    r"\b(preferred|a\s+plus|nice[\s-]to[\s-]have|bonus)\b[^.]{0,60}\b(clearance|citizen\w*)\b",
     r"\b(no|not|without)\s+(\w+\s+){0,2}(clearance|citizenship)\s+(is\s+)?(required|needed|necessary)\b",
     # "you do not need to be a US citizen or permanent resident"
     r"\b(do not|does not|don't|doesn't)\s+(need|have)\s+to\s+be\b",
@@ -112,6 +115,17 @@ _CANCELLERS = [re.compile(p, re.IGNORECASE) for p in _CANCELLER_SOURCES]
 # sponsorship now OR in the future (i.e. F-1 visa holders)". A U.S. security
 # clearance itself requires U.S. citizenship, so a required one is a refusal
 # for anyone who needs sponsorship.
+#
+# A clearance level, then the qualifiers that may sit between it and the word
+# "clearance". "able to obtain a TS/SCI U.S. Government Security Clearance"
+# (CACI, delivered at 82 on 2026-10-29) put three there and read as no
+# requirement at all. Known qualifier words only, so "a security badge and
+# clearance" is still not a clearance.
+_CLEARANCE = (
+    r"(?:secret|top[\s-]+secret|ts/sci|ts|security)"
+    r"(?:\s+(?:us|government|federal|dod|doe|level|\(ts\)|sci|with|polygraph|poly|"
+    r"full[\s-]scope|ci|or|top|secret|security|interim|final)){0,4}"
+    r"\s+clearance\b")
 _REFUSAL_PATTERN_SOURCES = [
     ("not eligible for sponsorship",
      r"\b(?:not\s+(?:be\s+)?eligible|ineligible)\s+for\s+(?:visa\s+|employment\s+|immigration\s+)?sponsorship\b"),
@@ -160,13 +174,15 @@ _REFUSAL_PATTERN_SOURCES = [
      r"\b(?:only\s+(?:us|united\s+states)\s+citizens(?!\s+(?:and|or)\b)"
      r"|(?:us|united\s+states)\s+citizens\s+only)\b"),
     ("active security clearance",
-     r"\b(?:active|current)\s+(?:dod\s+)?(?:secret|top\s+secret|ts/sci|ts|security)\s+(?:security\s+)?clearance\b"),
+     r"\b(?:active|current)\s+(?:dod\s+)?" + _CLEARANCE),
+    # "obtain/maintain", "gain and maintain", "apply for and maintain", and up
+    # to two issuers ("US Government TS/SCI ...") are the same requirement.
     ("ability to obtain a security clearance",
-     r"\b(?:ability|able|eligib\w*|willing\w*)\s+to\s+(?:obtain|acquire|get)\s+(?:and\s+maintain\s+)?(?:an?\s+)?"
-     r"(?:dod\s+|us\s+|federal\s+|government\s+)?(?:secret|top\s+secret|ts/sci|ts|security)\s+(?:security\s+)?clearance\b"),
+     r"\b(?:ability|able|eligib\w*|willing\w*)\s+to\s+(?:obtain|acquire|get|gain|apply\s+for)"
+     r"(?:\s*/\s*maintain|\s+and\s+maintain)?\s+(?:an?\s+)?"
+     r"(?:(?:dod|us|federal|government)\s+){0,2}" + _CLEARANCE),
     ("eligibility for a security clearance",
-     r"\beligib\w*\s+(?:for|to\s+obtain)\s+(?:an?\s+)?(?:dod\s+|us\s+|federal\s+)?"
-     r"(?:secret|top\s+secret|ts/sci|ts|security)\s+(?:security\s+)?clearance\b"),
+     r"\beligib\w*\s+(?:for|to\s+obtain)\s+(?:an?\s+)?(?:(?:dod|us|federal|government)\s+){0,2}" + _CLEARANCE),
     ("security clearance required",
      r"\b(?:secret|top\s+secret|ts/sci|security)\s+clearance\s+(?:is\s+)?(?:required|mandatory|needed)\b"),
 ]

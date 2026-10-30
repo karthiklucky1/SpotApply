@@ -65,6 +65,18 @@ def _opt_profile(**kw):
     "**ACTIVE TS/SCI SECURITY CLEARANCE REQUIRED**",
     "Must have the ability to obtain and maintain a security clearance.",
     "Ability to obtain and maintain a DoD Secret Security Clearance.",
+    # Qualifiers between the level and "clearance" (CACI, delivered at 82, 2026-10-29).
+    "Required: Security Clearance: Willing to be submitted for and able to obtain a TS/SCI "
+    "U.S. Government Security Clearance.",
+    "Must be able to obtain a Secret level clearance.",
+    "Active Top Secret (TS) clearance is required.",
+    # Real postings in one F-1 user's pool, 2026-10-25..30 (all missed before).
+    "Ability to obtain and maintain US Government TS/SCI Security Clearance.",
+    "Willingness and ability to apply for and maintain a TS/SCI security clearance.",
+    "Ability to gain and maintain Top Secret security clearance.",
+    "Ability to obtain/maintain a DoD Secret security clearance.",
+    "Ability to obtain a Top-Secret Security Clearance.",
+    "Active Secret U.S. Security Clearance.",
 ])
 def test_real_refusals_and_requirements_are_caught(text):
     found = find_refusal(text)
@@ -88,6 +100,8 @@ def test_real_refusals_and_requirements_are_caught(text):
     "Visa sponsorship is available for eligible candidates.",
     "Candidates are eligible for visa sponsorship.",
     "Must be authorized to work in the U.S. We offer great benefits.",
+    "You will be able to obtain a security badge and clearance to the lab floor on day one.",
+    "Nice to have: active TS/SCI U.S. Government Security Clearance.",
 ])
 def test_mentions_waivers_and_hedges_are_not_refusals(text):
     assert find_refusal(text) is None, f"false refusal: {text!r}"
