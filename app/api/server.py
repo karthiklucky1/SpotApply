@@ -1630,6 +1630,7 @@ templates.env.filters["cleantext"] = _cleantext_filter
 # A card's location: "" for blank and placeholder values ("na", "n/a", "none",
 # "null", "-", "tbd"), so no card reads "na · On-site" (app/common/geo.py).
 from app.common.geo import clean_location as _card_location  # noqa: E402
+from app.common.apply_link import aggregator_host as _aggregator_host  # noqa: E402
 templates.env.filters["cardloc"] = _card_location
 
 
@@ -3949,6 +3950,18 @@ _JOB_LIST_COLS = (
 )
 
 
+def _not_aggregator_link_cond():
+    """All Jobs' "Hide job-board links": keep rows whose link opens the
+    employer's page or an ATS form. The SAME host list the board's placement
+    gate uses (app/common/apply_link.py). It used to read the ghost filter's
+    `aggregator_redirect` flag, which only 15 redirect domains ever set and only
+    on rows the ghost check had stamped — jobicy, Reed, learn4good, jobleads and
+    LinkedIn all stayed visible with the box ticked. A row with no URL is kept
+    (nothing says it is a job board)."""
+    from app.common.apply_link import url_regex
+    return Job.url.is_(None) | ~Job.url.regexp_match(url_regex(), flags="i")
+
+
 def _not_on_board_cond():
     """All Jobs' "Strong match · not on board": a real verdict at or above the
     shortlist bar whose job is NOT on the board — a challenger that could not
@@ -4108,9 +4121,7 @@ def api_jobs(
             query = query.where(Job.remote == is_remote)
 
         if hide_aggregators == "1":
-            query = query.where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            )
+            query = query.where(_not_aggregator_link_cond())
 
         # "My roles" relevance filter — keep a job when EITHER:
         #   (a) its TITLE matches a target role (alias/token-aware, ≥4-char terms
@@ -4223,9 +4234,7 @@ def api_jobs(
             count_query = count_query.where(Job.remote == is_remote)
 
         if hide_aggregators == "1":
-            count_query = count_query.where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            )
+            count_query = count_query.where(_not_aggregator_link_cond())
         if _roles_cond is not None:
             count_query = count_query.where(_roles_cond)
         if _age_count_filter is not None:
@@ -4355,6 +4364,12 @@ def api_jobs(
                 "location": _card_location(jlocation),
                 "remote": jremote,
                 "url": jurl,
+                # The job board this link opens on ("jobicy.com"), or null when
+                # it is the employer's own page / an ATS form. Such a job never
+                # reaches the board (slate: aggregator_link); the explorer says
+                # where it goes, because that site may ask the user to sign up
+                # and the extension cannot fill it (app/common/apply_link.py).
+                "opens_on": _aggregator_host(jurl or ""),
                 "posted": _posted.isoformat() if _posted else None,
                 # False when `posted` is the real publish date from the ATS;
                 # True when we are falling back to first_seen because the
@@ -6046,6 +6061,9 @@ def get_fill_pack(application_id: int, request: Request, submit: bool = False) -
         "job_title": job.title if job else "",
         "company": job.company if job else "",
         "apply_url": application.apply_url or (job.url if job else ""),
+        # The job board this link opens on, or None for the employer's page /
+        # an ATS. Read by the dashboard's toast only; extensions ignore it.
+        "opens_on": _aggregator_host(application.apply_url or (job.url if job else "")),
         "first_name": p.first_name if p else "",
         "last_name": p.last_name if p else "",
         "email": p.email if p else "",

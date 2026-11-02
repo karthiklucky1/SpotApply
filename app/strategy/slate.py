@@ -83,7 +83,7 @@ SLATE_CHALLENGER_NOTE = f"{SLATE_REPLACED_MARKER}: a stronger job arrived later 
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | ineligible | unverified_location | duplicate
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | ineligible | unverified_location | aggregator_link | duplicate
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
     # The eligibility decision this placement was made under, with the rule /
@@ -98,6 +98,10 @@ class Placement:
 #: on the job and Resume's matching pass re-offers it (the re-shortlist backstop,
 #: pipeline._reshortlist_scored_jobs), so nothing bought before the Pause is lost.
 OUTCOME_PAUSED = "paused"
+
+#: `place()` refused because the job's link opens a job board's page, not the
+#: employer's application (settings.board_direct_apply_only).
+OUTCOME_AGGREGATOR_LINK = "aggregator_link"
 
 
 def _day_start() -> datetime:
@@ -322,6 +326,24 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
         return _refuse("ineligible")
     if _elig == "unknown" and settings.geo_hold_unresolved:
         return _refuse("unverified_location")
+
+    # ── The board is jobs SpotApply can apply to ────────────────────────────
+    # A link that opens a job board's page (jobicy, Adzuna, Jooble, LinkedIn,
+    # Jobright…) has no form the extension can fill, and most of them ask the
+    # user to register before they show the employer's. Judged by the LINK,
+    # not the source (app/common/apply_link.py): a SerpAPI row can carry a
+    # direct Greenhouse link, a Jobicy row never can. Refused here — the one
+    # writer of a board entry — so no lane can deliver one; the job keeps its
+    # score and stays in All Jobs ("Strong match · not on board"), labelled
+    # with the site it opens. Refusing also frees the role for the employer's
+    # own posting: an aggregator copy on the board made that one a "duplicate".
+    if settings.board_direct_apply_only:
+        from app.common.apply_link import aggregator_host
+        _via = aggregator_host(job.url or "")
+        if _via:
+            log.info("Slate: refused '%s' — the link opens %s, not the employer's form",
+                     job.title, _via)
+            return _refuse(OUTCOME_AGGREGATOR_LINK)
 
     # ── One posting, one recommendation — the employer's own copy preferred ─
     # The same role arrives through several doors (LinkedIn, SerpAPI, the

@@ -52,18 +52,12 @@ def _make_id(title: str, company: str, location: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-# Aggregator/middleman hosts that re-list jobs behind their own signup walls.
-# Google Jobs usually lists these FIRST in apply_options, so "first non-Google
-# link" used to hand users a Jobright/ZipRecruiter page instead of the
-# company's own application form.
-_AGGREGATOR_HOSTS = (
-    "jobright.ai", "linkedin.com", "indeed.com", "glassdoor.",
-    "ziprecruiter.com", "bebee.com", "lensa.com", "talent.com",
-    "simplyhired.com", "adzuna.", "jooble.", "monster.com", "dice.com",
-    "snagajob.com", "careerbuilder.com", "learn4good.com", "jobrapido.com",
-    "whatjobs.com", "themuse.com", "wellfound.com", "otta.com",
-    "builtin.com", "startup.jobs", "workatastartup.com", "himalayas.app",
-)
+# Aggregator/middleman hosts that re-list jobs behind their own signup walls
+# are judged by app.common.apply_link (ONE list, host labels — the substring
+# list that lived here missed jobleads/mysmartpros/rekru.ru and ranked them as
+# the employer's own site). Google Jobs usually lists these FIRST in
+# apply_options, so "first non-Google link" used to hand users a
+# Jobright/ZipRecruiter page instead of the company's own application form.
 
 
 def _rank_apply_link(link: str) -> int:
@@ -82,9 +76,8 @@ def _rank_apply_link(link: str) -> int:
     from app.discovery.resolver import ATSDetector
     if ATSDetector.detect_from_url(low):
         return 3
-    from urllib.parse import urlparse
-    host = urlparse(low).netloc
-    if any(agg in host for agg in _AGGREGATOR_HOSTS):
+    from app.common.apply_link import is_aggregator_url
+    if is_aggregator_url(low):
         return 1
     return 2
 

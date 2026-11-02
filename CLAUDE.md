@@ -504,6 +504,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `_inherit_shared_first_seen` looks it up for any door that arrives without it;
   `adoption.repair_copied_first_seen` (daily, registry maintenance, bounded)
   re-dates open copies still younger than their posting by >1 h.
+- **The board is jobs SpotApply can apply to** (2026-11-02, `common/apply_link.py`):
+  `slate.place()` refuses a link that opens a job board (jobicy, Adzuna, Jooble,
+  LinkedIn, Jobright… — by HOST labels, never the source; a SerpAPI row with a
+  Greenhouse link is fine) as `aggregator_link`; it keeps its score in All Jobs,
+  labelled `opens_on`. One list feeds the gate, "Hide job-board links" (SQL
+  `url_regex`) and SerpAPI's link ranker. A user's one Auto-Fill opened a jobicy
+  page while Deepgram's own Ashby posting sat in the pool. `BOARD_DIRECT_APPLY_ONLY=0`
+  restores them. Guard: `test_aggregator_links`.
 - **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
   weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
   displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.
