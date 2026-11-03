@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html><head><title>Ground Software Engineer — Lever custom questions</title></head>
+<body>
+  <h1>Apply — Lever custom questions (live test 2026-11-03)</h1>
+  <!-- The "Application questions - US" card of a real Lever form, synthetic copy -->
+  <form id="application-form" class="application-form">
+    <div class="application-field">
+      <label>Full name<input type="text" name="name" required></label>
+    </div>
+    <div class="application-field">
+      <label>Email<input type="email" name="email" required></label>
+    </div>
+    <div class="application-field">
+      <label>Resume<input type="file" id="resume" name="resume" required></label>
+    </div>
+    <div class="application-question">
+      <label>What is your notice period and when would you be available to start? *
+        <input type="text" id="notice" name="cards[c1][field0]" placeholder="Type your response" required>
+      </label>
+    </div>
+    <div class="application-question">
+      <label>This role requires at least 3 days a week in the office, are you able to easily commute to the location the role is based in? *
+        <select id="commute" name="cards[c1][field1]" required>
+          <option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option>
+        </select>
+      </label>
+    </div>
+    <div class="application-question">
+      <label>If not, would you be open to relocating? Please note, we do provide relocation assistance *
+        <select id="relocate" name="cards[c1][field2]" required>
+          <option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option>
+        </select>
+      </label>
+    </div>
+    <div class="application-question">
+      <label>Are you currently legally authorized to work in the United States? *
+        <select id="authorized" name="cards[c1][field3]" required>
+          <option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option>
+        </select>
+      </label>
+    </div>
+    <div class="application-question">
+      <label>Will you now or in the future require employer sponsorship to work in the United States? *
+        <select id="sponsor" name="cards[c1][field4]" required>
+          <option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option>
+        </select>
+      </label>
+    </div>
+    <div class="application-question">
+      <label>If you selected “Yes” to requiring sponsorship now or in the future, please specify your current visa or work authorization status (e.g. H-1B, TN, OPT, etc.) *
+        <input type="text" id="visa" name="cards[c1][field5]" required>
+      </label>
+    </div>
+    <button type="submit">Submit application</button>
+  </form>
+</body>
+</html>

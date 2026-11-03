@@ -6863,7 +6863,7 @@
             if (cb && _SPONSOR_NEVER.includes(v)) cb.checked = false;
             if (!hint) return;
             hint.textContent = ['STEM OPT', 'OPT', 'CPT', 'Student Visa'].includes(v)
-                ? "You'll need H-1B sponsorship after your student work permission, so jobs that say they won't sponsor are hidden. Sponsorship questions on forms stay yours to answer."
+                ? "You'll need H-1B sponsorship after your student work permission, so jobs that say they won't sponsor are hidden. Forms that ask if you'll need sponsorship are answered Yes; \"authorized to work without sponsorship?\" stays yours to answer."
                 : _SPONSOR_NEEDED.includes(v) ? "Jobs that say they won't sponsor are hidden."
                 : _SPONSOR_NEVER.includes(v) ? 'No sponsorship needed.' : '';
         }

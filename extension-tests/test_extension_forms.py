@@ -50,6 +50,10 @@ REQUESTS: list[tuple[str, str]] = []
 # per-scenario override (phone, skills, sponsorship) is silently reverted.
 CURRENT_PACK: dict = {}
 
+# How many resume requests the stub answers "still being written" (409) — the
+# server's answer while Auto-Fill's own tailor runs (live test 2026-11-03).
+RESUME_GENERATING = {"left": 0}
+
 
 def base_pack(apply_url: str) -> dict:
     return {
@@ -119,6 +123,10 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
         REQUESTS.append(("GET", self.path))
         if self.path.split("?")[0].endswith("/resume"):
             import base64
+            if RESUME_GENERATING["left"] > 0 and "retry=1" in self.path:
+                RESUME_GENERATING["left"] -= 1
+                return self._json({"detail": {"generating": True, "retry_after": 2,
+                                              "message": "still being written"}}, 409)
             return self._json({
                 "filename": "Alexandra_Nguyen_Resume.docx",
                 "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -312,6 +320,42 @@ def main():
               v("input[name='urls[LinkedIn]']"))
         check("L5 résumé attached",
               page.eval_on_selector("input[name='resume']", "el => el.files.length") == 1)
+        page.close()
+
+        # ── LF: Lever custom questions + a resume still being written ──────
+        # Live test 2026-11-03 (Loft Orbital): F-1 OPT, Open to relocation,
+        # notice period "2 weeks". The resume came back 409 on every request
+        # and was never retried; the relocation dropdown took the location
+        # rule; nothing was in the notice-period box.
+        print("\nLever custom questions (live test 2026-11-03)")
+        pack = dict(base_pack(f"{BASE}/lever-loft.html"),
+                    work_authorization="F-1 OPT", work_auth_status="OPT",
+                    requires_sponsorship=True, authorized_now=None,
+                    open_to_relocation=True, availability="2 weeks",
+                    location="Cincinnati, OH")
+        REQUESTS.clear()
+        RESUME_GENERATING["left"] = 2
+        page, _ = drive_fill(ctx, f"{BASE}/lever-loft.html", pack)
+        for _ in range(40):                      # two "generating" answers, 2 s apart
+            if page.eval_on_selector("#resume", "el => el.files.length") == 1:
+                break
+            page.wait_for_timeout(500)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        gets = [p for m, p in REQUESTS if m == "GET" and p.split("?")[0].endswith("/resume")]
+        check("LF1 the resume attaches once the tailor finishes (retried, not given up)",
+              page.eval_on_selector("#resume", "el => el.files.length") == 1 and len(gets) >= 3,
+              f"gets={len(gets)}")
+        check("LF2 ...and every request says it will retry", all("retry=1" in p for p in gets), str(gets))
+        check("LF3 notice period = the profile's own words", v("#notice") == "2 weeks", v("#notice"))
+        check("LF4 relocation Yes despite the 'we provide relocation assistance' note",
+              v("#relocate") == "Yes", v("#relocate"))
+        check("LF5 commuting is left for the applicant (never the home address)",
+              v("#commute") == "", v("#commute"))
+        check("LF6 sponsorship now or in the future = Yes", v("#sponsor") == "Yes", v("#sponsor"))
+        check("LF7 the visa-status box gets the status, not 'Yes'", v("#visa") == "F-1 OPT", v("#visa"))
+        check("LF8 authorization without an EAD date stays for the applicant",
+              v("#authorized") == "", v("#authorized"))
+        RESUME_GENERATING["left"] = 0
         page.close()
 
         # ── W: Workday layout ───────────────────────────────────────────────

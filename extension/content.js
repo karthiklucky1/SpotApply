@@ -715,7 +715,13 @@ function classifyScreeningQuestion(q, pack) {
   // them. Never "Do you need relocation assistance/package?" — that asks for a
   // benefit, not willingness, and Yes there is a request we must not make.
   if (/relocat|willing to move/.test(t)) {
-    if (/assist|package|benefit|support|stipend|reimburs|expense|cover/.test(t)) return null;
+    // Judge the sentence that ASKS. "Would you be open to relocating? Please
+    // note, we do provide relocation assistance" is a willingness question
+    // with a note about the employer's offer; reading the whole label made the
+    // note's "assistance" look like a request for a package (Loft Orbital,
+    // live test 2026-11-03: left blank with "Open to relocation" ticked).
+    const asked = askingSentence(t, /relocat|willing to move/);
+    if (/assist|package|benefit|support|stipend|reimburs|expense|cover/.test(asked)) return null;
     return pack.open_to_relocation === true ? true : null;
   }
 
@@ -823,6 +829,18 @@ function classifyScreeningQuestion(q, pack) {
     return hits.every(Boolean) ? true : (skillShaped ? false : null);
   }
   return null;
+}
+
+/**
+ * The sentence of a label that asks about `topic`: the first one ending in "?"
+ * that names it, else the first that names it, else the whole label. A note
+ * beside the question ("Please note, we provide …") is never the question.
+ */
+function askingSentence(text, topic) {
+  const t = String(text || '');
+  const parts = t.match(/[^.?!]+[.?!]*/g) || [t];
+  const named = parts.filter((x) => topic.test(x));
+  return (named.find((x) => /\?\s*\*?\s*$/.test(x)) || named[0] || t).trim();
 }
 
 /**
@@ -2274,6 +2292,31 @@ function _yesNoOptions(el) {
   return yes && no ? { yes, no } : null;
 }
 
+/** _yesNoOptions for a <select>, null for anything else. */
+function _yesNoOptionsOf(el) {
+  return el && el.tagName === 'SELECT' ? _yesNoOptions(el) : null;
+}
+
+/** A Yes/No dropdown, answered only where the profile proves it. */
+function answerYesNoSelect(el, pack, question) {
+  if (el.dataset && el.dataset.spotapplyUserModified === 'true') return false;
+  const yn = _yesNoOptions(el);
+  const q = String(question || '');
+  if (!yn || !q || isDemographicQuestion(q)) return false;
+  const want = classifyScreeningQuestion(q, pack);
+  if (want === null) return false;                  // not proven: the applicant answers
+  el.value = (want ? yn.yes : yn.no).value;
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  return true;
+}
+
+/** Does this label ask for notice period / when the applicant can start? */
+function asksAvailability(label) {
+  const l = String(label || '').toLowerCase();
+  return /notice period|available to (start|begin|join)|availability to (start|begin|join)|earliest[^.?!]{0,25}\b(start|begin|join)|when (can|could|would) you (start|begin|join)|how soon (can|could) you (start|begin|join)|start(ing)? availability/.test(l);
+}
+
 // Kept for callers that only need "is this person authorized at all".
 function _isAuthorized(pack) {
   return workAuthFacts(pack).authorized;
@@ -2292,6 +2335,20 @@ function answerWorkAuthField(el, pack, label) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
     try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
     return true;
+  }
+  // "If you selected Yes to requiring sponsorship, please specify your current
+  // visa or work authorization status (e.g. H-1B, TN, OPT)" asks for the
+  // STATUS. It mentions sponsorship, so it used to take the Yes/No answer —
+  // "Yes" typed where "F-1 OPT" belongs. A follow-up to a Yes the applicant
+  // would not give stays empty.
+  const asksStatus = !/^\s*(are|do|does|will|would|can|could|have|has|is)\b/.test(l) &&
+    /\b(specify|state|list|enter|provide|indicate|what is|what's|which)\b[^?]{0,80}\b(visa|status|authori[sz]ation|immigration)\b|\bvisa (type|status)\b|\b(current|your) (visa|immigration|work authori[sz]ation) status\b/.test(l);
+  if (asksStatus) {
+    if (/\bif you (selected|answered|chose|said)\b[^.?!]{0,20}\byes\b/.test(l) &&
+        pack.requires_sponsorship !== true) return false;
+    if (!pack.work_authorization) return false;
+    if (el.tagName === "SELECT") return selectOption(el, pack.work_authorization);
+    return fillInput(el, pack.work_authorization);
   }
   // A yes/no QUESTION in a text box or a non-boolean list: answer it only when
   // known, never with the status string.
@@ -3504,12 +3561,18 @@ async function fillUniversal(pack) {
       fillInput(inp, pack.portfolio_url || '');
 
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
-    } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
+    } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)
+               && !_yesNoOptionsOf(inp)) {
       // An autocomplete commits only a picked suggestion (Ashby's Location).
       if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
       else fillInput(inp, loc.city);
     // Location/where-based fields get the full location
-    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
+    // A Yes/No dropdown is a screening question even when it says "location":
+    // "relocation" contains it, and so does "commute to the location the role
+    // is based in?" — both took this branch and got the home address typed at
+    // them (Loft Orbital, live test 2026-11-03).
+    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)
+               && !_yesNoOptionsOf(inp)) {
       if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
       else fillInput(inp, pack.location || '');
 
@@ -3531,6 +3594,16 @@ async function fillUniversal(pack) {
     // and skipped on every form. Same trap for /apt/ in "adapt".
     } else if (/address.?line.?2|\bapt\b|\bapartment\b|\bsuite\b|\bunit\b/i.test(signals)) {
       matched = false; // never auto-fill address line 2
+
+    // ── Notice period / when you can start: the profile's own words ──
+    // ("2 weeks"). Typed only into a text box; a date picker or a dropdown is
+    // left for the applicant rather than guessed from that phrase.
+    } else if (asksAvailability(labelOnly || signals)
+               && inp.tagName !== 'SELECT' && inp.tagName !== 'BUTTON'
+               && !/^(date|month|week|number)$/i.test(inp.type || '')
+               && !/\bdate\b|mm\s*\/\s*dd|dd\s*\/\s*mm/i.test(labelOnly || signals)) {
+      if (pack.availability) fillInput(inp, pack.availability);
+      else matched = false;
 
     // ── Other fields ──
     } else if (/cover.?letter/i.test(signals) && inp.tagName === 'TEXTAREA') {
@@ -3568,6 +3641,10 @@ async function fillUniversal(pack) {
       matched = answerWorkAuthField(inp, pack, signals);
     } else if (/postal|zip.?code/i.test(signals)) {
       fillInput(inp, pack.zip_code || '');
+    } else if (_yesNoOptionsOf(inp)) {
+      // Any other Yes/No dropdown (Lever's custom questions are <select>s):
+      // the same rules radios and Yes/No buttons answer from.
+      matched = answerYesNoSelect(inp, pack, labelOnly || signals);
     } else {
       matched = false;
     }
@@ -4083,6 +4160,23 @@ async function attachResume(root, pack) {
       reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
       return false;
     }
+    // Still being written, or a transient failure: try again on a timer. The
+    // old message promised more attempts and nothing ever made one — the
+    // attach ran once per page, and a one-page form never had a second pass.
+    if (got.reason === 'generating' || got.reason === 'fetch_failed') {
+      const waiting = got.reason === 'generating';
+      if (scheduleResumeRetry(pack, got.reason, waiting ? got.retryAfter * 1000 : null)) {
+        setResumeStatus(waiting ? 'pending' : 'error', '', '', got.hint);
+        showOverlay(
+          `${waiting ? '⏳ <b>Resume on its way</b>' : '📎 Resume not attached yet.'}<br>` +
+          `<small style="color:#c4b5fd;font-weight:400">${got.hint}</small>`, [], true);
+        return false;
+      }
+      got.hint = waiting
+        ? "Your tailored resume is taking longer than usual. Attach it from the SpotApply dashboard (View Documents), or click Fill again in a minute."
+        : "Couldn't download your resume from SpotApply after several tries. Attach it manually, or click Fill again.";
+      if (waiting) got.reason = 'generating_timeout';
+    }
     // Surface WHY to the user — a silent console.warn here was the main way
     // "resume is not uploading" reports happened with no visible explanation.
     console.warn("[SpotApply] resume fetch failed:", got.status, got.error || '');
@@ -4205,18 +4299,44 @@ let _resumeFileCache = null;
  * The applicant's resume for this application as a File, or why not:
  * { ok, filename, mime, kind, notice, file } / { ok: false, status, reason, hint, error }.
  */
-async function fetchResumeFile(pack, accept) {
+// One request at a time per (application, accept, wait): the native autofill
+// layer and attachResume used to ask in parallel, and each now waits server-side.
+const _resumeFetchInFlight = new Map();
+
+async function fetchResumeFile(pack, accept, opts) {
   const appId = pack && pack.app_id;
   const _acc = String(accept || '*');
+  const noWait = !!(opts && opts.noWait);
   if (_resumeFileCache && _resumeFileCache.ok && _resumeFileCache.app_id === appId &&
       _resumeFileCache.accept === _acc) return _resumeFileCache;
+  const key = `${appId}|${_acc}|${noWait ? 0 : 1}`;
+  if (_resumeFetchInFlight.has(key)) return _resumeFetchInFlight.get(key);
+  const run = _fetchResumeFileOnce(pack, appId, _acc, noWait);
+  _resumeFetchInFlight.set(key, run);
+  try { return await run; } finally { _resumeFetchInFlight.delete(key); }
+}
+
+async function _fetchResumeFileOnce(pack, appId, _acc, noWait) {
+  // retry=1: this build retries on its own, so while Auto-Fill's tailor is
+  // still writing the resume the server says "generating" (409) instead of
+  // handing back the uploaded one. wait=0: answer at once (the native autofill
+  // layer runs before any field is filled and must not hold the fill up).
   const res = await apiFetch(
-    `${packBase(pack)}/api/fill-pack/${appId}/resume?accept=${encodeURIComponent(_acc)}`,
+    `${packBase(pack)}/api/fill-pack/${appId}/resume?accept=${encodeURIComponent(_acc)}` +
+      `&retry=1${noWait ? '&wait=0' : ''}`,
     "GET", pack.auth_token, null
   );
   if (!res.ok || !res.data || !res.data.base64) {
     const status = res.status || 0;
+    const detail = res.data && res.data.detail;
     let reason, hint;
+    if (status === 409 && detail && typeof detail === 'object' && detail.generating) {
+      // Auto-Fill's own tailor is still writing it (25-47 s in production).
+      // Not an error: attachResume waits and retries (scheduleResumeRetry).
+      const retryAfter = Math.max(2, Math.min(30, Number(detail.retry_after) || 5));
+      return { ok: false, status, reason: 'generating', retryAfter, error: '',
+               hint: "Writing your tailored resume for this job. It attaches here automatically when it's ready (usually under a minute)." };
+    }
     if (status === 401) {
       reason = 'auth_expired';
       hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
@@ -4232,7 +4352,7 @@ async function fetchResumeFile(pack, accept) {
       hint = "Your tailored resume isn't generated yet. Open this application on the SpotApply dashboard, generate the resume, then return here.";
     } else {
       reason = 'fetch_failed';
-      hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
+      hint = "Couldn't download your resume from SpotApply (network/server). Trying again in a few seconds; you can also attach it manually.";
     }
     return { ok: false, status, reason, hint, error: res.error || '' };
   }
@@ -4707,8 +4827,11 @@ async function runNativeAutofill(pack) {
               '<small>Your SpotApply resume is going in. Anything it misses gets filled right after.</small>',
               [], false);
 
-  const got = await fetchResumeFile(pack);
-  if (!got.ok) return done({ reason: 'resume_unavailable' }, widget.kind);   // attachResume explains why
+  // wait=0: this runs before any field is filled. While the tailored resume is
+  // still being written, skip the site's parser; attachResume waits for it.
+  const got = await fetchResumeFile(pack, '*', { noWait: true });
+  if (!got.ok) return done({ reason: got.reason === 'generating' ? 'resume_generating' : 'resume_unavailable' },
+                           widget.kind);   // attachResume explains why
 
   // The upload control: offered outright, or revealed by the option we click.
   let input = widget.kind === 'input' ? widget.input : null;
@@ -4786,6 +4909,50 @@ let _lastWriteKept = false;
 // fix (422). Retrying is pointless until they do, so we stop and keep saying why.
 let _resumeBlockedReason = null;
 let _lastFillTimestamp = 0;
+
+// ── Resume retries (the attach used to run once per page, then stop) ────────
+// While Auto-Fill's own tailor is writing the resume the server answers
+// "generating"; a network/server blip is retried a few times with backoff.
+// One pending timer per (application, page); a page change cancels it, and the
+// next page's own pass attaches from the cached file.
+const RESUME_GENERATING_MAX_MS = 3 * 60 * 1000;
+const RESUME_TRANSIENT_RETRIES = 3;
+let _resumeRetry = null;
+
+/** Queue one more attach attempt. False = out of retries (say so, stop). */
+function scheduleResumeRetry(pack, reason, delayMs) {
+  const appId = pack && pack.app_id;
+  const page = location.href;
+  if (!_resumeRetry || _resumeRetry.appId !== appId || _resumeRetry.page !== page) {
+    if (_resumeRetry && _resumeRetry.timer) clearTimeout(_resumeRetry.timer);
+    _resumeRetry = { appId, page, transient: 0, startedAt: Date.now(), timer: null };
+  }
+  const r = _resumeRetry;
+  if (r.timer) return true;                             // already queued
+  if (reason === 'generating') {
+    if (Date.now() - r.startedAt > RESUME_GENERATING_MAX_MS) return false;
+  } else {
+    if (r.transient >= RESUME_TRANSIENT_RETRIES) return false;
+    r.transient += 1;
+  }
+  const wait = delayMs != null ? delayMs : 4000 * Math.pow(2, r.transient - 1);   // 4 s, 8 s, 16 s
+  const fire = async () => {
+    r.timer = null;
+    if (_resumeRetry !== r || location.href !== r.page || _resumeAttachedOnPage === r.page) return;
+    if (_fillingInProgress) { r.timer = setTimeout(fire, 2000); return; }   // a fill pass owns the page
+    try {
+      if (await attachResume(document, pack)) {
+        _resumeAttachedOnPage = r.page;
+        if (_resumeRetry === r) _resumeRetry = null;
+      }
+      refreshStepOverlay(pack);
+    } catch (e) {
+      console.warn('[SpotApply] resume retry error:', e.message);
+    }
+  };
+  r.timer = setTimeout(fire, wait);
+  return true;
+}
 
 /**
  * Fill this page for the application in ``fillPack``. Returns what actually
@@ -5645,7 +5812,7 @@ function showStepOverlay(result, pack) {
   let resumeHtml = '';
   const rs = _resumeStatus;
   if (rs) {
-    const label = { accepted: '✅ Resume attached', unconfirmed: '⚠️ Resume not confirmed',
+    const label = { accepted: '✅ Resume attached', pending: '⏳ Resume on its way', unconfirmed: '⚠️ Resume not confirmed',
                     wrong_format: '⚠️ Resume format not accepted', failed: '⚠️ Resume not attached',
                     error: '⚠️ Resume not attached' }[rs.state] || '📎 Resume';
     const file = rs.filename ? ` — ${esc(rs.filename)}${rs.kind ? ` (${esc(rs.kind)})` : ''}` : '';

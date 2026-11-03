@@ -830,8 +830,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   card_match. "Both" used to mean full-time-only and every F-1 OPT/CPT user
   had the checkbox unticked. Changing Looking for runs
   `realign.realign_job_type` (re-opens fresh type-only rejections, takes
-  unopened wrong-type jobs off the board). Form answers for dated statuses stay
-  the user's (`_sponsorship_answer_for_pack`). Guard: `test_student_options`.
+  unopened wrong-type jobs off the board). Form answers follow the SAME answer
+  (founder 2026-11-03, `_sponsorship_answer_for_pack`): "will you now or in the
+  future need sponsorship?" = Yes for OPT/STEM OPT/CPT/H-1B, never No for a dated
+  status; "authorized WITHOUT sponsorship?" stays the user's. The dashboard showed
+  the box ticked for OPT without saving it. Guard: `test_student_options`.
   **A posting that rules the user out never reaches the board** (2026-10-28):
   `sponsorship_text.find_refusal` keeps "U.S."/"i.e." inside a sentence and reads
   required citizenship/clearance + "not eligible for / will not hire … who need
@@ -957,6 +960,15 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (live test 2026-10-09; guards: `test_extension_fill_guards`, audit §11).
   **Setup after a resume upload**: review profile (what was read + what's missing)
   → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
+  **Resume while tailoring** (2026-11-03): Auto-Fill's own background tailor takes
+  25-47 s and the extension asked at once — every request 409'd, nothing retried,
+  three forms went out with no resume. The route now WAITS (`RESUME_TAILOR_WAIT_SECONDS`
+  20, under the extension's 25 s timeout); 1.2.1+ sends `retry=1` and retries on
+  `generating` (`scheduleResumeRetry`); older builds get the uploaded resume + notice.
+  A Yes/No `<select>` is a screening question (relocation read from the ASKING
+  sentence), never the location rule; a "specify your visa status" box gets the
+  status; profile links get `https://`; notice period = `availability`.
+  Guards: `test_resume_while_tailoring`, `test_fill_pack_answers`, forms LF1-LF8.
   Guards: `test_extension_rules` (Node runs the real functions) +
   `extension-tests/test_extension_audit.py` (CI job `extension`).
 - **Compliance pages and consents** (2026-10-15): `/terms` (18+, renewal, DMCA §9b,

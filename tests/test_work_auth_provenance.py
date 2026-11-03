@@ -203,11 +203,14 @@ def test_an_undated_status_offers_no_runway_claim():
 
 
 # ── the future-sponsorship question is never answered "No" on a dated status ─
+# Founder 2026-11-03: a status that WILL need sponsorship is answered Yes — the
+# dashboard ticks the box for it and matching treats it so; the audit's live
+# F-1 OPT profile with `requires_sponsorship: false` now gets Yes, never No.
 
 @pytest.mark.parametrize("status,requires,expected", [
-    ("F-1 OPT", False, None),          # the audit's contradictory live profile
-    ("F-1 STEM OPT", False, None),
-    ("H-1B", False, None),
+    ("F-1 OPT", False, True),          # the audit's contradictory live profile
+    ("F-1 STEM OPT", False, True),
+    ("H-1B", False, True),             # a transfer is sponsorship too
     ("F-1 OPT", True, True),           # a truthful Yes never bypasses screening
     ("U.S. Citizen", False, False),
     ("Green Card", False, False),
@@ -223,7 +226,7 @@ def test_the_fill_pack_sends_only_a_certain_sponsorship_answer(status, requires,
 def test_the_answer_pack_does_not_pre_answer_no_for_opt():
     from app.autofill.answer_pack import _sponsorship_text
     assert _sponsorship_text(_P(work_authorization="F-1 OPT", requires_sponsorship=False,
-                                ead_end_date=_FUTURE)) == "Needs your confirmation"
+                                ead_end_date=_FUTURE)) == "Yes"
     assert _sponsorship_text(_P(work_authorization="U.S. Citizen", requires_sponsorship=False)) == "No"
 
 

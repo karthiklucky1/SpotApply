@@ -61,9 +61,14 @@ _DATED_STATUSES = ("opt", "stem opt", "stem-opt", "f-1", "f1", "ead", "h-1b",
 
 
 def _parse_end(raw: str):
-    """The end date as a `date`, or None when the free-text field is unreadable."""
+    """The end date as a `date`, or None when the free-text field is unreadable.
+
+    A slash date that reads both ways is MONTH first: an EAD is a US document,
+    and "02/01/2027" read day-first became 2 January (the suite caught it on
+    2026-11-03, the first day its today-relative date was ambiguous). A date
+    only day-first can read ("25/12/2027") still parses."""
     from datetime import datetime
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
         try:
             return datetime.strptime((raw or "")[:10], fmt).date()
         except ValueError:

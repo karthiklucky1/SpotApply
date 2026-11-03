@@ -154,11 +154,12 @@ def test_the_scorer_is_told_what_the_status_says():
     assert "does NOT need sponsorship" in _profile_system_prompt(_Prof(work_auth_status="Citizen"))
 
 
-def test_form_answers_stay_the_students_to_give():
-    """The audited rule: a dated status never gets its future-sponsorship
-    question answered for the user — from the dropdown either."""
+def test_a_student_status_answers_the_future_sponsorship_question_yes():
+    """Founder 2026-11-03 (replaces the 09-28 "the student answers" rule): the
+    dropdown already ticks "Requires visa sponsorship" and drives matching, so
+    "will you now or in the future need sponsorship?" is Yes — never No."""
     for status in ("OPT", "CPT", "STEM OPT"):
-        assert server._sponsorship_answer_for_pack(_Prof(work_auth_status=status)) is None
+        assert server._sponsorship_answer_for_pack(_Prof(work_auth_status=status)) is True
 
 
 # ── changing "Looking for" re-points the board ───────────────────────────────

@@ -45,6 +45,8 @@ FUNCTIONS = [
     "_hhIsPlaceholder", "pickHowHeardOption", "_selectHasChoice",
     "_companyCore", "isHowHeardFillQuestion", "_saysSpecifyOther",
     "autoSubmitAllowedHost", "escapeHtml", "samePosting",
+    "askingSentence", "asksAvailability", "_yesNoOptions", "_yesNoOptionsOf",
+    "answerYesNoSelect", "selectOption", "answerWorkAuthField",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "AUTO_SUBMIT_BLOCK_TEXT",
@@ -90,7 +92,9 @@ def _const(src: str, name: str) -> str:
 
 
 # content.js state the extracted functions read (eeoStated reads the live pack).
-PRELUDE = "\n".join(["let _copilotPack = null;"] +
+PRELUDE = "\n".join(["let _copilotPack = null;",
+                     # answerWorkAuthField writes a text box through fillInput (DOM).
+                     "function fillInput(el, v) { el.value = v; return true; }"] +
                     [_const(CONTENT, c) for c in CONSTS] +
                     [_function(CONTENT, f) for f in FUNCTIONS])
 
@@ -298,8 +302,9 @@ def test_the_resume_request_always_says_what_the_field_takes():
     assert "(_accept ?" not in body, "the accept parameter must never be optional again"
     # The download itself lives in the helper the native-autofill layer shares.
     fetch = _function(CONTENT, "fetchResumeFile")
-    assert "/resume?accept=${encodeURIComponent(_acc)}" in fetch
     assert "String(accept || '*')" in fetch and "(_acc ?" not in fetch
+    once = _function(CONTENT, "_fetchResumeFileOnce")     # the request itself
+    assert "/resume?accept=${encodeURIComponent(_acc)}" in once and "(_acc ?" not in once
 
 
 def test_the_current_company_is_the_current_employer():
@@ -987,3 +992,110 @@ def test_the_clicks_approval_survives_the_packs_refresh_but_not_a_refusal():
     assert "fresh.auto_submit = true" in carry
     gate = _function(CONTENT, "maybeAutoSubmit")
     assert gate.index("autoSubmitAllowedHost(") < gate.index("samePosting(pack.apply_url") < gate.index("isLoginWall()")
+
+
+# ── Live test 2026-11-03 (Loft Orbital on Lever, Freed on Ashby) ─────────────
+# Open to relocation ticked, F-1 OPT, notice period "2 weeks" — and every one
+# of these questions was left blank, or about to be answered wrongly.
+
+OPT = dict(work_authorization="F-1 OPT", requires_sponsorship=True, open_to_relocation=True,
+           availability="2 weeks")
+
+
+@pytest.mark.parametrize("question,profile,want", [
+    # the note about the employer's offer is not a request for a package
+    ("If not, would you be open to relocating? Please note, we do provide relocation assistance *",
+     OPT, True),
+    ("Are you willing to relocate to Austin, TX? Relocation assistance is available.", OPT, True),
+    # a question that DOES ask for the package stays the applicant's
+    ("Do you require relocation assistance?", OPT, None),
+    ("Will you need relocation support? We are a remote-first company.", OPT, None),
+    ("Would you be open to relocating?", dict(OPT, open_to_relocation=False), None),
+    # commuting depends on where the job is: never guessed
+    ("This role requires at least 3 days a week in the office, are you able to easily commute "
+     "to the location the role is based in?", OPT, None),
+])
+def test_relocation_reads_the_sentence_that_asks(question, profile, want):
+    assert ask(question, **profile) is want
+
+
+def _select(*options):
+    return {"tagName": "SELECT", "value": "", "dataset": {},
+            "options": [{"value": v, "text": t} for v, t in options]}
+
+
+YES_NO = (("", "Select..."), ("Yes", "Yes"), ("No", "No"))
+
+
+def test_a_yes_no_dropdown_is_answered_by_the_screening_rules():
+    script_calls = [["answerYesNoSelect", _select(*YES_NO), OPT,
+                     "If not, would you be open to relocating? Please note, we do provide "
+                     "relocation assistance"],
+                    ["answerYesNoSelect", _select(*YES_NO), OPT,
+                     "Are you able to easily commute to the location the role is based in?"]]
+    # Run with the element echoed back so the chosen value is visible.
+    res = run_js([["(el, p, q) => (el.dispatchEvent = () => true, answerYesNoSelect(el, p, q), el.value)", *c[1:]]
+                  for c in script_calls])
+    assert res == ["Yes", ""]
+
+
+def test_the_sponsorship_dropdown_takes_the_yes_and_the_status_box_takes_the_status():
+    q_sponsor = "Will you now or in the future require employer sponsorship to work in the United States?"
+    q_status = ("If you selected \u201cYes\u201d to requiring sponsorship now or in the future, please "
+                "specify your current visa or work authorization status (e.g. H-1B, TN, OPT, etc.)")
+    echo = "(el, p, q) => (el.dispatchEvent = () => true, answerWorkAuthField(el, p, q), el.value)"
+    text = {"tagName": "INPUT", "value": "", "dataset": {}}
+    res = run_js([[echo, _select(*YES_NO), OPT, q_sponsor],
+                  [echo, dict(text), OPT, q_status],
+                  # a follow-up to a Yes the applicant would not give stays empty
+                  [echo, dict(text), dict(OPT, work_authorization="US Citizen",
+                                          requires_sponsorship=False), q_status],
+                  [echo, dict(text), OPT, "What is your current visa status?"],
+                  # a real yes/no question in a text box still gets Yes/No
+                  [echo, dict(text), OPT, "Will you require visa sponsorship?"]])
+    assert res == ["Yes", "F-1 OPT", "", "F-1 OPT", "Yes"]
+
+
+@pytest.mark.parametrize("label,want", [
+    ("What is your notice period and when would you be available to start?", True),
+    ("When can you start?", True),
+    ("How soon could you join us?", True),
+    ("Earliest start date", True),            # the fill branch skips date-shaped boxes
+    ("Notice period", True),
+    ("Are you available to work weekends?", False),
+    ("Start date", False),
+    ("Availability for an interview", False),
+])
+def test_notice_period_questions_are_recognised(label, want):
+    assert run_js([["asksAvailability", label]])[0] is want
+
+
+def test_the_notice_period_box_gets_the_profiles_words_and_nothing_else():
+    fn = _function(CONTENT, "fillUniversal")
+    branch = fn[fn.index("asksAvailability(labelOnly || signals)"):]
+    branch = branch[:branch.index("// ── Other fields ──")]
+    assert "pack.availability" in branch and "SELECT" in branch and "date" in branch
+
+
+def test_location_rules_never_take_a_yes_no_dropdown():
+    """"Relocation" contains "location", and so does "commute to the location
+    the role is based in?": both got the home address typed at them."""
+    fn = _function(CONTENT, "fillUniversal")
+    for rule in ("/\\bcity\\b|\\btown\\b/i.test(signals)", "/location|where.*based|where.*live|current.?city/i.test(signals)"):
+        cond = fn[fn.index(rule):]
+        cond = cond[:cond.index("{")]
+        assert "_yesNoOptionsOf(inp)" in cond, rule
+    assert "answerYesNoSelect(inp, pack" in fn
+
+
+def test_the_resume_is_retried_while_it_is_being_written():
+    fetch = _function(CONTENT, "_fetchResumeFileOnce")
+    assert "&retry=1" in fetch and "detail.generating" in fetch and "'generating'" in fetch
+    attach = _function(CONTENT, "attachResume")
+    assert "scheduleResumeRetry(pack, got.reason" in attach
+    sched = _function(CONTENT, "scheduleResumeRetry")
+    assert "setTimeout(fire" in sched and "RESUME_GENERATING_MAX_MS" in sched
+    assert "I'll keep retrying" not in CONTENT, "never promise a retry nothing performs"
+    # the native-autofill step runs before any field is filled: it must not wait
+    native = _function(CONTENT, "runNativeAutofill")
+    assert "noWait: true" in native

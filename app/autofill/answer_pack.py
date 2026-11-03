@@ -114,12 +114,18 @@ def _get_or_create_profile(user_id: str | None = None) -> UserProfile:
 
 
 def _sponsorship_text(profile) -> str:
+    """The Answer Pack's line for "will you require sponsorship?" — the same
+    decision the extension fills from (server._sponsorship_answer_for_pack):
+    Yes when the checkbox or the status says sponsorship will be needed, No
+    only for a status that never needs it, otherwise the user confirms."""
     if bool(getattr(profile, "requires_sponsorship", False)):
         return "Yes"
     try:
         from app.intelligence.work_auth import assess_profile
         fr = assess_profile(profile)
-        if fr.validity == "not_applicable" and not fr.needs_future_sponsorship \
+        if fr.needs_future_sponsorship:
+            return "Yes"
+        if fr.validity == "not_applicable" \
                 and ((getattr(profile, "work_authorization", "") or "")
                      + (getattr(profile, "visa_status", "") or "")).strip():
             return "No"

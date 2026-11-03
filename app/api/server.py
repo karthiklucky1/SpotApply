@@ -5805,13 +5805,20 @@ def _sponsorship_answer_for_pack(profile) -> Optional[bool]:
     """The value the extension may put in a "do you (now or in future) require
     sponsorship?" field, or None to leave it for the user.
 
-    True when the profile says sponsorship is needed (a truthful Yes never
-    bypasses screening). False ONLY for a status that never needs sponsorship
-    (citizen, permanent resident, a plain "authorized" default). A DATED status
-    (OPT, STEM OPT, H-1B, EAD…) is the user's to answer: its future depends on
-    plans and filings we do not hold, and the audit found a live F-1 OPT
-    profile with `requires_sponsorship: false` that the extension would have
-    answered "No" for — a knockout answer given on someone's behalf.
+    True when the user will need sponsorship — the checkbox, or the ONE answer
+    the rest of the product already uses (`tenant_prefs.needs_sponsorship`: F-1
+    OPT, STEM OPT, CPT, a student visa and H-1B do). Founder, 2026-11-03: the
+    dashboard ticks "Requires visa sponsorship" for an OPT status and tells the
+    user they will need H-1B sponsorship, matching and scoring treat them that
+    way, and the form question was still left blank — "I gave sponsorship
+    details but it didn't reflect". The 09-28 rule answered only from a SAVED
+    checkbox, and the dashboard shows that tick without saving it.
+
+    Never "No" for a dated status (the audit's live F-1 OPT profile with
+    `requires_sponsorship: false` would have been a knockout given on someone's
+    behalf). False ONLY for a status that never needs sponsorship (citizen,
+    permanent resident, a plain "authorized" default). The combined "authorized
+    to work WITHOUT sponsorship?" question stays the user's (content.js).
     """
     if profile is None:
         return None
@@ -5822,11 +5829,26 @@ def _sponsorship_answer_for_pack(profile) -> Optional[bool]:
         fr = assess_profile(profile)
     except Exception:
         return None
-    if fr.validity != "not_applicable" or fr.needs_future_sponsorship:
+    if fr.needs_future_sponsorship:
+        return True
+    if fr.validity != "not_applicable":
         return None
     blob = ((getattr(profile, "work_authorization", "") or "")
             + (getattr(profile, "visa_status", "") or "")).strip()
     return False if blob else None
+
+
+def _with_scheme(url: str) -> str:
+    """A profile link as a form's URL field accepts it: "github.com/x" ->
+    "https://github.com/x". Left alone when it already has a scheme, is empty,
+    or does not look like a web address (a space, no dot) — never invented."""
+    import re as _re
+    u = (url or "").strip()
+    if not u or _re.match(r"^[a-z][a-z0-9+.-]*://", u, _re.I):
+        return u
+    if " " in u or "." not in u.split("/", 1)[0] or u.startswith(("mailto:", "@")):
+        return u
+    return "https://" + u.lstrip("/")
 
 
 def _authorized_now_for_pack(profile) -> Optional[bool]:
@@ -6069,9 +6091,11 @@ def get_fill_pack(application_id: int, request: Request, submit: bool = False) -
         "email": p.email if p else "",
         "phone": p.phone if p else "",
         "location": p.location if p else "",
-        "linkedin_url": p.linkedin_url if p else "",
-        "github_url": p.github_url if p else "",
-        "portfolio_url": p.portfolio_url if p else "",
+        # With a scheme: profiles store "github.com/x" as typed, and Ashby's
+        # URL fields reject that ("Please enter a URL", live test 2026-11-03).
+        "linkedin_url": _with_scheme(p.linkedin_url if p else ""),
+        "github_url": _with_scheme(p.github_url if p else ""),
+        "portfolio_url": _with_scheme(p.portfolio_url if p else ""),
         "current_title": p.current_title if p else "",
         "years_experience": p.years_experience if p else 0,
         "salary_min": p.salary_min if p else 0,
@@ -6129,6 +6153,10 @@ def get_fill_pack(application_id: int, request: Request, submit: bool = False) -
         # first, else these; a skill the résumé does not show at all is No.
         "skill_role_months": _skill_evidence_for_pack(uid, (p.key_skills if p else "") or "")["role"],
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
+        # The user's own words for notice period / earliest start ("2 weeks").
+        # The extension types it into a text question that asks exactly that,
+        # never into a date picker or a select ("" = left for the user).
+        "availability": ((getattr(p, "availability", "") if p else "") or "").strip()[:120],
         # The user's saved answer to "How did you hear about this opportunity?":
         # the ONLY source the extension answers that question from ("" = left
         # for the user). Never a remembered answer and never a model's.
@@ -6338,7 +6366,8 @@ def _accept_allows(accept: str, ext: str, mime: str) -> bool:
 
 @app.get("/api/fill-pack/{application_id}/resume")
 @_rate_limit("15/minute")
-def get_tailored_resume(application_id: int, request: Request, accept: str = "") -> dict:
+def get_tailored_resume(application_id: int, request: Request, accept: str = "",
+                        retry: int = 0, wait: int = -1) -> dict:
     """Return the résumé as base64 so the extension can attach it to a form's
     file input.
 
@@ -6361,6 +6390,12 @@ def get_tailored_resume(application_id: int, request: Request, accept: str = "")
     .docx to every parameterless caller instead would undo the PDF for the
     common case (fields that take PDF) on the build most users still run.
     The miss ends when the Store update (1.0.1+) reaches them.
+
+    ``retry=1`` (extension 1.2.1+): the caller retries on its own, so while a
+    tailor for this application is still writing it gets a 409 whose detail
+    says ``generating`` instead of the base-resume fallback older builds get.
+    ``wait=N`` caps how long it waits for that tailor (never past the setting);
+    the native-autofill step sends 0 because it runs before any field is filled.
     """
     import base64
     from pathlib import Path as _P
@@ -6433,6 +6468,71 @@ def get_tailored_resume(application_id: int, request: Request, accept: str = "")
             app_notes = _verdict.reason
             return _grounding_blocked_response()
 
+    def _wait_for_running_tailor():
+        """Auto-Fill's OWN tailor is writing this document: fill-pack starts one
+        in the background the moment the user clicks, and the extension asks for
+        the file a few seconds later, while it runs (25-47 s in production).
+        This route answered that with a bare 409 "already generating", which the
+        extension read as "network/server" and never asked again — production
+        2026-11-03: every resume request of three fills in a row (Greenhouse,
+        Ashby, Lever) was a 409, and no resume was attached anywhere.
+
+        Wait for it (no DB session held, bounded under the extension's 25 s
+        request timeout), then serve what it wrote. Still writing at the
+        deadline: a caller that retries (``retry=1``) is told so; an older build
+        that cannot retry gets the uploaded resume with a notice, which beats a
+        required upload left empty. Returns (response, None) to send now, or
+        (None, path) when the tailored file is ready to be served below."""
+        nonlocal app_notes
+        import time as _time
+        budget = max(0, int(settings.resume_tailor_wait_seconds))
+        if wait >= 0:
+            budget = min(budget, wait)
+        deadline = _time.monotonic() + budget
+        while _tailor_in_flight(application_id) and _time.monotonic() < deadline:
+            _time.sleep(0.5)
+        with get_session() as session:
+            row = session.get(Application, application_id)
+            new_path = row.tailored_resume_path if row else None
+            new_status = row.status if row else None
+            new_notes = row.notes if row else None
+        if new_status == ApplicationStatus.ERROR:
+            app_notes = new_notes
+            return _grounding_blocked_response(), None
+        if new_path and _P(new_path).exists():
+            _v = _export_verdict(application_id)
+            if _v.blocked:
+                app_notes = _v.reason
+                return _grounding_blocked_response(), None
+            return None, new_path
+        still_writing = _tailor_in_flight(application_id)
+        if still_writing and retry:
+            raise HTTPException(status_code=409, detail={
+                "generating": True, "retry_after": 5,
+                "message": "Your tailored resume for this job is still being written."})
+        base = _base_resume_bytes(uid)
+        if base:
+            filename, mime, blob = base
+            return {
+                "filename": filename, "mime": mime,
+                "base64": base64.b64encode(blob).decode(),
+                "tailored": False,
+                "notice": (
+                    "Your tailored resume for this job was still being written, so your "
+                    "uploaded resume is attached. Swap in the tailored one from the "
+                    "dashboard before submitting if you want it."
+                    if still_writing else
+                    "Tailoring didn't finish for this job, so your uploaded resume is "
+                    "attached. Review it before submitting."),
+            }, None
+        raise HTTPException(status_code=409, detail="already generating")
+
+    if (not path or not _P(path).exists()) and _tailor_in_flight(application_id):
+        _resp, _ready = _wait_for_running_tailor()
+        if _resp is not None:
+            return _resp
+        path = _ready
+
     if not path or not _P(path).exists():
         # Auto-tailoring is a full paid generation — it must respect the same
         # per-plan daily limit as every other tailor entry point. This was one
@@ -6456,80 +6556,85 @@ def get_tailored_resume(application_id: int, request: Request, accept: str = "")
         # fires one in the background when it sees no tailored file) — starting
         # a second one here paid twice for the same document.
         if not _claim_tailor(application_id):
-            raise HTTPException(status_code=409, detail="already generating")
-        try:
-            from app.tailoring.tailor import tailor_for_application
-            resume_path, _ = tailor_for_application(application_id)
-            path = str(resume_path)
-            # The tailor may have parked the application at ERROR (grounding
-            # failure) while still writing the file — re-check before serving.
-            # The credit is charged AFTER that check: a refused draft costs
-            # nothing on the settle path (_tailor_and_settle_owned) and used to
-            # cost one here, the route the extension actually attaches from.
-            with get_session() as session:
-                application = session.get(Application, application_id)
-                if application and application.status == ApplicationStatus.ERROR:
-                    app_notes = application.notes
-                    return _grounding_blocked_response()
-            _increment_tailor(uid or "local")   # usage + spend ledger, one writer
-        except HTTPException:
-            raise
-        except Exception as e:
-            log.warning("Resume tailoring failed for app %d: %s", application_id, e)
-            # A bare 503 told the extension only "try again", so it retried
-            # three times and gave up silently on a form where the résumé is
-            # required. When the cause is missing profile data, that is not a
-            # transient failure — it is 422 with something the user can act on.
-            uid = _get_user_id(request)
+            # Started a moment after the check above: same wait, same answers.
+            _resp, _ready = _wait_for_running_tailor()
+            if _resp is not None:
+                return _resp
+            path = _ready
+        else:
             try:
-                from app.autofill.answer_pack import _get_or_create_profile, _history_from_profile
-                prof = _get_or_create_profile(user_id=uid if uid != "local" else None)
-                hist = _history_from_profile(prof)
-                missing = []
-                if not hist["work_experience"]:
-                    missing.append("work experience")
-                if not hist["education"]:
-                    missing.append("education")
-                if missing and not _user_has_resume(uid):
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(f"Add your {' and '.join(missing)} in Settings → Profile "
-                                "(or upload a resume) so SpotApply can build a tailored resume."),
-                    )
-                if missing:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(f"Your profile has no {' and '.join(missing)}. Add it in "
-                                "Settings → Profile so the tailored resume can be generated."),
-                    )
+                from app.tailoring.tailor import tailor_for_application
+                resume_path, _ = tailor_for_application(application_id)
+                path = str(resume_path)
+                # The tailor may have parked the application at ERROR (grounding
+                # failure) while still writing the file — re-check before serving.
+                # The credit is charged AFTER that check: a refused draft costs
+                # nothing on the settle path (_tailor_and_settle_owned) and used to
+                # cost one here, the route the extension actually attaches from.
+                with get_session() as session:
+                    application = session.get(Application, application_id)
+                    if application and application.status == ApplicationStatus.ERROR:
+                        app_notes = application.notes
+                        return _grounding_blocked_response()
+                _increment_tailor(uid or "local")   # usage + spend ledger, one writer
             except HTTPException:
                 raise
-            except Exception as diag_err:
-                log.debug("resume 503 diagnosis failed for app %d: %s", application_id, diag_err)
+            except Exception as e:
+                log.warning("Resume tailoring failed for app %d: %s", application_id, e)
+                # A bare 503 told the extension only "try again", so it retried
+                # three times and gave up silently on a form where the résumé is
+                # required. When the cause is missing profile data, that is not a
+                # transient failure — it is 422 with something the user can act on.
+                uid = _get_user_id(request)
+                try:
+                    from app.autofill.answer_pack import _get_or_create_profile, _history_from_profile
+                    prof = _get_or_create_profile(user_id=uid if uid != "local" else None)
+                    hist = _history_from_profile(prof)
+                    missing = []
+                    if not hist["work_experience"]:
+                        missing.append("work experience")
+                    if not hist["education"]:
+                        missing.append("education")
+                    if missing and not _user_has_resume(uid):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(f"Add your {' and '.join(missing)} in Settings → Profile "
+                                    "(or upload a resume) so SpotApply can build a tailored resume."),
+                        )
+                    if missing:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(f"Your profile has no {' and '.join(missing)}. Add it in "
+                                    "Settings → Profile so the tailored resume can be generated."),
+                        )
+                except HTTPException:
+                    raise
+                except Exception as diag_err:
+                    log.debug("resume 503 diagnosis failed for app %d: %s", application_id, diag_err)
 
-            # Tailoring failed for a reason the user can't fix right now — an
-            # LLM outage or an exhausted credit balance. Their BASE résumé is
-            # still a perfectly good application document, and an untailored
-            # résumé attached beats a required field left empty on every form.
-            base = _base_resume_bytes(uid)
-            if base:
-                filename, mime, blob = base
-                log.info("Serving base resume for app %d (tailoring unavailable)", application_id)
-                return {
-                    "filename": filename,
-                    "mime": mime,
-                    "base64": base64.b64encode(blob).decode(),
-                    "tailored": False,
-                    "notice": ("Tailoring is unavailable right now, so this is your base "
-                               "resume — review it before submitting."),
-                }
-            raise HTTPException(
-                status_code=422,
-                detail=("No resume available. Upload one in Settings → Resume so SpotApply "
-                        "can attach it to applications."),
-            )
-        finally:
-            _release_tailor(application_id)
+                # Tailoring failed for a reason the user can't fix right now — an
+                # LLM outage or an exhausted credit balance. Their BASE résumé is
+                # still a perfectly good application document, and an untailored
+                # résumé attached beats a required field left empty on every form.
+                base = _base_resume_bytes(uid)
+                if base:
+                    filename, mime, blob = base
+                    log.info("Serving base resume for app %d (tailoring unavailable)", application_id)
+                    return {
+                        "filename": filename,
+                        "mime": mime,
+                        "base64": base64.b64encode(blob).decode(),
+                        "tailored": False,
+                        "notice": ("Tailoring is unavailable right now, so this is your base "
+                                   "resume — review it before submitting."),
+                    }
+                raise HTTPException(
+                    status_code=422,
+                    detail=("No resume available. Upload one in Settings → Resume so SpotApply "
+                            "can attach it to applications."),
+                )
+            finally:
+                _release_tailor(application_id)
 
     p = _P(path)
     if not p.exists():

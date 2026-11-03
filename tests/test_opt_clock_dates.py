@@ -90,3 +90,15 @@ def test_the_forms_bound_the_picker_and_blank_a_stored_impossible_date():
     m = re.search(r"async function openProfileModal\(\)[\s\S]*?Object\.keys\(data\)", DASH)
     assert m and "_plausibleEad(data.ead_end_date)" in m.group(0)
     assert "_boundEadInput(document.getElementById('opt-ead'))" in DASH
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("02/01/2027", date(2027, 2, 1)),      # month first: an EAD is a US document
+    ("12/11/2026", date(2026, 12, 11)),
+    ("25/12/2027", date(2027, 12, 25)),    # only day-first can read it
+    ("2027-02-01", date(2027, 2, 1)),
+    ("13/13/2027", None),
+])
+def test_a_slash_date_that_reads_both_ways_is_month_first(raw, want):
+    from app.intelligence.work_auth import _parse_end
+    assert _parse_end(raw) == want
