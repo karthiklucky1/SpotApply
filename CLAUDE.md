@@ -268,6 +268,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   The setup (`openProfileReview`, `openRolesModal({onboarding})`) is full pages at
   1200px, two columns, sticky actions.
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
+  **One blue brand** (2026-11-04, founder: "colour combination bad"): inline colours use
+  the theme vars (`var(--sage)`, `rgba(var(--sage-rgb),a)`), never a literal purple — the
+  light theme's class remap can't reach inline styles. The extension's panel and popup
+  are a white card with the same tokens (ink `#0C2A3E`, accent `#0077C2`, ok/caution/warn
+  `#047857`/`#B45309`/`#B42318`). Violet/indigo stay only as user-picked `HP_THEMES`.
+  Guard: `test_brand_colours`.
   **Per-user aggregates are bounded AND cached** (`app/common/ttl_cache.py`):
   `/api/freshness-stats` (was 52s — it loaded every open row of a 65k pool to
   take two medians; now SQL aggregates, 300s TTL), the `/api/pipeline/live`

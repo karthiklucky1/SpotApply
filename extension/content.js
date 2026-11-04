@@ -2105,8 +2105,8 @@ function askIfSubmitted(pack) {
     '📨 <b>Did the employer confirm your application?</b><br>' +
     '<small>SpotApply marks it Submitted only when you say so or the site shows a confirmation.</small>' +
     '<div style="margin-top:8px;display:flex;gap:6px">' +
-    '<button data-hp-confirm="yes" style="background:#10b981;color:#fff;border:0;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer">Yes, it\'s submitted</button>' +
-    '<button data-hp-confirm="no" style="background:rgba(255,255,255,.12);color:#fff;border:0;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer">Not yet</button></div>',
+    '<button data-hp-confirm="yes" style="background:#047857;color:#fff;border:0;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer">Yes, it\'s submitted</button>' +
+    '<button data-hp-confirm="no" style="background:#E0F2FE;color:#0C2A3E;border:1px solid #BAE0F8;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer">Not yet</button></div>',
     [], false);   // stays until answered — no 30 s auto-hide
   const root = document.getElementById('hp-copilot-overlay');
   const scope = (root && root.shadowRoot) || document;
@@ -4040,7 +4040,7 @@ async function attachResume(root, pack) {
   if (_resumeBlockedReason) {
     setResumeStatus('error', '', '', _resumeBlockedReason);
     showOverlay(
-      `📎 <b>Resume not attached</b><br><small style="color:#c4b5fd;font-weight:400">${_resumeBlockedReason}</small>`,
+      `📎 <b>Resume not attached</b><br><small style="color:#0369A1;font-weight:400">${_resumeBlockedReason}</small>`,
       [], true);
     return false;
   }
@@ -4169,7 +4169,7 @@ async function attachResume(root, pack) {
         setResumeStatus(waiting ? 'pending' : 'error', '', '', got.hint);
         showOverlay(
           `${waiting ? '⏳ <b>Resume on its way</b>' : '📎 Resume not attached yet.'}<br>` +
-          `<small style="color:#c4b5fd;font-weight:400">${got.hint}</small>`, [], true);
+          `<small style="color:#0369A1;font-weight:400">${got.hint}</small>`, [], true);
         return false;
       }
       got.hint = waiting
@@ -4182,7 +4182,7 @@ async function attachResume(root, pack) {
     console.warn("[SpotApply] resume fetch failed:", got.status, got.error || '');
     setResumeStatus('error', '', '', got.hint);
     showOverlay(
-      `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${got.hint}</small>`,
+      `📎 Resume not attached.<br><small style="color:#0369A1;font-weight:400">${got.hint}</small>`,
       [], true
     );
     reportTelemetry(pack, 'resume_attach_failed', { reason: got.reason, status: got.status });
@@ -4283,7 +4283,7 @@ function setResumeStatus(state, filename, kind, message) {
 // Non-blocking nudge when we can't auto-attach the resume (custom uploaders).
 function showResumeHint(filename) {
   showOverlay(
-    `📎 Please attach your resume.<br><small style="color:#c4b5fd;font-weight:400">This site's upload box blocks auto-attach. Click its upload button and pick your file${filename ? `: <b>${filename}</b>` : ''}.</small>`,
+    `📎 Please attach your resume.<br><small style="color:#0369A1;font-weight:400">This site's upload box blocks auto-attach. Click its upload button and pick your file${filename ? `: <b>${filename}</b>` : ''}.</small>`,
     [], true
   );
 }
@@ -5381,7 +5381,7 @@ function submitCountdown(pack) {
     const render = () => {
       showOverlay('🚀 <b>Submitting your application' + (pack.company ? ' to ' + escapeHtml(pack.company) : '') +
                   ' in ' + left + '…</b><br><small>Everything is filled. Click Stop, or anywhere in the form, to submit it yourself.</small>' +
-                  '<div style="margin-top:8px"><button data-hp-stop="1" style="background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Stop</button></div>',
+                  '<div style="margin-top:8px"><button data-hp-stop="1" style="background:#E0F2FE;color:#0C2A3E;border:1px solid #BAE0F8;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Stop</button></div>',
                   [], false);
       const root = document.getElementById('hp-copilot-overlay');
       const scope = (root && root.shadowRoot) || document;
@@ -5789,12 +5789,12 @@ function showStepOverlay(result, pack) {
   const esc = (x) => String(x || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   let statusHtml = '';
-  if (filled > 0) statusHtml += `<span style="color:#10b981;font-weight:700">✅ ${filled} filled</span>`;
-  if (needUser > 0) statusHtml += `${filled > 0 ? ' &nbsp;·&nbsp; ' : ''}<span style="color:#f59e0b;font-weight:700">⚠️ ${needUser} need you</span>`;
+  if (filled > 0) statusHtml += `<span style="color:#047857;font-weight:700">✅ ${filled} filled</span>`;
+  if (needUser > 0) statusHtml += `${filled > 0 ? ' &nbsp;·&nbsp; ' : ''}<span style="color:#B45309;font-weight:700">⚠️ ${needUser} need you</span>`;
   const nothingHere = filled === 0 && needUser === 0;
-  if (nothingHere) statusHtml = '<span style="color:#94a3b8">No fields to fill on this page</span>';
+  if (nothingHere) statusHtml = '<span style="color:#5B7186">No fields to fill on this page</span>';
 
-  const stepLabel = stepText ? `<div style="color:#94a3b8;font-size:11px;margin-bottom:6px">${stepText}</div>` : '';
+  const stepLabel = stepText ? `<div style="color:#5B7186;font-size:11px;margin-bottom:6px">${stepText}</div>` : '';
 
   // "No fields found" + "All fields filled!" used to render together, which
   // read as a contradiction in one toast. Three distinct states now.
@@ -5803,10 +5803,10 @@ function showStepOverlay(result, pack) {
   const multiStep = hasNextStepButton();
   const nextStep = multiStep ? 'then click Next' : 'then review the whole form and submit it yourself';
   const instructions = nothingHere
-    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here. I'll pick up on the application form.</div>`
+    ? `<div style="font-size:11px;color:#5B7186;margin-top:6px">Nothing to fill here. I'll pick up on the application form.</div>`
     : needUser > 0
-      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">highlighted fields</span> above, ${nextStep}.</div>`
-      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled. Review them, ${nextStep}.</div>`;
+      ? `<div style="font-size:11px;color:#21455C;margin-top:6px">Fill the <span style="color:#B45309;font-weight:600">highlighted fields</span> above, ${nextStep}.</div>`
+      : `<div style="font-size:11px;color:#21455C;margin-top:6px">All fields filled. Review them, ${nextStep}.</div>`;
 
   // The résumé line: which file, and what the site did with it.
   let resumeHtml = '';
@@ -5816,19 +5816,19 @@ function showStepOverlay(result, pack) {
                     wrong_format: '⚠️ Resume format not accepted', failed: '⚠️ Resume not attached',
                     error: '⚠️ Resume not attached' }[rs.state] || '📎 Resume';
     const file = rs.filename ? ` — ${esc(rs.filename)}${rs.kind ? ` (${esc(rs.kind)})` : ''}` : '';
-    const msg = rs.message ? `<br><span style="color:#cbd5e1">${esc(rs.message)}</span>` : '';
+    const msg = rs.message ? `<br><span style="color:#21455C">${esc(rs.message)}</span>` : '';
     resumeHtml = `<div style="font-size:11px;margin-top:6px">${label}${file}${msg}</div>`;
   }
   const probs = (result.problems || []).filter((p) => !/^Resume:/.test(p) || !rs).slice(0, 4);
   const probHtml = probs.length
-    ? `<div style="font-size:11px;color:#fca5a5;margin-top:6px">${probs.map(esc).join('<br>')}</div>` : '';
+    ? `<div style="font-size:11px;color:#B42318;margin-top:6px">${probs.map(esc).join('<br>')}</div>` : '';
   const notes = (result.notes || []).slice(0, 2);
   const noteHtml = notes.length
-    ? `<div style="font-size:11px;color:#c4b5fd;margin-top:6px">${notes.map(esc).join('<br>')}</div>` : '';
+    ? `<div style="font-size:11px;color:#0369A1;margin-top:6px">${notes.map(esc).join('<br>')}</div>` : '';
   // "Ready to review" means the form looks complete to US — never that the
   // employer accepted anything.
   const finalInstr = (!nothingHere && needUser === 0 && failed === 0)
-    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
+    ? `<div style="font-size:11px;color:#21455C;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
     : instructions;
 
   showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}`, [], true);
@@ -5878,22 +5878,22 @@ function showOverlay(html, _unused, dismissable) {
       :host, * { box-sizing: border-box; }
       .card {
         display: flex; align-items: flex-start; gap: 10px;
-        background: linear-gradient(135deg,rgba(15,23,42,0.97),rgba(30,41,59,0.97));
-        border: 1px solid rgba(99,102,241,0.4); border-radius: 16px;
+        background: #FFFFFF;
+        border: 1px solid rgba(0,119,194,0.4); border-radius: 16px;
         padding: 14px 16px; max-width: 320px; min-width: 220px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(99,102,241,0.1);
+        box-shadow: 0 8px 32px rgba(12,42,62,0.18), 0 0 0 1px rgba(0,119,194,0.1);
         font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.5;
-        color: #e2e8f0; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        color: #0C2A3E; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
       }
       .bolt { font-size: 20px; flex-shrink: 0; line-height: 1.2; }
       .body { flex: 1; line-height: 1.5; min-width: 0; }
-      .body b, .body strong { color: #f1f5f9; }
-      .body small { display: block; margin-top: 4px; line-height: 1.5; color: #cbd5e1; }
+      .body b, .body strong { color: #0C2A3E; }
+      .body small { display: block; margin-top: 4px; line-height: 1.5; color: #21455C; }
       .close {
-        background: none; border: none; color: #64748b; cursor: pointer;
+        background: none; border: none; color: #5B7186; cursor: pointer;
         font-size: 16px; padding: 0 4px; line-height: 1; flex-shrink: 0;
       }
-      .close:hover { color: #e2e8f0; }
+      .close:hover { color: #0C2A3E; }
     </style>
     <div class="card">
       <span class="bolt">⚡</span>
@@ -6199,7 +6199,7 @@ function findAndClickApply(pack) {
       _nativeChooserPending = { ats: native.ats, ts: Date.now() };
       _pressElement(native.element);
       console.log('[SpotApply] Clicked the site\'s own resume autofill option (' + native.ats + ')');
-      showOverlay('⚡ Using the site\'s own resume autofill first…<br><small style="color:#94a3b8">Your SpotApply resume goes in next; anything it misses gets filled after. If a sign-in appears, log in — I\'ll resume.</small>', [], false);
+      showOverlay('⚡ Using the site\'s own resume autofill first…<br><small style="color:#5B7186">Your SpotApply resume goes in next; anything it misses gets filled after. If a sign-in appears, log in — I\'ll resume.</small>', [], false);
       watchForFormAppearance();
       return true;
     }
@@ -6212,7 +6212,7 @@ function findAndClickApply(pack) {
   if (chooser) {
     chooser.click();
     console.log('[SpotApply] Clicked "Apply Manually" (Workday chooser)');
-    showOverlay('🖱️ Starting application…<br><small style="color:#94a3b8">If a sign-in appears, log in — I\'ll resume.</small>', [], false);
+    showOverlay('🖱️ Starting application…<br><small style="color:#5B7186">If a sign-in appears, log in — I\'ll resume.</small>', [], false);
     watchForFormAppearance();
     return true;
   }
@@ -6246,7 +6246,7 @@ function findAndClickApply(pack) {
   // No apply button found — guide the user
   showOverlay(
     '👆 I couldn\'t find the <strong>Apply</strong> button automatically.<br>' +
-    '<small style="color:#94a3b8">Please click it yourself — I\'ll take over once the form loads.</small>',
+    '<small style="color:#5B7186">Please click it yourself — I\'ll take over once the form loads.</small>',
     [], true
   );
   watchForFormAppearance();
@@ -6263,9 +6263,9 @@ function showBanner(msg) {
   banner.style.cssText = [
     'position:fixed','top:0','left:0','right:0','z-index:2147483647',
     'padding:12px 20px','display:flex','align-items:center','gap:12px',
-    'background:linear-gradient(135deg,#4f46e5,#7c3aed)',
+    'background:linear-gradient(135deg,#0077C2,#0369A1)',
     'color:white','font-family:system-ui,sans-serif','font-size:13px','font-weight:500',
-    'box-shadow:0 2px 20px rgba(79,70,229,0.4)',
+    'box-shadow:0 2px 20px rgba(0,119,194,0.4)',
   ].join(';');
   banner.innerHTML = `<span style="font-size:18px">🚀</span><span style="flex:1">${msg}</span>` +
     `<button data-hp-close style="background:rgba(255,255,255,0.2);border:none;color:white;cursor:pointer;padding:4px 10px;border-radius:8px;font-size:12px">✕</button>`;
@@ -6301,7 +6301,7 @@ function chromeCall(fn) {
           border: 1px solid rgba(255, 255, 255, 0.2);
           border-radius: 16px;
           padding: 16px 20px;
-          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+          box-shadow: 0 20px 40px rgba(12,42,62,0.16);
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           font-size: 13px;
           font-weight: 600;
@@ -6318,7 +6318,7 @@ function chromeCall(fn) {
           </div>
           <button data-hp-reload style="
             background: #ffffff;
-            color: #ef4444;
+            color: #B42318;
             border: none;
             padding: 8px 16px;
             border-radius: 8px;
@@ -6624,8 +6624,8 @@ function _renderFillButton(host) {
   Object.assign(wrap.style, {
     position: 'fixed', bottom: '20px', left: '20px', zIndex: '2147483647',
     display: 'flex', alignItems: 'stretch',
-    background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', color: '#fff',
-    borderRadius: '14px', boxShadow: '0 8px 24px rgba(79,70,229,0.45)',
+    background: 'linear-gradient(135deg,#0077C2,#0369A1)', color: '#fff',
+    borderRadius: '14px', boxShadow: '0 8px 24px rgba(0,119,194,0.45)',
     fontFamily: 'system-ui,sans-serif', overflow: 'hidden',
   });
 
@@ -6670,7 +6670,7 @@ function _renderFillButton(host) {
         fillForm(freshPack);
       } else {
         showOverlay(
-          '⚠️ No job loaded yet.<br><small style="color:#c4b5fd;font-weight:400">Go to your <b>SpotApply dashboard</b>, find the job, and click <b>Auto Fill</b>. SpotApply will open the application here and fill it automatically.</small>',
+          '⚠️ No job loaded yet.<br><small style="color:#0369A1;font-weight:400">Go to your <b>SpotApply dashboard</b>, find the job, and click <b>Auto Fill</b>. SpotApply will open the application here and fill it automatically.</small>',
           [], true
         );
       }
@@ -6778,16 +6778,16 @@ function isActionablePage() {
     style.textContent = `
       /* ── CSS custom properties for glassmorphism theme ── */
       :root {
-        --hp-glass-bg: rgba(15, 23, 42, 0.85);
-        --hp-glass-border: rgba(99, 102, 241, 0.4);
+        --hp-glass-bg: rgba(255, 255, 255, 0.98);
+        --hp-glass-border: rgba(0,119,194,0.4);
         --hp-glass-blur: 16px;
-        --hp-accent: #6366f1;
-        --hp-accent-hover: #818cf8;
-        --hp-text: #e2e8f0;
-        --hp-text-muted: #94a3b8;
-        --hp-success: #10b981;
-        --hp-error: #ef4444;
-        --hp-warning: #f59e0b;
+        --hp-accent: #0077C2;
+        --hp-accent-hover: #0369A1;
+        --hp-text: #0C2A3E;
+        --hp-text-muted: #5B7186;
+        --hp-success: #047857;
+        --hp-error: #B42318;
+        --hp-warning: #B45309;
       }
 
       /* ── Entry animation ── */
@@ -6796,9 +6796,9 @@ function isActionablePage() {
         to   { opacity: 1; transform: translateY(0); }
       }
       @keyframes hp-pulse-ring {
-        0%   { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.5); }
-        70%  { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+        0%   { box-shadow: 0 0 0 0 rgba(0,119,194,0.5); }
+        70%  { box-shadow: 0 0 0 10px rgba(0,119,194,0); }
+        100% { box-shadow: 0 0 0 0 rgba(0,119,194,0); }
       }
       @keyframes hp-spin {
         to { transform: rotate(360deg); }
@@ -6816,7 +6816,7 @@ function isActionablePage() {
         padding: 12px 20px;
         border: 1px solid var(--hp-glass-border);
         border-radius: 16px;
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.92));
+        background: #FFFFFF;
         backdrop-filter: blur(var(--hp-glass-blur));
         -webkit-backdrop-filter: blur(var(--hp-glass-blur));
         color: var(--hp-text);
@@ -6824,8 +6824,8 @@ function isActionablePage() {
         font-size: 13px;
         font-weight: 700;
         cursor: pointer;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
-                    0 0 0 1px rgba(99, 102, 241, 0.15),
+        box-shadow: 0 8px 32px rgba(12,42,62,0.16),
+                    0 0 0 1px rgba(0,119,194,0.15),
                     inset 0 1px 0 rgba(255, 255, 255, 0.05);
         animation: hp-slide-up-fade 0.4s ease-out, hp-pulse-ring 2.5s ease-out 1s 3;
         transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
@@ -6834,8 +6834,8 @@ function isActionablePage() {
       #hp-email-sync-btn:hover {
         transform: translateY(-2px);
         border-color: var(--hp-accent-hover);
-        box-shadow: 0 12px 40px rgba(99, 102, 241, 0.3),
-                    0 0 0 1px rgba(99, 102, 241, 0.3);
+        box-shadow: 0 12px 40px rgba(0,119,194,0.3),
+                    0 0 0 1px rgba(0,119,194,0.3);
       }
       #hp-email-sync-btn:active {
         transform: translateY(0);
@@ -6865,11 +6865,11 @@ function isActionablePage() {
         padding: 28px 24px 24px;
         border-radius: 20px;
         border: 1px solid var(--hp-glass-border);
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 41, 59, 0.97));
+        background: #FFFFFF;
         backdrop-filter: blur(var(--hp-glass-blur));
         -webkit-backdrop-filter: blur(var(--hp-glass-blur));
-        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6),
-                    0 0 0 1px rgba(99, 102, 241, 0.15),
+        box-shadow: 0 24px 64px rgba(12,42,62,0.22),
+                    0 0 0 1px rgba(0,119,194,0.15),
                     inset 0 1px 0 rgba(255, 255, 255, 0.05);
         font-family: system-ui, -apple-system, sans-serif;
         color: var(--hp-text);
@@ -6913,8 +6913,8 @@ function isActionablePage() {
         flex: 1;
         padding: 10px 6px;
         border-radius: 10px;
-        border: 1px solid rgba(99, 102, 241, 0.25);
-        background: rgba(99, 102, 241, 0.06);
+        border: 1px solid rgba(0,119,194,0.25);
+        background: rgba(0,119,194,0.06);
         color: var(--hp-text-muted);
         font-size: 12px;
         font-weight: 600;
@@ -6925,13 +6925,13 @@ function isActionablePage() {
       #hp-email-scanner-modal .hp-range-opt:hover {
         border-color: var(--hp-accent);
         color: var(--hp-text);
-        background: rgba(99, 102, 241, 0.12);
+        background: rgba(0,119,194,0.12);
       }
       #hp-email-scanner-modal .hp-range-opt.hp-selected {
         border-color: var(--hp-accent);
-        background: rgba(99, 102, 241, 0.2);
+        background: rgba(0,119,194,0.2);
         color: #fff;
-        box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+        box-shadow: 0 0 12px rgba(0,119,194,0.2);
       }
       #hp-email-scanner-modal .hp-scan-btn {
         display: flex;
@@ -6942,7 +6942,7 @@ function isActionablePage() {
         padding: 12px;
         border-radius: 12px;
         border: none;
-        background: linear-gradient(135deg, #4f46e5, #7c3aed);
+        background: linear-gradient(135deg, #0077C2, #0369A1);
         color: #fff;
         font-size: 14px;
         font-weight: 700;
@@ -6975,7 +6975,7 @@ function isActionablePage() {
         padding: 14px 18px;
         border-radius: 14px;
         border: 1px solid var(--hp-glass-border);
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 41, 59, 0.97));
+        background: #FFFFFF;
         backdrop-filter: blur(var(--hp-glass-blur));
         -webkit-backdrop-filter: blur(var(--hp-glass-blur));
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
@@ -7254,7 +7254,7 @@ function isActionablePage() {
     if (emails.length === 0) {
       showScannerToast(
         '<span style="font-size:16px">📭</span> <b>No job-related emails found</b>' +
-        '<br><span style="color:#94a3b8;font-size:11px">Try a wider date range or scroll down in your inbox to load more emails.</span>',
+        '<br><span style="color:#5B7186;font-size:11px">Try a wider date range or scroll down in your inbox to load more emails.</span>',
         6000
       );
       return;
@@ -7266,8 +7266,8 @@ function isActionablePage() {
             if (!pack || !packBase(pack)) {
               console.log('[SpotApply] executeScan: no active pack/connection found in storage.');
               showScannerToast(
-                '<span style="color:#ef4444;font-weight:700">⚠️ Not connected</span>' +
-                '<br><span style="color:#94a3b8;font-size:11px">Open your SpotApply dashboard first to connect.</span>',
+                '<span style="color:#B42318;font-weight:700">⚠️ Not connected</span>' +
+                '<br><span style="color:#5B7186;font-size:11px">Open your SpotApply dashboard first to connect.</span>',
                 6000
               );
               resolve(false);
@@ -7296,17 +7296,17 @@ function isActionablePage() {
               if (res && res.ok) {
                 showScannerToast(
                   `<span style="font-size:16px">✅</span> <b>Synced ${emails.length} job email${emails.length !== 1 ? 's' : ''}</b>` +
-                  `<br><span style="color:#94a3b8;font-size:11px">` +
+                  `<br><span style="color:#5B7186;font-size:11px">` +
                   `${tracked} now tracked in your dashboard · ` +
                   `${rej} rejection${rej !== 1 ? 's' : ''}, ` +
                   `${intv} interview signal${intv !== 1 ? 's' : ''}.</span>` +
-                  `<br><span style="color:#a5b4fc;font-size:11px">Open your SpotApply dashboard to review them.</span>`,
+                  `<br><span style="color:#0369A1;font-size:11px">Open your SpotApply dashboard to review them.</span>`,
                   9000
                 );
               } else {
                 showScannerToast(
-                  `<span style="color:#ef4444;font-weight:700">❌ Sync failed</span>` +
-                  `<br><span style="color:#94a3b8;font-size:11px">${res?.error || 'Server error. Please try again.'}</span>`,
+                  `<span style="color:#B42318;font-weight:700">❌ Sync failed</span>` +
+                  `<br><span style="color:#5B7186;font-size:11px">${res?.error || 'Server error. Please try again.'}</span>`,
                   6000
                 );
               }
@@ -7314,8 +7314,8 @@ function isActionablePage() {
             } catch (err) {
               console.error('[SpotApply] Email sync error:', err);
               showScannerToast(
-                '<span style="color:#ef4444;font-weight:700">❌ Sync error</span>' +
-                `<br><span style="color:#94a3b8;font-size:11px">${err.message || 'Network error'}</span>`,
+                '<span style="color:#B42318;font-weight:700">❌ Sync error</span>' +
+                `<br><span style="color:#5B7186;font-size:11px">${err.message || 'Network error'}</span>`,
                 6000
               );
               resolve(false);
@@ -7473,7 +7473,7 @@ function isActionablePage() {
   function setStatus(el, msg, ok) {
     if (!el) return;
     el.style.display = 'block';
-    el.style.color = ok ? '#34d399' : '#f87171';
+    el.style.color = ok ? '#047857' : '#B42318';
     el.textContent = msg;
   }
 
@@ -7497,21 +7497,21 @@ function isActionablePage() {
     card.id = CARD_ID;
     card.style.cssText = [
       'position:fixed', 'bottom:24px', 'right:24px', 'z-index:2147483646',
-      'width:280px', 'background:#0f0f1a', 'color:#e2e8f0',
-      'border:1px solid rgba(99,102,241,0.35)', 'border-radius:14px',
-      'padding:14px 16px', 'box-shadow:0 20px 40px rgba(0,0,0,0.45)',
+      'width:280px', 'background:#FFFFFF', 'color:#0C2A3E',
+      'border:1px solid rgba(0,119,194,0.35)', 'border-radius:14px',
+      'padding:14px 16px', 'box-shadow:0 20px 40px rgba(12,42,62,0.18)',
       'font-family:system-ui,-apple-system,sans-serif',
     ].join(';');
     card.innerHTML =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
         '<span style="font-size:16px">💼</span>' +
         '<span style="font-weight:800;font-size:13px">Import to SpotApply</span>' +
-        '<button data-hp-close style="margin-left:auto;background:none;border:none;color:#64748b;cursor:pointer;font-size:14px">✕</button>' +
+        '<button data-hp-close style="margin-left:auto;background:none;border:none;color:#5B7186;cursor:pointer;font-size:14px">✕</button>' +
       '</div>' +
-      '<div style="font-size:11px;color:#94a3b8;line-height:1.4;margin-bottom:10px">' +
+      '<div style="font-size:11px;color:#5B7186;line-height:1.4;margin-bottom:10px">' +
         'Import <b>your own</b> profile so SpotApply can tailor resumes and cover letters more accurately.' +
       '</div>' +
-      '<button data-hp-import style="display:block;width:100%;padding:10px 14px;border:none;border-radius:10px;font-weight:800;font-size:12px;cursor:pointer;color:#fff;background:linear-gradient(135deg,#4f46e5,#7c3aed)">⚡ Import my LinkedIn profile</button>' +
+      '<button data-hp-import style="display:block;width:100%;padding:10px 14px;border:none;border-radius:10px;font-weight:800;font-size:12px;cursor:pointer;color:#fff;background:linear-gradient(135deg,#0077C2,#0369A1)">⚡ Import my LinkedIn profile</button>' +
       '<div data-hp-status style="display:none;font-size:11px;text-align:center;margin-top:8px;line-height:1.4"></div>';
     document.body.appendChild(card);
     card.querySelector('[data-hp-import]').addEventListener('click', onImportClick);

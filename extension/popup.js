@@ -121,16 +121,16 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
         const fitEl = document.getElementById("check-fit");
         if (d.live === false) {
           verdictEl.textContent = "👻 Closed or removed — don't waste an application";
-          verdictEl.style.color = "#f87171";
+          verdictEl.style.color = "#B42318";
         } else if (d.ghost_score >= 0.6) {
           verdictEl.textContent = `⚠️ Likely ghost job (score ${Math.round(d.ghost_score * 100)}%)`;
-          verdictEl.style.color = "#fbbf24";
+          verdictEl.style.color = "#B45309";
         } else if (d.live === null) {
           verdictEl.textContent = "ℹ️ Can't verify this site automatically";
-          verdictEl.style.color = "#94a3b8";
+          verdictEl.style.color = "#5B7186";
         } else {
           verdictEl.textContent = `✅ Looks real (ghost score ${Math.round(d.ghost_score * 100)}%)`;
-          verdictEl.style.color = "#34d399";
+          verdictEl.style.color = "#047857";
         }
         const bits = [];
         if (d.title) bits.push(d.title + (d.company ? ` @ ${d.company}` : ""));
@@ -138,7 +138,7 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
         if (d.signals && d.signals.length) bits.push(d.signals.join(" · ").replace(/_/g, " "));
         detailEl.textContent = bits.join(" — ");
         if (d.fit) {
-          fitEl.innerHTML = `<b style="color:#818cf8">Your keyword fit: ${d.fit.score_pct}%</b>` +
+          fitEl.innerHTML = `<b style="color:#0369A1">Your keyword fit: ${d.fit.score_pct}%</b>` +
             (d.fit.missing && d.fit.missing.length
               ? ` — missing: ${d.fit.missing.slice(0, 6).map(s => String(s).replace(/[<>&]/g, "")).join(", ")}` : "");
         } else {
