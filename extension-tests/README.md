@@ -13,7 +13,21 @@ python3 extension-tests/test_extension_live.py          # 13 checks — plumbing
 python3 extension-tests/test_extension_forms.py         # 51 checks — real fills
 python3 extension-tests/test_extension_payload.py       # 12 checks — payload + EEO
 python3 extension-tests/test_extension_security.py      #  7 checks — gates
+python3 extension-tests/test_extension_queue.py         # 24 checks — the apply queue
 ```
+
+**test_extension_queue.py** — the apply queue's worker (`background.js`, "Apply
+queue runner") against a stub that plays the server's half
+(`/api/apply-queue/next`, `…/outcome`, `/application/{id}/submit`). A mixed list
+runs one at a time in its own window: the form that lets it through is submitted
+only after the confirmation page, while a CAPTCHA, an unanswered required field
+and a fill-only board are each PARKED with their reason and their tab left open.
+Also pinned: the parked-tab limit pauses the run and clearing a tab resumes it;
+Stop finishes the job in progress and opens no more; the dashboard hears every
+change and is never reloaded mid-run. The "submit while the tab is not on screen"
+block needs a browser the driver is not attached to — Playwright keeps every
+page it drives visible — so it is skipped here and the rule is pinned both ways
+by `tests/test_extension_rules.py`.
 
 Set `SPOTAPPLY_CHROMIUM=/path/to/chrome` to use a specific binary (the sandbox's
 pre-installed `/opt/pw-browsers/chromium` is picked up automatically).

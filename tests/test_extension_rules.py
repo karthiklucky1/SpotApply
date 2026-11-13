@@ -47,9 +47,10 @@ FUNCTIONS = [
     "autoSubmitAllowedHost", "escapeHtml", "samePosting",
     "askingSentence", "asksAvailability", "_yesNoOptions", "_yesNoOptionsOf",
     "answerYesNoSelect", "selectOption", "answerWorkAuthField",
+    "queueSignalForFill",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
-          "AUTO_SUBMIT_BLOCK_TEXT",
+          "AUTO_SUBMIT_BLOCK_TEXT", "QUEUE_FILL_ONLY_REASONS", "QUEUE_HANDOFF_REASON",
           "_OTHER_DOC_RE", "_EEO_DECLINE_RE", "_EEO_CATEGORIES", "_EEO_PLACEHOLDER_RE",
           "_NATIVE_AUTOFILL_RE", "_NATIVE_AUTOFILL_IDENTITY", "NATIVE_AUTOFILL_ATS",
           "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
@@ -992,6 +993,139 @@ def test_the_clicks_approval_survives_the_packs_refresh_but_not_a_refusal():
     assert "fresh.auto_submit = true" in carry
     gate = _function(CONTENT, "maybeAutoSubmit")
     assert gate.index("autoSubmitAllowedHost(") < gate.index("samePosting(pack.apply_url") < gate.index("isLoginWall()")
+
+
+# ── the apply queue (2026-11-13): a list approved once, run one at a time ────
+
+@pytest.mark.parametrize("pack,auto,want", [
+    # Submit was pressed: the runner waits for the employer's confirmation.
+    ({"queue_item_id": 7, "auto_submit": True}, {"requested": True, "attempted": True, "reason": "clicked"},
+     {"kind": "attempted", "reason": ""}),
+    # The gate held it back: parked, with the gate's own reason.
+    ({"queue_item_id": 7, "auto_submit": True}, {"requested": True, "attempted": False, "reason": "captcha"},
+     {"kind": "parked", "reason": "captcha"}),
+    ({"queue_item_id": 7, "auto_submit": True}, {"requested": True, "attempted": False, "reason": "fields_need_you"},
+     {"kind": "parked", "reason": "fields_need_you"}),
+    # A complete form whose resume would not attach says exactly that.
+    ({"queue_item_id": 7, "auto_submit": True},
+     {"requested": True, "attempted": False, "reason": "fields_need_you", "detail": "resume not attached"},
+     {"kind": "parked", "reason": "resume_not_attached"}),
+    # A second pass over a page already submitted is not a park.
+    ({"queue_item_id": 7, "auto_submit": True}, {"requested": True, "attempted": False, "reason": "already_attempted"}, None),
+    # The server never asked for a submit: filled, and the person submits.
+    ({"queue_item_id": 7, "auto_submit": False, "auto_submit_reason": "host_not_allowed"}, None,
+     {"kind": "parked", "reason": "host_not_allowed"}),
+    ({"queue_item_id": 7, "auto_submit": False, "auto_submit_reason": "setting_off"}, None,
+     {"kind": "parked", "reason": "setting_off"}),
+    ({"queue_item_id": 7, "auto_submit": False, "auto_submit_reason": "not_requested"}, None,
+     {"kind": "parked", "reason": "fill_only"}),
+    # Not a queue item: the runner hears nothing.
+    ({"auto_submit": True}, {"requested": True, "attempted": True, "reason": "clicked"}, None),
+    ({"auto_submit": False}, None, None),
+    (None, None, None),
+])
+def test_a_queue_tab_tells_the_runner_attempted_or_parked(pack, auto, want):
+    assert run_js([["queueSignalForFill", pack, auto]])[0] == want
+
+
+def test_the_queue_adds_a_list_not_a_second_gate():
+    """A queue item is filled and submitted by the SAME code as a single
+    "Apply & Submit" click. The queue's only additions on the page are the two
+    signals to the runner and — for a pack the SERVER flagged — permission to
+    finish the countdown while the tab is not on screen."""
+    assert "function queueSignal(" in CONTENT
+    sig = _function(CONTENT, "queueSignal")
+    assert "!pack.queue_item_id" in sig and "QUEUE_SIGNAL" in sig
+    gate = _function(CONTENT, "maybeAutoSubmit")
+    assert "queue" not in gate.lower(), "the gate does not know the queue exists"
+    step = _function(CONTENT, "runCopilotStep")
+    assert step.index("maybeAutoSubmit(") < step.index("queueSignalForFill("), "signalled after the gate decided"
+    dwell = _function(CONTENT, "submitCountdown")
+    assert "visibilityState !== 'visible' && !pack.auto_submit_background" in dwell
+    # Every handoff parks the item instead of retrying it.
+    assert "queueSignal(pack, 'parked', QUEUE_HANDOFF_REASON[event])" in _function(CONTENT, "reportHandoff")
+    assert "queueSignal(pack, 'parked', 'unconfirmed')" in _function(CONTENT, "askIfSubmitted")
+    # The queue's marks survive the pack refresh, only for the same application,
+    # and the "unseen" flag only while the submit approval stands.
+    fill = _function(CONTENT, "fillForm")
+    assert "fresh.queue_item_id = fillPack.queue_item_id" in fill
+    assert "fresh.auto_submit === true && fillPack.auto_submit_background === true" in fill
+
+
+def _countdown(pack: dict, visibility: str, ticks: int) -> object:
+    """Run the real submitCountdown with a stubbed page and a hand-cranked
+    clock: True when it ran out, "pending" when it is still holding."""
+    script = "\n".join([
+        _const(CONTENT, "AUTO_SUBMIT_DWELL_SECONDS"),
+        "function escapeHtml(s) { return String(s); }",
+        "function showOverlay() {}",
+        "let _tick = null;",
+        "globalThis.setInterval = (fn) => { _tick = fn; return 1; };",
+        "globalThis.clearInterval = () => { _tick = null; };",
+        "globalThis.document = { visibilityState: " + json.dumps(visibility) + ", addEventListener() {},"
+        " removeEventListener() {}, getElementById() { return null; }, querySelector() { return null; } };",
+        _function(CONTENT, "submitCountdown"),
+        "let result = 'pending';",
+        "submitCountdown(" + json.dumps(pack) + ").then((v) => { result = v; });",
+        "for (let i = 0; i < " + str(ticks) + " && _tick; i++) _tick();",
+        "setImmediate(() => process.stdout.write(JSON.stringify(result)));",
+    ])
+    res = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    return json.loads(res.stdout)
+
+
+@pytest.mark.parametrize("pack,visibility,ticks,want", [
+    ({"company": "Acme"}, "visible", 5, True),                                  # the single click, tab on screen
+    ({"company": "Acme"}, "hidden", 30, "pending"),                             # ...never in a tab nobody sees
+    ({"company": "Acme", "auto_submit_background": False}, "hidden", 30, "pending"),
+    ({"company": "Acme", "queue_item_id": 7}, "hidden", 30, "pending"),         # a queue item WITHOUT the server's flag
+    ({"company": "Acme", "queue_item_id": 7, "auto_submit_background": True}, "hidden", 5, True),
+    ({"company": "Acme", "queue_item_id": 7, "auto_submit_background": True}, "hidden", 4, "pending"),  # still 5 s
+])
+def test_the_countdown_runs_unseen_only_for_a_pack_the_server_flagged(pack, visibility, ticks, want):
+    assert _countdown(pack, visibility, ticks) == want
+
+
+def test_the_diagnostic_report_says_what_the_gate_would_meet_and_presses_nothing():
+    """Popup → "Copy diagnostic report" now carries submitReadiness: the same
+    checks the one-click gate runs (form, sign-in wall, CAPTCHA, the Submit
+    control it would accept), read only — used on 2026-11-13 to look at live
+    Greenhouse and Lever pages without filling or sending anything."""
+    assert "submitReadiness: submitReadiness()," in _function(CONTENT, "buildDiagnosticReport")
+    fn = _function(CONTENT, "submitReadiness")
+    for check in ("hasApplicationForm()", "isLoginWall()", "isCaptcha() || captchaBlocksSubmit()",
+                  "findSubmitControl()", "verificationCodeField()"):
+        assert check in fn, check
+    assert ".click(" not in fn and "fillInput" not in fn and "noteSubmitAttempt" not in fn
+
+
+def test_the_runner_can_only_report_that_an_item_is_waiting():
+    """background.js asks the server for work and reports PARKED items. It has
+    no call that says "submitted" (that is FORM_SUBMITTED → /application/{id}/
+    submit, as for every application) and no list or limit of its own."""
+    assert "function queueStep(" in BACKGROUND and "/api/apply-queue/next" in BACKGROUND
+    report = BACKGROUND[BACKGROUND.index("function queueReportParked("):]
+    report = report[:report.index("\n}\n") + 3]
+    assert "/outcome" in report and "submitted" not in report
+    runner = BACKGROUND[BACKGROUND.index("function queueApi("):]
+    called = set(re.findall(r'queueApi\([^,]+,\s*[`"]([^`"]+)[`"]', runner))
+    assert called == {"/api/apply-queue/next", "/api/apply-queue/items/${park.itemId}/outcome",
+                      "/api/apply-queue/summary"}, called
+    # ...and the summary call names no item: the server counts its own rows.
+    tell = BACKGROUND[BACKGROUND.index("function queueTellServer("):]
+    tell = tell[:tell.index("\n}\n")]
+    assert "itemId" not in tell and "appId" not in tell and "submitted" not in tell
+    for word in ("greenhouse", "lever.co", "ashbyhq", "captcha"):
+        assert word not in BACKGROUND[BACKGROUND.index("// ── Apply queue runner"):].lower().replace(
+            "a captcha, a sign-in", ""), f"the runner must not know about {word}"
+    # One at a time: a new item is asked for only when none is current.
+    step = BACKGROUND[BACKGROUND.index("async function queueStep("):BACKGROUND.index("function queueParkCurrent(")]
+    assert step.index("if (q.current) {") < step.index("q.asking = now;")
+    # The dashboard's start/stop reach the worker only through the origin check.
+    bridge = CONTENT[CONTENT.index("window.addEventListener('message', (e) => {\n  if (e.source !== window) return;\n  if (!_DASHBOARD_ORIGIN_RE.test"):]
+    assert bridge.index("_DASHBOARD_ORIGIN_RE.test") < bridge.index("QUEUE_START")
+    assert "base: location.origin" in bridge, "the API base is the page's own origin, never the message's"
 
 
 # ── Live test 2026-11-03 (Loft Orbital on Lever, Freed on Ashby) ─────────────

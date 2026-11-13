@@ -336,3 +336,113 @@ page recognised and a visible-challenge rate under 10%.
    (N manual submissions before one-click can be turned on), plan-based or
    user-set daily caps, and who receives board/employer notices with a
    same-day removal SLA.
+
+## 8. The apply queue (2026-11-13)
+
+**The founder's request**: "so many people work in an office or go to school and
+need fresh jobs applied to; they cannot sit and click each one." One-click
+submit (§5) had been live for a month and production showed **zero** uses: no
+profile had it on and no `auto_submit_*` event existed. One click per job was
+not the missing piece; a way to hand over a whole list was.
+
+**What it is.** On the Pipeline tab the user opens *Apply queue*, sees every
+board job with what the queue would do with it ("Fills and submits", "Fills,
+you submit", or why it cannot be queued), ticks the ones they want and clicks
+**Approve N and start**. That click is the review and approval of each named
+application. The extension then opens them ONE AT A TIME in a window of its
+own, in the user's own Chrome, and for each one runs exactly the fill and the
+one-click gate a single "Apply & Submit" click runs.
+
+**What did not change.** What may be submitted is still `_one_click_decision`
+alone (the setting, the login-free allow-list, the revocation list, the daily
+cap, the kill switch). The extension still presses the form's own Submit only
+after a clean fill, a 5-second countdown and a second CAPTCHA check, and
+"Submitted" is still written only by `mark_as_submitted` (the employer's
+confirmation page or the user's Yes). No CAPTCHA is solved or avoided, no
+password is typed or stored, nothing runs on LinkedIn or Indeed, nothing is
+submitted from our servers.
+
+**What did change — one rule.** A single click keeps "never in a tab the user
+cannot see". A queue item the server flags (`pack.auto_submit_background`,
+`APPLY_QUEUE_BACKGROUND_SUBMIT`, on) may finish its countdown while its tab is
+not on screen: the queue exists for people who are not watching, and each job
+in it was approved by name on the review list. Terms §3/§4 (November 2026),
+the landing and pricing FAQs and the README say so; "nothing is ever sent
+unattended" became "nothing is ever sent that you did not approve".
+
+**How it is built.**
+
+| Piece | Where | What it owns |
+|---|---|---|
+| The list | `ApplyQueueItem` (`app/db/models.py`) | queued → running → submitted / needs_you / cancelled / expired |
+| Approve, list, remove | `/api/apply-queue` (`app/api/server.py`) | ownership, what each job would do (`_aq_assess`, reserves nothing), the 24 h approval expiry |
+| Hand out one item | `POST /api/apply-queue/next` | a claimed `running` row + the ordinary fill pack + every limit the worker obeys |
+| Park an item | `POST /api/apply-queue/items/{id}/outcome` | the ONLY thing the worker can report: "waiting for the person", with a reason |
+| The worker | `extension/background.js` "Apply queue runner" | where the run is; state in `chrome.storage`, woken by `chrome.alarms` (an MV3 worker sleeps) |
+| The tab's two signals | `extension/content.js` `queueSignal` | `attempted` (Submit pressed) or `parked` (+ reason) |
+| The page | `dashboard.html` `openApplyQueue` | shows, asks and starts; decides nothing |
+
+A job that needs a person is **parked**: the tab stays open, the reason is
+listed (CAPTCHA, sign-in, emailed code, unanswered question, more than one
+page, a board the queue only fills) and the worker moves on. It never retries
+and never works around one. `APPLY_QUEUE_MAX_PARKED_TABS` (4) pauses the run
+until the person clears one, so a broken fill cannot open twenty-five tabs.
+Jobs the extension may submit run first; fill-only ones (Workday and every
+board not on the allow-list) wait at the end. The next job's resume is
+tailored while the current one is being filled (`_aq_tailor_ahead`, same
+limits and writer as the fill pack). One notification per run
+(`_aq_finish_summary`), not one per job. Every pace and limit is a server
+setting sent with each item, so none needs an extension release.
+
+**Checked here** (real extension 1.3.0, Chromium, fixture forms; nothing was
+sent to any employer):
+
+- `extension-tests/test_extension_queue.py`, 24/24: a mixed list ran one at a
+  time; 1 submitted after its confirmation page, 3 parked with the right
+  reasons and their tabs left open; the worker never asked for a second job
+  while one was unfinished; the parked-tab limit paused and resumed the run;
+  Stop finished the job in progress and opened no more.
+- A flagged queue item filled and submitted in a tab that really was hidden
+  (`document.visibilityState === "hidden"`, Chromium driven by raw DevTools so
+  no test driver kept it visible); an unflagged one waited 50 s hidden and
+  went ahead 7 s after its tab was brought forward.
+- `tests/test_apply_queue.py` (server), the queue block of
+  `tests/test_extension_rules.py` (the two signals, the countdown rule both
+  ways, the worker cannot report "submitted").
+
+- End to end with nothing of ours stubbed: the real server (local SQLite,
+  web-only), the real dashboard clicked through, the real extension, and the
+  repo's local test forms standing in for a board. Five board jobs: the review
+  list offered four (three "Fills and submits", one "Fills, you submit") and
+  refused the job-board link with its reason; "Approve 4 and start" ran them
+  in 38 s — two became SUBMITTED in the database after their confirmation
+  pages, the CAPTCHA page and the off-list host were parked with their
+  reasons and tabs left open, and one "Apply queue finished: 2 submitted, 2
+  need you" notification was written. That run also found two bugs, fixed the
+  same day: a run that PAUSED at its parked-tab limit never notified anyone
+  (`/api/apply-queue/summary`), and a form complete except for the resume
+  upload was reported as "questions need your answer" (`resume_not_attached`).
+- A read-only look at real application pages (the extension's diagnostic
+  report with the new `submitReadiness` block; no application session, so
+  nothing was filled and nothing was sent): **Greenhouse 4 of 4** and
+  **Lever 4 of 4** `/apply` pages — application form recognised, no sign-in
+  wall, no visible CAPTCHA before the press, and the gate's Submit control
+  found ("Submit application"). Visible fields marked required: 13–58 on
+  Greenhouse, 4–16 on Lever. A Lever posting page (no `/apply`) shows only an
+  Apply button, which the fill already clicks through.
+
+**Not checked, and not known**: a real submission anywhere. Ashby,
+SmartRecruiters and Workable pages could not even be loaded from the build
+container (its network blocks their asset hosts). What a board does AFTER the
+press — Greenhouse's invisible reCAPTCHA can answer with an emailed code or a
+visual challenge — and how often a real form parks for a question it has no
+saved answer to (those 13–58 required fields include each employer's own
+questions) is exactly what the first week of `extension_auto_submit_*` events
+and queue outcomes (`apply_queue_item.reason`) will say.
+
+**Not built**: more boards on the allow-list (§7's one-at-a-time rule stands),
+the Workday sign-in round, the "find my code" relay, a receipt of what each
+submission sent. The Chrome Web Store listing must be updated for 1.3.0 (new
+`alarms` permission, the queue, submission while a tab is in the background)
+before Store users get it; until then the dashboard tells a user on an older
+extension to update, and their approved jobs simply wait.
