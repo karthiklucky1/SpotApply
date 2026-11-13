@@ -463,6 +463,25 @@ class Settings(BaseSettings):
     # one-click the same day with an env change, no deploy. Exact host or
     # suffix, comma-separated; "" = nothing revoked.
     one_click_submit_host_blocklist: str = ""             # ONE_CLICK_SUBMIT_HOST_BLOCKLIST
+    # ── Apply queue (founder 2026-11-13; docs/AUTO_APPLY_RESEARCH.md §8) ──────
+    # The user approves a LIST of applications once; the extension runs them
+    # one at a time in the user's own Chrome. Every number the runner obeys is
+    # decided here and sent with each item, so a pace or a limit changes with
+    # an env var, never an extension release (Store review takes days).
+    apply_queue_enabled: bool = True                      # APPLY_QUEUE_ENABLED (kill switch)
+    apply_queue_max_items: int = 25                       # APPLY_QUEUE_MAX_ITEMS waiting per user
+    apply_queue_gap_seconds: int = 20                     # APPLY_QUEUE_GAP_SECONDS between two applications
+    apply_queue_item_timeout_seconds: int = 240           # APPLY_QUEUE_ITEM_TIMEOUT_SECONDS with no outcome = parked
+    apply_queue_approval_hours: int = 24                  # APPLY_QUEUE_APPROVAL_HOURS an unrun approval expires
+    # Tabs left open for the person (CAPTCHA, sign-in, a question). At this
+    # many the runner pauses until one is finished — a broken fill must not
+    # open twenty-five tabs.
+    apply_queue_max_parked_tabs: int = 4                  # APPLY_QUEUE_MAX_PARKED_TABS
+    # May an APPROVED queue item be submitted while its tab is not the one on
+    # screen? The single "Apply & Submit" click keeps the visible-tab rule; a
+    # queue exists for people who are not watching, and each job in it was
+    # approved by name. 0 = the queue waits for its tab to be visible too.
+    apply_queue_background_submit: bool = True            # APPLY_QUEUE_BACKGROUND_SUBMIT
     # "This job is no longer available" (POST /application/{id}/unavailable).
     # The reporter's own copy closes at once; the posting is RE-CHECKED for
     # everyone else, forced past a LIVE verdict younger than

@@ -11,8 +11,9 @@ auto-fills forms. **Submit is always the human's click**: on the form by default
 — with `UserProfile.one_click_submit` ON (founder 2026-10-11) — the dashboard's
 "Apply & Submit" click approves THAT application and the extension presses the
 form's Submit (`_one_click_decision`: allow-listed login-free boards only, daily
-cap, every required field filled, never past a CAPTCHA or sign-in). Never
-unattended, never a CAPTCHA solved or evaded, never a password stored.
+cap, every required field filled, never past a CAPTCHA or sign-in); the **apply
+queue** (founder 2026-11-13) lets them approve a LIST once. Never anything the
+user did not approve, never a CAPTCHA solved or evaded, never a password stored.
 
 Multi-tenant web app (grew from a single-user agent). Public README has the full story;
 this file is the working map for editing the code.
@@ -1039,6 +1040,28 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `test_one_click_submit`, the one-click block of `test_extension_rules`, harness
   OC1–OC8. The server agent's browser-fingerprint "stealth" script was removed;
   `autofill_multi_user_enabled` stays founder-only.
+
+- **Apply queue: a list, not a second gate** (2026-11-13, `docs/AUTO_APPLY_RESEARCH.md`
+  §8; one-click had ZERO production uses in a month). The user ticks board jobs,
+  reads what each would do (`GET /api/apply-queue?candidates=1` → `_aq_assess`,
+  `_one_click_decision(reserve=False)` — looking spends nothing) and approves
+  once (`POST /api/apply-queue`, `ApplyQueueItem`). The extension's worker
+  (`background.js` "Apply queue runner": state in `chrome.storage`, woken by
+  `chrome.alarms`, its own window) takes ONE item at a time from
+  `POST /api/apply-queue/next` — the ordinary fill pack built with `submit=True`,
+  so the same decision and the same daily cap as a single click. The worker can
+  report only that an item is PARKED (`…/outcome` + reason: captcha, login_wall,
+  fields_need_you, no_submit_button, host_not_allowed…); "submitted" is set ONLY
+  by `mark_as_submitted` → `_aq_close_for_application`. A parked tab stays open,
+  is never retried, and `APPLY_QUEUE_MAX_PARKED_TABS` (4) pauses the run. Every
+  pace/limit is a server setting sent with the item (no extension release to
+  change one). The ONE rule that moved: a queue item flagged
+  `auto_submit_background` (`APPLY_QUEUE_BACKGROUND_SUBMIT`) may finish its
+  countdown while its tab is not on screen; a single click still may not. The
+  runner's own calls (`/next`, `/outcome`) are passive writes; the approval is the
+  action. Extension 1.3.0 (`alarms` permission) — Store review needed; an older
+  extension gets "update" and the approved jobs wait. Guards: `test_apply_queue`,
+  the queue block of `test_extension_rules`, `extension-tests/test_extension_queue.py`.
 
 - **Earliness is ONE reference clock, and a receipt never flatters** (2026-10-11,
   `app/strategy/earliness.py`, docs/EARLINESS_RECEIPT.md): `reference(job)` = the

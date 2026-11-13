@@ -183,13 +183,16 @@ def test_the_terms_date_moved_only_with_a_real_revision():
     auto-enrolment), the inactivity pause of automatic search and the
     AI-document check; October 2026 added the opt-in One-click submit
     (the dashboard's "Apply & Submit" as the user's approval, allow-listed
-    boards, never past a CAPTCHA or sign-in). The date may say October 2026
-    only while ALL of those sections exist."""
+    boards, never past a CAPTCHA or sign-in); November 2026 added the apply
+    queue (one approval for a list the user has read, run one at a time in
+    their own browser, possibly while the tab is not on screen). The date may
+    say November 2026 only while ALL of those sections exist."""
     html = (ROOT / "app" / "templates" / "terms.html").read_text()
-    assert "Last updated: October 2026" in html
+    assert "Last updated: November 2026" in html
     for section in ("Plans and payments", "Automatic job search", "AI-generated documents",
-                    "One-click submit"):
+                    "One-click submit", "The apply queue"):
         assert section in html
+    assert "while its tab is not the one on your screen" in html
     assert "not enrolled in a paid plan" in html
     assert "never solve or bypass a CAPTCHA" in html
     # The same October revision states automatic renewal beside the price, the

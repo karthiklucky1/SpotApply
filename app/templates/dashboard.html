@@ -1463,7 +1463,7 @@
             </button> <button id="view-tab-skills" onclick="switchViewTab('skills')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-target"/></svg> Skill Gap
             </button> <button id="view-tab-xray" onclick="switchViewTab('xray')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-scan"/></svg> Resume X-Ray
             </button> <button id="view-tab-registry" onclick="switchViewTab('registry')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-sliders"/></svg> Boards
-            </button> </div></div> <!-- Main Tab Control — top of the page so Pipeline / All Jobs come first --> <div id="opt-strip" class="hidden mb-4"></div>  <!-- Recruiter intros (verified demand reaching out) --> <div id="intros-banner" class="hidden mb-4"></div> <!-- No resume yet: the one step that unlocks everything. Shown until a resume is on file. --> <div id="start-here-card" class="mb-4" style="display:none"></div> <!-- Pipeline-only: switchViewTab hides these on every other tab, so All Jobs opens on its table, not under the first-hour panel (owner, 2026-10-28) --> <div id="pipeline-only-banners"> <!-- First hour: live progress + role check (app/strategy/welcome.py) --> <div id="welcome-panel" class="mb-4" style="display:none"></div> <!-- Extension install banner --> <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(var(--sage-rgb),0.07),rgba(var(--sage-rgb),0.03))"> <svg class="ic ic-lg shrink-0" style="color:var(--sage)"><use href="#i-puzzle"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold text-white">Add SpotApply to Chrome to fill job forms</p> <p class="text-[10px] text-slate-400 mt-0.5">Fills Greenhouse, Lever, Ashby, Workday and more in your own browser. You review every field and click Submit.</p> </div> <a href="{{ chrome_web_store_url }}" target="_blank" rel="noopener" data-no-apply-track class="text-[10px] font-black bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">Add to Chrome →</a> <button onclick="document.getElementById('ext-install-banner').style.display='none'; localStorage.setItem('hp_ext_dismissed','1')" class="text-slate-500 hover:text-white transition text-lg shrink-0 leading-none">✕</button> </div> <!-- Onboarding checklist — shown only to new users with no jobs in pool --> <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->  </div><!-- /#pipeline-only-banners --> <!-- TAB 1: Kanban Board View --> <div id="view-content-kanban" class="flex flex-col gap-6"> {#- Compact, scannable job row. Full detail + actions live inside an
+            </button> </div></div> <!-- Main Tab Control — top of the page so Pipeline / All Jobs come first --> <div id="opt-strip" class="hidden mb-4"></div>  <!-- Recruiter intros (verified demand reaching out) --> <div id="intros-banner" class="hidden mb-4"></div> <!-- No resume yet: the one step that unlocks everything. Shown until a resume is on file. --> <div id="start-here-card" class="mb-4" style="display:none"></div> <!-- Pipeline-only: switchViewTab hides these on every other tab, so All Jobs opens on its table, not under the first-hour panel (owner, 2026-10-28) --> <div id="pipeline-only-banners"> <!-- First hour: live progress + role check (app/strategy/welcome.py) --> <div id="welcome-panel" class="mb-4" style="display:none"></div> <!-- Extension install banner --> <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(var(--sage-rgb),0.07),rgba(var(--sage-rgb),0.03))"> <svg class="ic ic-lg shrink-0" style="color:var(--sage)"><use href="#i-puzzle"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold text-white">Add SpotApply to Chrome to fill job forms</p> <p class="text-[10px] text-slate-400 mt-0.5">Fills Greenhouse, Lever, Ashby, Workday and more in your own browser. You review every field and click Submit.</p> </div> <a href="{{ chrome_web_store_url }}" target="_blank" rel="noopener" data-no-apply-track class="text-[10px] font-black bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">Add to Chrome →</a> <button onclick="document.getElementById('ext-install-banner').style.display='none'; localStorage.setItem('hp_ext_dismissed','1')" class="text-slate-500 hover:text-white transition text-lg shrink-0 leading-none">✕</button> </div> <!-- Apply queue: approve several jobs once, the extension applies one by one (docs/AUTO_APPLY_RESEARCH.md §8). Hidden until /api/apply-queue says it is on. --> <div id="apply-queue-strip" class="glass rounded-2xl px-5 py-3.5 flex items-center gap-4 mb-4" style="display:none"> <svg class="ic ic-lg shrink-0" style="color:var(--sage)"><use href="#i-send"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold" style="color:var(--ink)" id="aq-strip-title">Apply queue</p> <p class="text-[10px] mt-0.5" style="color:var(--muted)" id="aq-strip-sub">Pick several jobs and approve them once. SpotApply fills them one by one in your browser and stops whenever a site needs you.</p> </div> <button type="button" onclick="openApplyQueue()" class="jbtn jbtn-primary text-xs py-2 px-4 whitespace-nowrap shrink-0" id="aq-strip-btn">Open queue</button> </div> <!-- Onboarding checklist — shown only to new users with no jobs in pool --> <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->  </div><!-- /#pipeline-only-banners --> <!-- TAB 1: Kanban Board View --> <div id="view-content-kanban" class="flex flex-col gap-6"> {#- Compact, scannable job row. Full detail + actions live inside an
                 inert <template> that the slide-in drawer clones on click, so the
                 list stays short and easy to scroll. Per-column buttons are passed
                 in via {% call %} and rendered through caller(). -#}
@@ -8028,7 +8028,7 @@
 </div>
 
  <!-- Settings Modal --> <div id="settings-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeSettings()"></div> <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl"> <div class="flex items-center justify-between mb-5"> <h2 id="settings-title" class="text-lg font-bold text-white"> Settings</h2> <button onclick="closeSettings()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button> </div> <div id="settings-menu" class="space-y-5"> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Plan</p> <div class="space-y-2"> <button onclick="showSettingsDoc('pricing')" class="settings-row"> <span>Plans &amp; Pricing</span><span id="settings-plan-label" class="ml-auto text-[10px] text-indigo-400 font-bold">—</span></button> <!-- Promo code redemption --> <div class="settings-row flex-col gap-2" style="cursor:default;height:auto;padding:12px 16px;"> <p class="text-[10px] font-bold uppercase tracking-widest mb-2" style="color:var(--muted,#5B7186);"> Promo Code</p> <div class="flex gap-2"> <input id="coupon-code-input" type="text" placeholder="e.g. LAUNCH50" style="flex:1;font-size:13px;padding:7px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:rgba(255,255,255,0.06);color:inherit;outline:none;text-transform:uppercase;" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter')redeemCoupon()"> <button onclick="redeemCoupon()" style="font-size:12px;font-weight:700;padding:7px 14px;border:none;border-radius:8px;cursor:pointer;background:var(--sage);color:#fff;white-space:nowrap;"> Apply
-                                </button> </div> <p id="coupon-result-msg" class="text-[11px] mt-1 hidden"></p> </div> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Referrals &amp; Sharing</p> <!-- Refer a friend --> <div id="referral-card" class="rounded-2xl p-4 mb-2 hidden" style="background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),.3);"> <p class="text-[11px] font-extrabold uppercase tracking-widest mb-1" style="color:var(--sage-700);"> Refer a friend — unlock Premium</p> <p class="text-[11px] mb-2" style="color:var(--muted);">Refer <b id="ref-threshold">10</b> friends and get <b id="ref-reward-days">30</b> days of Premium free.</p> <div class="flex gap-2 mb-2"> <input id="ref-link" readonly class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-[11px] text-white" /> <button type="button" onclick="copyText(document.getElementById('ref-link').value, this)" class="text-xs font-bold px-3 py-2 rounded-xl text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">Copy</button> </div> <div class="flex items-center gap-2"> <div class="flex-1 h-2 rounded-full" style="background:var(--surface-2);"><div id="ref-bar" class="h-2 rounded-full" style="width:0%;background:var(--sage);"></div></div> <span id="ref-progress" class="text-[11px] font-bold" style="color:var(--sage-700);">0 / 10</span> </div> <p id="ref-unlocked" class="text-[11px] font-bold mt-2 hidden" style="color:#059669;">✓ Premium unlocked — thank you!</p> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Account</p> <div class="space-y-2"> <button onclick="closeSettings(); openProfileModal()" class="settings-row"> <span>Edit profile</span><span class="ml-auto text-slate-500">›</span></button> <button onclick="closeSettings(); openResumeUpload()" class="settings-row"> <span>My resume</span><span class="ml-auto text-slate-500">›</span></button> <button type="button" id="settings-search-toggle" onclick="toggleSearchFromSettings()" class="settings-row" title="Automatic scoring of new jobs for you. Pausing keeps your board, resume and history."> <span>Automatic job search</span><span id="settings-search-state" class="ml-auto text-slate-500">…</span></button> <button onclick="closeSettings(); openMemoryModal()" class="settings-row"> <span>Recruiter memory</span><span class="ml-auto text-[10px] text-emerald-400 font-bold">weekly brief</span></button> <a id="admin-settings-row" href="/admin" target="_blank" class="settings-row hidden" style="display:none;text-decoration:none;"> <span class="ml-2">Owner dashboard</span><span class="ml-auto text-[10px] text-indigo-400 font-bold">admin</span></a> <a href="/api/export/applications.csv" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Export applications (CSV)</span><span class="ml-auto text-slate-500">↓</span></a> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Browser Extension</p> <div class="space-y-2"> <a href="{{ chrome_web_store_url }}" target="_blank" rel="noopener" data-no-apply-track class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Add to Chrome (Web Store)</span><span class="ml-auto text-slate-500">↗</span></a> <a href="/extension" target="_blank" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Install guide</span><span class="ml-auto text-slate-500">↗</span></a> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Preferences</p> <div class="space-y-2"> <button onclick="closeSettings(); openProfileModal();" class="settings-row" title="Choose whether the browser extension attaches your tailored resume or your original one."> <span>Extension autofill resume</span><span id="settings-resume-source" class="ml-auto text-[10px] text-slate-500"></span></button> <div class="settings-row" style="cursor:default;height:auto;flex-wrap:wrap;row-gap:4px;" title="Your best new job matches by email. Every email has an unsubscribe link."> <label for="email-notif-select">Email notifications</label> <select id="email-notif-select" onchange="setEmailNotifications(this.value)" style="margin-left:auto;font-size:11px;font-weight:700;padding:4px 8px;border-radius:8px;border:1px solid var(--border,#DCEAF6);background:var(--surface,#fff);color:var(--ink,#0C2A3E);"><option value="daily:9">Daily summary · morning (9 AM)</option><option value="daily:12">Daily summary · midday (12 PM)</option><option value="daily:18">Daily summary · evening (6 PM)</option><option value="instant">Every new match, as found</option><option value="off">Off</option></select> <span id="email-notif-state" style="flex-basis:100%;font-size:10px;color:var(--muted,#64748b);"></span></div> <button onclick="enableNotifications()" class="settings-row"> <span>Desktop notifications</span><span id="notif-state" class="ml-auto text-[10px] text-slate-500"></span></button> <div class="settings-row flex flex-col gap-2" style="cursor:default; height:auto; padding: 12px 16px;"> <div class="flex items-center justify-between w-full"> <span> Appearance Theme</span> </div> <div class="grid grid-cols-5 gap-2 mt-1.5 w-full" id="theme-btns"> <button id="theme-btn-sky" onclick="changeTheme('sky')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:#0077C2;"></span>Sky</button> <button id="theme-btn-green" onclick="changeTheme('green')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:#00704A;"></span>Green</button> <button id="theme-btn-forest" onclick="changeTheme('forest')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:#1E3932;"></span>Forest</button> <button id="theme-btn-violet" onclick="changeTheme('violet')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:var(--sage);"></span>Violet</button> <button id="theme-btn-indigo" onclick="changeTheme('indigo')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:var(--sage);"></span>Indigo</button> </div> </div> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Legal &amp; Info</p> <div class="space-y-2"> <button onclick="showSettingsDoc('about')" class="settings-row">ℹ️ <span>About SpotApply</span><span class="ml-auto text-slate-500">›</span></button> <button onclick="showSettingsDoc('contact')" class="settings-row"> <span>Contact</span><span class="ml-auto text-slate-500">›</span></button> <a href="/privacy" target="_blank" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Privacy Policy</span><span class="ml-auto text-slate-500">↗</span></a> <a href="/terms" target="_blank" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Terms of Service</span><span class="ml-auto text-slate-500">↗</span></a> </div> </div> <div class="border-t border-white/[0.05] pt-4 space-y-2"> <button onclick="handleLogout()" class="w-full bg-slate-800/40 hover:bg-slate-800/80 text-slate-300 hover:text-white font-bold py-3 rounded-xl border border-slate-700/40 transition text-sm"> Logout</button> <button onclick="confirmDeleteAccount()" class="w-full bg-transparent hover:bg-red-900/20 text-red-600/70 hover:text-red-400 font-semibold py-2 rounded-xl border border-red-900/30 hover:border-red-500/30 transition text-xs">Delete my account & all data</button> </div> </div> <div id="settings-doc" class="hidden"> <button onclick="backToSettings()" class="text-[11px] font-bold text-indigo-300 hover:text-white mb-3">‹ Back to settings</button> <div id="settings-doc-content" class="text-sm text-slate-300 space-y-3 leading-relaxed"></div> </div> </div> </div> <!-- Notifications Modal --> <div id="notifications-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeNotifications()"></div> <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl flex flex-col"> <div class="flex items-center justify-between mb-5 shrink-0"> <h2 class="text-lg font-bold" style="color: var(--ink);"> Notifications</h2> <div class="flex items-center gap-3"> <button onclick="markAllNotificationsAsRead()" class="text-xs font-bold hover:underline bg-transparent border-0 p-0 cursor-pointer" style="color: var(--sage-600);">Mark all read</button> <span style="color: var(--muted);">|</span> <button onclick="clearNotifications()" class="text-xs font-bold hover:underline bg-transparent border-0 p-0 cursor-pointer" style="color: var(--rose);">Clear all</button> <button onclick="closeNotifications()" class="text-2xl leading-none ml-2 bg-transparent border-0 cursor-pointer hover:scale-110 transition-transform" style="color: var(--muted);">&times;</button> </div> </div> <div id="notifications-list" class="space-y-3 overflow-y-auto flex-1 pr-1 max-h-[60vh]"> <div class="text-slate-400 text-center py-8 text-sm">Loading notifications...</div> </div> </div> </div> <!-- Custom Confirm Modal --> <div id="confirm-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/75 backdrop-blur-sm" onclick="closeCustomConfirm(false)"></div> <div class="relative glass rounded-[24px] p-6 w-full max-w-sm border border-slate-700/50 shadow-2xl flex flex-col items-center text-center"> <div class="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-xl mb-4" id="confirm-icon">⚠</div> <h3 class="text-base font-bold mb-2" id="confirm-title" style="color: var(--ink);">Confirm Action</h3> <p class="text-xs mb-6 leading-relaxed" id="confirm-message" style="color: var(--ink-soft);"></p> <div class="flex items-center gap-3 w-full"> <button onclick="closeCustomConfirm(false)" class="flex-1 jbtn jbtn-ghost py-2.5 text-xs transition">Cancel</button> <button onclick="closeCustomConfirm(true)" class="flex-1 jbtn jbtn-primary py-2.5 text-xs transition" id="confirm-ok-btn">Confirm</button> </div> </div> </div> <!-- Profile Modal --> <div id="profile-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeProfileModal()"></div> <div id="profile-shell" class="relative glass-dark rounded-[28px] p-7 sm:p-8 w-full max-w-5xl max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl"> <button onclick="closeProfileModal()" title="Close" class="absolute top-5 right-5 z-10 w-9 h-9 rounded-full flex items-center justify-center text-xl leading-none text-slate-400 hover:text-white" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);">&times;</button> <!-- Advanced header: avatar + identity + strength in one band --> <div class="flex flex-wrap items-center gap-5 mb-6 pb-6" style="border-bottom:1px solid var(--border);"> <div class="relative shrink-0"> <div onclick="triggerAvatarUpload()" title="Change photo" style="width:76px;height:76px;border-radius:22px;overflow:hidden;border:2px solid rgba(var(--sage-rgb),0.5);box-shadow:0 6px 20px rgba(var(--sage-rgb),0.18);cursor:pointer;"> <img id="modal-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" /> <div id="modal-avatar-ph" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:30px;background:linear-gradient(135deg,var(--sage-tint),rgba(var(--sage-rgb),0.12));color:var(--sage-700);font-weight:800;"></div> </div> </div> <div class="min-w-0 flex-1"> <h2 class="text-xl font-extrabold" style="color:var(--ink);letter-spacing:-0.01em;">My Profile</h2> <p class="text-[12px] mt-0.5" style="color:var(--muted);">Everything the AI uses to match, score and tailor for you — keep it sharp.</p> <div id="profile-completeness-wrap" class="hidden mt-3"> <div class="flex items-center justify-between mb-1"> <span class="text-[10.5px] font-black uppercase tracking-widest" style="color:var(--muted-2);">Profile strength</span> <span id="profile-completeness-pct" class="text-[12px] font-black text-emerald-400">0%</span> </div> <div class="w-full h-2 rounded-full overflow-hidden" style="background:rgba(46,42,36,0.10);"> <div id="profile-completeness-bar" class="h-full rounded-full transition-all duration-700" style="width:0%;background:linear-gradient(90deg,var(--sage),var(--sage-600));"></div> </div> <div id="profile-completeness-hint" class="text-[10.5px] mt-1" style="color:var(--muted-2);"></div> </div> </div> </div> <!-- Trust Profile (Phase 0) --> <div id="trust-panel" class="hidden mb-4 px-1"> <div class="flex items-center justify-between mb-2"> <span class="text-[10px] font-black uppercase tracking-widest text-slate-500"> Trust Profile</span> <span id="trust-tier" class="text-[11px] font-black px-2.5 py-0.5 rounded-full" style="background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.35);"></span> </div> <div id="trust-dimensions" class="space-y-1.5"></div> <div class="rounded-2xl p-3.5 mt-3" style="background:var(--sage-tint);border:1.5px solid rgba(var(--sage-rgb),0.45);"> <div class="flex items-center justify-between mb-1.5"> <span class="text-[10.5px] font-black uppercase tracking-widest" style="color:var(--sage-700);">🔗 Your public profile link</span> <button type="button" onclick="loadTrustProfile(true)" class="text-[10px] font-bold" style="color:var(--muted-2);">↻ Refresh</button> </div> <p class="text-[11px] mb-2" style="color:var(--muted);">Share this with recruiters — a verified snapshot of your trust profile.</p> <div class="flex items-center gap-2"> <input id="trust-share-url" readonly class="flex-1 text-[11.5px] rounded-xl px-3 py-2.5 font-semibold" style="background:var(--surface);border:1px solid var(--border);color:var(--ink-soft);" value="" /> <button type="button" onclick="copyTrustShare()" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5 whitespace-nowrap">Copy link</button> </div> </div> </div> <p id="profile-loading" class="text-slate-400 text-sm text-center py-4">Loading...</p> <form id="profile-form" class="hidden space-y-4" onsubmit="saveProfile(event)"> <div class="pf-sechead">Contact &amp; links</div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">First Name</label><input name="first_name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Last Name</label><input name="last_name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Email</label><input name="email" type="email" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Phone</label><input name="phone" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Location (City, State)</label><input name="location" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div class="grid grid-cols-2 gap-3 items-end"> <div> <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Search jobs in country</label> <!-- Options mirror app/common/geo.py _COUNTRY_SIGNALS — keep in sync --> <select name="preferred_country" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"> <option value="United States">United States</option> <option value="Argentina">Argentina</option> <option value="Australia">Australia</option> <option value="Brazil">Brazil</option> <option value="Canada">Canada</option> <option value="France">France</option> <option value="Germany">Germany</option> <option value="India">India</option> <option value="Ireland">Ireland</option> <option value="Japan">Japan</option> <option value="Mexico">Mexico</option> <option value="Netherlands">Netherlands</option> <option value="Nigeria">Nigeria</option> <option value="Pakistan">Pakistan</option> <option value="Philippines">Philippines</option> <option value="Poland">Poland</option> <option value="Portugal">Portugal</option> <option value="Singapore">Singapore</option> <option value="Spain">Spain</option> <option value="Ukraine">Ukraine</option> <option value="United Kingdom">United Kingdom</option> </select> </div> <div class="pb-1"> <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work style</span> <div class="flex items-center gap-3 mt-1.5" title="A job that says it is a style you did not tick is left out; one that does not say stays in"> <label class="flex items-center gap-1.5 cursor-pointer"> <input type="checkbox" name="remote_ok" class="w-4 h-4 rounded accent-emerald-500" /> <span class="text-[11px] text-slate-300 font-semibold">Remote</span> </label> <label class="flex items-center gap-1.5 cursor-pointer"> <input type="checkbox" name="mode_hybrid" class="w-4 h-4 rounded accent-emerald-500" /> <span class="text-[11px] text-slate-300 font-semibold">Hybrid</span> </label> <label class="flex items-center gap-1.5 cursor-pointer"> <input type="checkbox" name="mode_onsite" class="w-4 h-4 rounded accent-emerald-500" /> <span class="text-[11px] text-slate-300 font-semibold">On-site</span> </label> </div> </div> </div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">LinkedIn URL</label><input name="linkedin_url" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">GitHub URL</label><input name="github_url" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Portfolio / Website</label><input name="portfolio_url" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="pf-sechead">Professional</div> <div class="grid grid-cols-1 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Current Title</label><input name="current_title" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="grid grid-cols-3 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Years Experience</label><input name="years_experience" type="number" min="0" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Salary Min</label><input name="salary_min" type="number" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Salary Max</label><input name="salary_max" type="number" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="mt-1"> <div class="flex items-center justify-between"> <label class="text-[10.5px] font-black uppercase" style="letter-spacing:.14em;color:var(--sage-700,#059669);">🎓 Education</label> <div class="flex items-center gap-2"> <button type="button" onclick="fillHistoryFromResume(this)" class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="color:var(--sage-600);background:rgba(var(--sage-rgb),0.10);">↻ Fill from resume</button> <button type="button" onclick="addEduEntry()" class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="color:#10b981;background:rgba(16,185,129,0.08);">+ Add</button> </div> </div> <div id="edu-entries" class="mt-2"></div> </div> <div class="mt-4"> <div class="flex items-center justify-between"> <label class="text-[10.5px] font-black uppercase" style="letter-spacing:.14em;color:var(--sage-700,#059669);">💼 Work Experience</label> <button type="button" onclick="addExpEntry()" class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="color:#10b981;background:rgba(16,185,129,0.08);">+ Add</button> </div> <div id="exp-entries" class="mt-2"></div> </div> <input type="hidden" name="_history_state" value="" /> <div class="pf-sechead">Work authorization &amp; preferences</div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work Authorization</label><input name="work_authorization" placeholder="e.g. UK Citizen / EU Blue Card / Work Permit / OPT / H1B..." class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <!-- Work Readiness Passport --> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Availability</label> <select name="availability" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"> <option value="">—</option><option>Immediately</option><option>2 weeks</option><option>Interviewing</option><option>Not looking</option> </select></div> <div class="flex items-end gap-2 pb-2"> <input name="open_to_relocation" type="checkbox" id="reloc-cb" class="w-4 h-4 rounded accent-emerald-500" onchange="_syncRelocationOptions()" /> <label for="reloc-cb" class="text-sm text-slate-300">Open to relocation</label> </div> </div>
+                                </button> </div> <p id="coupon-result-msg" class="text-[11px] mt-1 hidden"></p> </div> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Referrals &amp; Sharing</p> <!-- Refer a friend --> <div id="referral-card" class="rounded-2xl p-4 mb-2 hidden" style="background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),.3);"> <p class="text-[11px] font-extrabold uppercase tracking-widest mb-1" style="color:var(--sage-700);"> Refer a friend — unlock Premium</p> <p class="text-[11px] mb-2" style="color:var(--muted);">Refer <b id="ref-threshold">10</b> friends and get <b id="ref-reward-days">30</b> days of Premium free.</p> <div class="flex gap-2 mb-2"> <input id="ref-link" readonly class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-[11px] text-white" /> <button type="button" onclick="copyText(document.getElementById('ref-link').value, this)" class="text-xs font-bold px-3 py-2 rounded-xl text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">Copy</button> </div> <div class="flex items-center gap-2"> <div class="flex-1 h-2 rounded-full" style="background:var(--surface-2);"><div id="ref-bar" class="h-2 rounded-full" style="width:0%;background:var(--sage);"></div></div> <span id="ref-progress" class="text-[11px] font-bold" style="color:var(--sage-700);">0 / 10</span> </div> <p id="ref-unlocked" class="text-[11px] font-bold mt-2 hidden" style="color:#059669;">✓ Premium unlocked — thank you!</p> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Account</p> <div class="space-y-2"> <button onclick="closeSettings(); openProfileModal()" class="settings-row"> <span>Edit profile</span><span class="ml-auto text-slate-500">›</span></button> <button onclick="closeSettings(); openResumeUpload()" class="settings-row"> <span>My resume</span><span class="ml-auto text-slate-500">›</span></button> <button type="button" id="settings-search-toggle" onclick="toggleSearchFromSettings()" class="settings-row" title="Automatic scoring of new jobs for you. Pausing keeps your board, resume and history."> <span>Automatic job search</span><span id="settings-search-state" class="ml-auto text-slate-500">…</span></button> <button onclick="closeSettings(); openMemoryModal()" class="settings-row"> <span>Recruiter memory</span><span class="ml-auto text-[10px] text-emerald-400 font-bold">weekly brief</span></button> <a id="admin-settings-row" href="/admin" target="_blank" class="settings-row hidden" style="display:none;text-decoration:none;"> <span class="ml-2">Owner dashboard</span><span class="ml-auto text-[10px] text-indigo-400 font-bold">admin</span></a> <a href="/api/export/applications.csv" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Export applications (CSV)</span><span class="ml-auto text-slate-500">↓</span></a> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Browser Extension</p> <div class="space-y-2"> <a href="{{ chrome_web_store_url }}" target="_blank" rel="noopener" data-no-apply-track class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Add to Chrome (Web Store)</span><span class="ml-auto text-slate-500">↗</span></a> <a href="/extension" target="_blank" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Install guide</span><span class="ml-auto text-slate-500">↗</span></a> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Preferences</p> <div class="space-y-2"> <button onclick="closeSettings(); openProfileModal();" class="settings-row" title="Choose whether the browser extension attaches your tailored resume or your original one."> <span>Extension autofill resume</span><span id="settings-resume-source" class="ml-auto text-[10px] text-slate-500"></span></button> <div class="settings-row" style="cursor:default;height:auto;flex-wrap:wrap;row-gap:4px;" title="Your best new job matches by email. Every email has an unsubscribe link."> <label for="email-notif-select">Email notifications</label> <select id="email-notif-select" onchange="setEmailNotifications(this.value)" style="margin-left:auto;font-size:11px;font-weight:700;padding:4px 8px;border-radius:8px;border:1px solid var(--border,#DCEAF6);background:var(--surface,#fff);color:var(--ink,#0C2A3E);"><option value="daily:9">Daily summary · morning (9 AM)</option><option value="daily:12">Daily summary · midday (12 PM)</option><option value="daily:18">Daily summary · evening (6 PM)</option><option value="instant">Every new match, as found</option><option value="off">Off</option></select> <span id="email-notif-state" style="flex-basis:100%;font-size:10px;color:var(--muted,#64748b);"></span></div> <button onclick="enableNotifications()" class="settings-row"> <span>Desktop notifications</span><span id="notif-state" class="ml-auto text-[10px] text-slate-500"></span></button> <div class="settings-row flex flex-col gap-2" style="cursor:default; height:auto; padding: 12px 16px;"> <div class="flex items-center justify-between w-full"> <span> Appearance Theme</span> </div> <div class="grid grid-cols-5 gap-2 mt-1.5 w-full" id="theme-btns"> <button id="theme-btn-sky" onclick="changeTheme('sky')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:#0077C2;"></span>Sky</button> <button id="theme-btn-green" onclick="changeTheme('green')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:#00704A;"></span>Green</button> <button id="theme-btn-forest" onclick="changeTheme('forest')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:#1E3932;"></span>Forest</button> <button id="theme-btn-violet" onclick="changeTheme('violet')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:var(--sage);"></span>Violet</button> <button id="theme-btn-indigo" onclick="changeTheme('indigo')" class="theme-swatch text-[10px] font-bold py-2 px-1.5 rounded-lg border transition text-center flex flex-col items-center gap-1"><span class="w-4 h-4 rounded-full" style="background:var(--sage);"></span>Indigo</button> </div> </div> </div> </div> <div> <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Legal &amp; Info</p> <div class="space-y-2"> <button onclick="showSettingsDoc('about')" class="settings-row">ℹ️ <span>About SpotApply</span><span class="ml-auto text-slate-500">›</span></button> <button onclick="showSettingsDoc('contact')" class="settings-row"> <span>Contact</span><span class="ml-auto text-slate-500">›</span></button> <a href="/privacy" target="_blank" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Privacy Policy</span><span class="ml-auto text-slate-500">↗</span></a> <a href="/terms" target="_blank" class="settings-row" style="display:flex;text-decoration:none;"> <span class="ml-2">Terms of Service</span><span class="ml-auto text-slate-500">↗</span></a> </div> </div> <div class="border-t border-white/[0.05] pt-4 space-y-2"> <button onclick="handleLogout()" class="w-full bg-slate-800/40 hover:bg-slate-800/80 text-slate-300 hover:text-white font-bold py-3 rounded-xl border border-slate-700/40 transition text-sm"> Logout</button> <button onclick="confirmDeleteAccount()" class="w-full bg-transparent hover:bg-red-900/20 text-red-600/70 hover:text-red-400 font-semibold py-2 rounded-xl border border-red-900/30 hover:border-red-500/30 transition text-xs">Delete my account & all data</button> </div> </div> <div id="settings-doc" class="hidden"> <button onclick="backToSettings()" class="text-[11px] font-bold text-indigo-300 hover:text-white mb-3">‹ Back to settings</button> <div id="settings-doc-content" class="text-sm text-slate-300 space-y-3 leading-relaxed"></div> </div> </div> </div> <!-- Notifications Modal --> <div id="notifications-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeNotifications()"></div> <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl flex flex-col"> <div class="flex items-center justify-between mb-5 shrink-0"> <h2 class="text-lg font-bold" style="color: var(--ink);"> Notifications</h2> <div class="flex items-center gap-3"> <button onclick="markAllNotificationsAsRead()" class="text-xs font-bold hover:underline bg-transparent border-0 p-0 cursor-pointer" style="color: var(--sage-600);">Mark all read</button> <span style="color: var(--muted);">|</span> <button onclick="clearNotifications()" class="text-xs font-bold hover:underline bg-transparent border-0 p-0 cursor-pointer" style="color: var(--rose);">Clear all</button> <button onclick="closeNotifications()" class="text-2xl leading-none ml-2 bg-transparent border-0 cursor-pointer hover:scale-110 transition-transform" style="color: var(--muted);">&times;</button> </div> </div> <div id="notifications-list" class="space-y-3 overflow-y-auto flex-1 pr-1 max-h-[60vh]"> <div class="text-slate-400 text-center py-8 text-sm">Loading notifications...</div> </div> </div> </div> <!-- Apply queue modal (toggled with style.display) --> <div id="apply-queue-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4" style="display:none"> <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeApplyQueue()"></div> <div class="relative glass-dark rounded-[28px] p-6 w-full max-h-[90vh] overflow-y-auto shadow-2xl flex flex-col" style="max-width:760px" role="dialog" aria-modal="true" aria-label="Apply queue"> <div class="flex items-center justify-between mb-1 shrink-0"> <h2 class="text-lg font-bold" style="color:var(--ink)">Apply queue</h2> <button type="button" onclick="closeApplyQueue()" title="Close" class="text-2xl leading-none bg-transparent border-0 cursor-pointer" style="color:var(--muted)">&times;</button> </div> <p class="text-xs mb-4" style="color:var(--muted)">Approve a list once. SpotApply opens each job in your browser, fills it and submits the ones it is allowed to, one at a time. It never gets past a CAPTCHA, a sign-in or an unanswered question for you: those wait here until you finish them.</p> <div id="apply-queue-body"><p class="text-sm py-6 text-center" style="color:var(--muted)">Loading…</p></div> </div> </div> <!-- Custom Confirm Modal --> <div id="confirm-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/75 backdrop-blur-sm" onclick="closeCustomConfirm(false)"></div> <div class="relative glass rounded-[24px] p-6 w-full max-w-sm border border-slate-700/50 shadow-2xl flex flex-col items-center text-center"> <div class="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-xl mb-4" id="confirm-icon">⚠</div> <h3 class="text-base font-bold mb-2" id="confirm-title" style="color: var(--ink);">Confirm Action</h3> <p class="text-xs mb-6 leading-relaxed" id="confirm-message" style="color: var(--ink-soft);"></p> <div class="flex items-center gap-3 w-full"> <button onclick="closeCustomConfirm(false)" class="flex-1 jbtn jbtn-ghost py-2.5 text-xs transition">Cancel</button> <button onclick="closeCustomConfirm(true)" class="flex-1 jbtn jbtn-primary py-2.5 text-xs transition" id="confirm-ok-btn">Confirm</button> </div> </div> </div> <!-- Profile Modal --> <div id="profile-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"> <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeProfileModal()"></div> <div id="profile-shell" class="relative glass-dark rounded-[28px] p-7 sm:p-8 w-full max-w-5xl max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl"> <button onclick="closeProfileModal()" title="Close" class="absolute top-5 right-5 z-10 w-9 h-9 rounded-full flex items-center justify-center text-xl leading-none text-slate-400 hover:text-white" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);">&times;</button> <!-- Advanced header: avatar + identity + strength in one band --> <div class="flex flex-wrap items-center gap-5 mb-6 pb-6" style="border-bottom:1px solid var(--border);"> <div class="relative shrink-0"> <div onclick="triggerAvatarUpload()" title="Change photo" style="width:76px;height:76px;border-radius:22px;overflow:hidden;border:2px solid rgba(var(--sage-rgb),0.5);box-shadow:0 6px 20px rgba(var(--sage-rgb),0.18);cursor:pointer;"> <img id="modal-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" /> <div id="modal-avatar-ph" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:30px;background:linear-gradient(135deg,var(--sage-tint),rgba(var(--sage-rgb),0.12));color:var(--sage-700);font-weight:800;"></div> </div> </div> <div class="min-w-0 flex-1"> <h2 class="text-xl font-extrabold" style="color:var(--ink);letter-spacing:-0.01em;">My Profile</h2> <p class="text-[12px] mt-0.5" style="color:var(--muted);">Everything the AI uses to match, score and tailor for you — keep it sharp.</p> <div id="profile-completeness-wrap" class="hidden mt-3"> <div class="flex items-center justify-between mb-1"> <span class="text-[10.5px] font-black uppercase tracking-widest" style="color:var(--muted-2);">Profile strength</span> <span id="profile-completeness-pct" class="text-[12px] font-black text-emerald-400">0%</span> </div> <div class="w-full h-2 rounded-full overflow-hidden" style="background:rgba(46,42,36,0.10);"> <div id="profile-completeness-bar" class="h-full rounded-full transition-all duration-700" style="width:0%;background:linear-gradient(90deg,var(--sage),var(--sage-600));"></div> </div> <div id="profile-completeness-hint" class="text-[10.5px] mt-1" style="color:var(--muted-2);"></div> </div> </div> </div> <!-- Trust Profile (Phase 0) --> <div id="trust-panel" class="hidden mb-4 px-1"> <div class="flex items-center justify-between mb-2"> <span class="text-[10px] font-black uppercase tracking-widest text-slate-500"> Trust Profile</span> <span id="trust-tier" class="text-[11px] font-black px-2.5 py-0.5 rounded-full" style="background:rgba(16,185,129,0.12);color:#10b981;border:1px solid rgba(16,185,129,0.35);"></span> </div> <div id="trust-dimensions" class="space-y-1.5"></div> <div class="rounded-2xl p-3.5 mt-3" style="background:var(--sage-tint);border:1.5px solid rgba(var(--sage-rgb),0.45);"> <div class="flex items-center justify-between mb-1.5"> <span class="text-[10.5px] font-black uppercase tracking-widest" style="color:var(--sage-700);">🔗 Your public profile link</span> <button type="button" onclick="loadTrustProfile(true)" class="text-[10px] font-bold" style="color:var(--muted-2);">↻ Refresh</button> </div> <p class="text-[11px] mb-2" style="color:var(--muted);">Share this with recruiters — a verified snapshot of your trust profile.</p> <div class="flex items-center gap-2"> <input id="trust-share-url" readonly class="flex-1 text-[11.5px] rounded-xl px-3 py-2.5 font-semibold" style="background:var(--surface);border:1px solid var(--border);color:var(--ink-soft);" value="" /> <button type="button" onclick="copyTrustShare()" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5 whitespace-nowrap">Copy link</button> </div> </div> </div> <p id="profile-loading" class="text-slate-400 text-sm text-center py-4">Loading...</p> <form id="profile-form" class="hidden space-y-4" onsubmit="saveProfile(event)"> <div class="pf-sechead">Contact &amp; links</div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">First Name</label><input name="first_name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Last Name</label><input name="last_name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Email</label><input name="email" type="email" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Phone</label><input name="phone" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Location (City, State)</label><input name="location" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div class="grid grid-cols-2 gap-3 items-end"> <div> <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Search jobs in country</label> <!-- Options mirror app/common/geo.py _COUNTRY_SIGNALS — keep in sync --> <select name="preferred_country" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"> <option value="United States">United States</option> <option value="Argentina">Argentina</option> <option value="Australia">Australia</option> <option value="Brazil">Brazil</option> <option value="Canada">Canada</option> <option value="France">France</option> <option value="Germany">Germany</option> <option value="India">India</option> <option value="Ireland">Ireland</option> <option value="Japan">Japan</option> <option value="Mexico">Mexico</option> <option value="Netherlands">Netherlands</option> <option value="Nigeria">Nigeria</option> <option value="Pakistan">Pakistan</option> <option value="Philippines">Philippines</option> <option value="Poland">Poland</option> <option value="Portugal">Portugal</option> <option value="Singapore">Singapore</option> <option value="Spain">Spain</option> <option value="Ukraine">Ukraine</option> <option value="United Kingdom">United Kingdom</option> </select> </div> <div class="pb-1"> <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work style</span> <div class="flex items-center gap-3 mt-1.5" title="A job that says it is a style you did not tick is left out; one that does not say stays in"> <label class="flex items-center gap-1.5 cursor-pointer"> <input type="checkbox" name="remote_ok" class="w-4 h-4 rounded accent-emerald-500" /> <span class="text-[11px] text-slate-300 font-semibold">Remote</span> </label> <label class="flex items-center gap-1.5 cursor-pointer"> <input type="checkbox" name="mode_hybrid" class="w-4 h-4 rounded accent-emerald-500" /> <span class="text-[11px] text-slate-300 font-semibold">Hybrid</span> </label> <label class="flex items-center gap-1.5 cursor-pointer"> <input type="checkbox" name="mode_onsite" class="w-4 h-4 rounded accent-emerald-500" /> <span class="text-[11px] text-slate-300 font-semibold">On-site</span> </label> </div> </div> </div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">LinkedIn URL</label><input name="linkedin_url" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">GitHub URL</label><input name="github_url" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Portfolio / Website</label><input name="portfolio_url" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="pf-sechead">Professional</div> <div class="grid grid-cols-1 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Current Title</label><input name="current_title" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="grid grid-cols-3 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Years Experience</label><input name="years_experience" type="number" min="0" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Salary Min</label><input name="salary_min" type="number" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Salary Max</label><input name="salary_max" type="number" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> </div> <div class="mt-1"> <div class="flex items-center justify-between"> <label class="text-[10.5px] font-black uppercase" style="letter-spacing:.14em;color:var(--sage-700,#059669);">🎓 Education</label> <div class="flex items-center gap-2"> <button type="button" onclick="fillHistoryFromResume(this)" class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="color:var(--sage-600);background:rgba(var(--sage-rgb),0.10);">↻ Fill from resume</button> <button type="button" onclick="addEduEntry()" class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="color:#10b981;background:rgba(16,185,129,0.08);">+ Add</button> </div> </div> <div id="edu-entries" class="mt-2"></div> </div> <div class="mt-4"> <div class="flex items-center justify-between"> <label class="text-[10.5px] font-black uppercase" style="letter-spacing:.14em;color:var(--sage-700,#059669);">💼 Work Experience</label> <button type="button" onclick="addExpEntry()" class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="color:#10b981;background:rgba(16,185,129,0.08);">+ Add</button> </div> <div id="exp-entries" class="mt-2"></div> </div> <input type="hidden" name="_history_state" value="" /> <div class="pf-sechead">Work authorization &amp; preferences</div> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work Authorization</label><input name="work_authorization" placeholder="e.g. UK Citizen / EU Blue Card / Work Permit / OPT / H1B..." class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div> <!-- Work Readiness Passport --> <div class="grid grid-cols-2 gap-3"> <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Availability</label> <select name="availability" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"> <option value="">—</option><option>Immediately</option><option>2 weeks</option><option>Interviewing</option><option>Not looking</option> </select></div> <div class="flex items-end gap-2 pb-2"> <input name="open_to_relocation" type="checkbox" id="reloc-cb" class="w-4 h-4 rounded accent-emerald-500" onchange="_syncRelocationOptions()" /> <label for="reloc-cb" class="text-sm text-slate-300">Open to relocation</label> </div> </div>
                         <!-- The title line under your name on a tailored resume
                              (UserProfile.resume_title_from_jd; app/tailoring/rules.py). -->
                         <div>
@@ -8046,7 +8046,7 @@
                             <option value="false">Off: SpotApply fills the form, I click Submit</option>
                             <option value="true">On: "Apply &amp; Submit" fills and submits on boards that allow it</option>
                           </select>
-                          <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Each Apply &amp; Submit click approves that one application. SpotApply submits only on login-free boards (Greenhouse, Lever, Ashby, SmartRecruiters), only when every required field is filled, and never past a CAPTCHA or a sign-in. Anything else stops and tells you. Up to 25 a day.</p>
+                          <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Each Apply &amp; Submit click approves that one application; the Apply queue lets you approve a list you have read, once. SpotApply submits only on login-free boards (Greenhouse, Lever, Ashby, SmartRecruiters), only when every required field is filled, and never past a CAPTCHA or a sign-in. Anything else stops and tells you. Up to 25 a day.</p>
                         </div>
                         <!-- Public profile + recruiter visibility (UserProfile.public_profile). OFF by default. -->
                         <div>
@@ -10048,5 +10048,355 @@
                 .catch(() => { /* keep default copy */ });
         }
     });
+</script> <script>
+/* ── Apply queue ───────────────────────────────────────────────────────────────
+   Founder decision 2026-11-13 (docs/AUTO_APPLY_RESEARCH.md §8). The person
+   ticks jobs here, reads what each one will do and clicks Approve ONCE; the
+   extension's background worker then applies to them one at a time
+   (extension/background.js, the queue runner). This page only:
+     - shows the server's list (GET /api/apply-queue) and what each board job
+       WOULD do before it is approved (?candidates=1 — reserves nothing);
+     - sends the approval (POST /api/apply-queue) and starts/stops the runner
+       through the extension bridge (SPOTAPPLY_QUEUE_START / _STOP / _STATUS);
+     - lists the jobs that are waiting for the person, each with its reason.
+   What may be submitted is decided on the server (the one-click rules), never
+   here. */
+(function () {
+  const POLL_MS = 5000;
+  let state = null;            // the server's queue
+  let runner = null;           // the extension's runner state
+  let runnerAnswered = false;  // false = no extension, or one older than 1.3.0
+  let picked = new Set();
+  let pollTimer = null;
+  let boardStale = false;
+  let lastSubmitted = 0;
+  let pickedOnce = false;
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const isOpen = () => { const m = $('apply-queue-modal'); return !!m && m.style.display !== 'none'; };
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: jsonHeaders() }, opts || {}));
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
+    return data;
+  }
+
+  async function load(withCandidates) {
+    try {
+      const fresh = await api('/api/apply-queue' + (withCandidates ? '?candidates=1' : ''));
+      if (!withCandidates && state && state.candidates) fresh.candidates = state.candidates;
+      state = fresh;
+    } catch (e) {
+      if (!state) state = { enabled: false, items: [], counts: {}, error: e.message };
+    }
+    const done = (state.counts && state.counts.submitted) || 0;
+    if (done > lastSubmitted) boardStale = true;
+    lastSubmitted = done;
+    renderStrip();
+    if (isOpen()) renderApplyQueue();
+  }
+
+  function askRunner(kind, pack) {
+    window.postMessage({ type: 'SPOTAPPLY_QUEUE_' + kind, pack: pack || null }, window.location.origin);
+  }
+  function authPack() {
+    return {
+      auth_token: localStorage.getItem('sb_token'),
+      refresh_token: localStorage.getItem('sb_refresh'),
+      supabase_url: localStorage.getItem('sb_url'),
+      supabase_anon_key: localStorage.getItem('sb_anon'),
+    };
+  }
+  /** Ask the runner something and wait briefly for SPOTAPPLY_QUEUE_STATE. */
+  function runnerCall(kind, pack) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const onMsg = (e) => {
+        if (e.source !== window || !e.data || e.data.type !== 'SPOTAPPLY_QUEUE_STATE') return;
+        settled = true;
+        window.removeEventListener('message', onMsg);
+        resolve(!!e.data.ok);
+      };
+      window.addEventListener('message', onMsg);
+      askRunner(kind, pack);
+      setTimeout(() => { if (!settled) { window.removeEventListener('message', onMsg); resolve(false); } }, 1800);
+    });
+  }
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.type !== 'SPOTAPPLY_QUEUE_STATE') return;
+    if (e.data.ok) { runnerAnswered = true; runner = e.data.queue || runner; }
+    const active = runner && (runner.state === 'running' || runner.state === 'stopping');
+    setPolling(isOpen() || active);
+    load(false);
+  });
+
+  function setPolling(on) {
+    if (on && !pollTimer) pollTimer = setInterval(() => { if (!document.hidden) load(false); }, POLL_MS);
+    if (!on && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function renderStrip() {
+    const strip = $('apply-queue-strip');
+    if (!strip || !state) return;
+    strip.style.display = state.enabled ? '' : 'none';
+    const c = state.counts || {};
+    const sub = $('aq-strip-sub'), btn = $('aq-strip-btn');
+    const bits = [];
+    if (c.running) bits.push('1 being filled now');
+    if (c.queued) bits.push(c.queued + ' waiting');
+    if (c.needs_you) bits.push(c.needs_you + (c.needs_you === 1 ? ' needs you' : ' need you'));
+    if (c.submitted) bits.push(c.submitted + ' submitted today');
+    if (sub && bits.length) sub.textContent = bits.join(' · ');
+    if (btn) btn.textContent = c.needs_you ? 'Finish ' + c.needs_you + ' waiting' : 'Open queue';
+  }
+
+  const CHIP = {
+    running: ['Filling now', 'var(--sage-700)', 'var(--sage-tint)'],
+    queued: ['Waiting', 'var(--ink-soft)', 'var(--surface-2)'],
+    needs_you: ['Needs you', 'var(--caution)', 'rgba(180,83,9,0.10)'],
+    submitted: ['Submitted', 'var(--ok)', 'rgba(4,120,87,0.10)'],
+    cancelled: ['Removed', 'var(--muted)', 'var(--surface-2)'],
+    expired: ['Expired', 'var(--muted)', 'var(--surface-2)'],
+  };
+  const chip = (label, fg, bg) =>
+    '<span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:999px;white-space:nowrap;color:' +
+    fg + ';background:' + bg + '">' + esc(label) + '</span>';
+  const note = (html, tone) =>
+    '<div style="font-size:12px;line-height:1.5;padding:10px 12px;border-radius:12px;margin-bottom:12px;color:var(--ink-soft);' +
+    'background:' + (tone === 'warn' ? 'rgba(180,83,9,0.08)' : 'var(--surface-2)') +
+    ';border:1px solid ' + (tone === 'warn' ? 'rgba(180,83,9,0.25)' : 'var(--border)') + '">' + html + '</div>';
+
+  function runnerLine() {
+    const c = (state && state.counts) || {};
+    const r = runner || { state: 'idle', reason: '' };
+    const btn = (id, label, primary) =>
+      '<button type="button" id="' + id + '" class="jbtn ' + (primary ? 'jbtn-primary' : 'jbtn-ghost') +
+      ' text-xs py-2 px-4 whitespace-nowrap">' + esc(label) + '</button>';
+    let text = '', action = '';
+    if (r.state === 'running') {
+      text = r.current ? 'Working on <b>' + esc(r.current.company || 'the next job') + '</b>' +
+                         (r.current.attempted ? ': submitted, waiting for the site to confirm.' : ': filling the form.')
+                       : 'Running. Opening the next job…';
+      action = btn('aq-stop', 'Stop', false);
+    } else if (r.state === 'stopping') {
+      text = 'Finishing the application in progress, then stopping.';
+    } else if (r.state === 'paused') {
+      text = r.reason === 'parked_limit'
+        ? 'Paused: ' + ((r.parked || []).length || 'several') + ' applications are waiting for you. Finish or close one and it continues.'
+        : r.reason === 'signed_out' ? 'Paused: you were signed out. Reload this page, then press Start.'
+        : 'Paused: SpotApply did not answer. Press Start to try again.';
+      action = btn('aq-start', 'Start', true);
+    } else if (c.queued) {
+      text = r.reason === 'daily_cap' ? "Today's automatic-submit limit is used up. The rest stay in the queue: start it again tomorrow."
+           : r.reason === 'window_closed' ? 'You closed the queue window, so it stopped. ' + c.queued + ' still waiting.'
+           : r.reason === 'stopped' ? 'Stopped. ' + c.queued + ' still waiting.'
+           : c.queued + (c.queued === 1 ? ' job is' : ' jobs are') + ' approved and waiting.';
+      action = btn('aq-start', 'Start queue', true);
+    } else {
+      return '';
+    }
+    return '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:14px;margin-bottom:12px;' +
+           'background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),0.30)">' +
+           '<div style="flex:1;min-width:0;font-size:12.5px;color:var(--ink)">' + text + '</div>' + action + '</div>';
+  }
+
+  function itemRow(i) {
+    const c = CHIP[i.status] || CHIP.queued;
+    let actions = '';
+    if (i.status === 'needs_you') {
+      actions = '<button type="button" data-aq-open="' + i.application_id + '" class="jbtn jbtn-apply text-[10.5px] py-1.5 px-3 whitespace-nowrap">Open form</button>' +
+                '<button type="button" data-aq-remove="' + i.id + '" class="jbtn jbtn-ghost text-[10.5px] py-1.5 px-3 whitespace-nowrap">Dismiss</button>';
+    } else if (i.status === 'queued') {
+      actions = '<button type="button" data-aq-remove="' + i.id + '" class="jbtn jbtn-ghost text-[10.5px] py-1.5 px-3 whitespace-nowrap">Remove</button>';
+    }
+    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:12.5px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+          esc(i.company || 'Unknown company') + ' <span style="font-weight:500;color:var(--ink-soft)">· ' + esc(i.title) + '</span></div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(i.host) +
+          (i.reason_text ? ' · <span style="color:var(--ink-soft)">' + esc(i.reason_text) + '</span>' : '') + '</div>' +
+      '</div>' + chip(c[0], c[1], c[2]) + actions + '</div>';
+  }
+
+  function candidateRow(c) {
+    const off = c.mode === 'excluded';
+    const mode = c.mode === 'submit' ? chip('Fills and submits', 'var(--ok)', 'rgba(4,120,87,0.10)')
+               : c.mode === 'fill_only' ? chip('Fills, you submit', 'var(--caution)', 'rgba(180,83,9,0.10)')
+               : chip('Not available', 'var(--muted)', 'var(--surface-2)');
+    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border);' +
+      (off ? 'opacity:.6;' : 'cursor:pointer;') + '">' +
+      '<input type="checkbox" data-aq-pick="' + c.application_id + '"' + (off ? ' disabled' : '') +
+        (picked.has(c.application_id) ? ' checked' : '') + ' style="width:16px;height:16px;accent-color:var(--sage)">' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:12.5px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+          esc(c.company || 'Unknown company') + ' <span style="font-weight:500;color:var(--ink-soft)">· ' + esc(c.title) + '</span></div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(c.host) +
+          (c.score != null ? ' · match ' + esc(c.score) : '') +
+          (c.why_text ? ' · <span style="color:var(--ink-soft)">' + esc(c.why_text) + '</span>' : '') + '</div>' +
+      '</div>' + mode + '</label>';
+  }
+
+  function renderApplyQueue() {
+    const body = $('apply-queue-body');
+    if (!body || !state) return;
+    if (state.error && !(state.items || []).length) {
+      body.innerHTML = note('The queue could not be loaded: ' + esc(state.error) + '. Reload the page and try again.', 'warn');
+      return;
+    }
+    const items = (state.items || []).filter((i) => i.status !== 'cancelled' && i.status !== 'expired');
+    const cands = state.candidates || [];
+    // First look at the list: tick everything the extension may submit itself.
+    if (!pickedOnce && cands.length) {
+      pickedOnce = true;
+      cands.forEach((c) => { if (c.mode === 'submit') picked.add(c.application_id); });
+    }
+    const known = new Set(cands.filter((c) => c.mode !== 'excluded').map((c) => c.application_id));
+    picked.forEach((id) => { if (!known.has(id)) picked.delete(id); });
+
+    let html = '';
+    if (!runnerAnswered) {
+      html += note('The queue runs in the <b>SpotApply extension, version 1.3.0 or later</b>, in this browser. ' +
+        '<a href="{{ chrome_web_store_url }}" target="_blank" rel="noopener" data-no-apply-track style="color:var(--sage-700);font-weight:700">Add or update it</a>, ' +
+        'then reload this page. Jobs you approve stay in the queue meanwhile.', 'warn');
+    }
+    if (!state.one_click_submit) {
+      html += note('<b>One-click submit is off</b>, so the queue will fill each form and leave Submit to you. ' +
+        'Turn on <b>One-click submit</b> in your profile to have Greenhouse, Lever, Ashby and SmartRecruiters jobs submitted for you.');
+    }
+    html += runnerLine();
+    if (items.length) {
+      html += '<p style="font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">In the queue</p>' +
+              '<div style="margin-bottom:14px">' + items.map(itemRow).join('') + '</div>';
+    }
+    html += '<div style="display:flex;align-items:center;gap:10px;margin:6px 0 2px">' +
+            '<p style="flex:1;font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0">Add jobs from your board</p>' +
+            (cands.some((c) => c.mode !== 'excluded')
+              ? '<button type="button" id="aq-all" style="font-size:11px;font-weight:700;background:none;border:0;cursor:pointer;color:var(--sage-700)">Select all</button>' +
+                '<button type="button" id="aq-none" style="font-size:11px;font-weight:700;background:none;border:0;cursor:pointer;color:var(--muted)">Clear</button>' : '') +
+            '</div>';
+    if (!state.candidates) {
+      html += '<p style="font-size:12px;color:var(--muted);padding:14px 0">Loading your board…</p>';
+    } else if (!cands.length) {
+      html += '<p style="font-size:12px;color:var(--muted);padding:14px 0">No board jobs are waiting to be applied to' +
+              (items.length ? ' beyond the ones above.' : ' yet. New matches appear here as they arrive.') + '</p>';
+    } else {
+      html += '<div>' + cands.map(candidateRow).join('') + '</div>';
+    }
+    const n = picked.size;
+    const submits = cands.filter((c) => picked.has(c.application_id) && c.mode === 'submit').length;
+    html += '<div style="position:sticky;bottom:-24px;margin:14px -24px -24px;padding:14px 24px 18px;background:var(--surface);border-top:1px solid var(--border)">' +
+      '<p style="font-size:11px;line-height:1.5;color:var(--muted);margin:0 0 10px">By approving, you tell SpotApply to open these ' +
+      'applications in your browser, fill them from your profile and resume, and press Submit on the ones marked ' +
+      '“Fills and submits”' + (state.daily_limit ? ' (up to ' + esc(state.daily_limit) + ' a day)' : '') +
+      '. Anything that needs a person is left open for you. You can stop at any time.</p>' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+      '<span style="flex:1;font-size:12px;color:var(--ink-soft)">' +
+        (n ? n + ' selected' + (submits ? ' · ' + submits + ' will be submitted for you' : '') : 'Tick the jobs you want to apply to.') + '</span>' +
+      '<button type="button" id="aq-approve" class="jbtn jbtn-primary text-xs py-2.5 px-5"' + (n ? '' : ' disabled style="opacity:.5;cursor:not-allowed"') + '>' +
+        (n ? 'Approve ' + n + ' and start' : 'Approve and start') + '</button></div></div>';
+    body.innerHTML = html;
+  }
+
+  // One delegated listener: the body is re-rendered on every poll.
+  document.addEventListener('click', async (e) => {
+    const t = e.target && e.target.closest ? e.target.closest('#apply-queue-body button') : null;
+    if (!t) return;
+    if (t.id === 'aq-approve') return approve(t);
+    if (t.id === 'aq-start') return startRunner(true);
+    if (t.id === 'aq-stop') { await runnerCall('STOP'); return load(false); }
+    if (t.id === 'aq-all') { (state.candidates || []).forEach((c) => { if (c.mode !== 'excluded') picked.add(c.application_id); }); return renderApplyQueue(); }
+    if (t.id === 'aq-none') { picked.clear(); return renderApplyQueue(); }
+    if (t.dataset.aqRemove) {
+      try { state = Object.assign(await api('/api/apply-queue/items/' + t.dataset.aqRemove, { method: 'DELETE' }), { candidates: null }); } catch (err) { showToast(err.message, 'error'); }
+      return load(true);
+    }
+    if (t.dataset.aqOpen && typeof fillWithExtension === 'function') {
+      // An ordinary fill in a new tab: the person reviews and submits it.
+      return fillWithExtension(+t.dataset.aqOpen, t, true);
+    }
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t || !t.dataset || !t.dataset.aqPick) return;
+    const id = +t.dataset.aqPick;
+    if (t.checked) picked.add(id); else picked.delete(id);
+    renderApplyQueue();
+  });
+
+  async function approve(btn) {
+    const ids = Array.from(picked);
+    if (!ids.length) return;
+    btn.disabled = true;
+    btn.textContent = 'Approving…';
+    try {
+      const out = await api('/api/apply-queue', { method: 'POST', body: JSON.stringify({ application_ids: ids }) });
+      state = Object.assign(out, { candidates: null });
+      picked.clear();
+      const no = (out.rejected || []).length;
+      showToast((out.accepted || []).length + ' approved' + (no ? ' · ' + no + ' could not be added (' + out.rejected[0].why_text + ')' : ''),
+                (out.accepted || []).length ? 'success' : 'info');
+      if ((out.accepted || []).length) await startRunner(false);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+    load(true);
+  }
+
+  async function startRunner(announce) {
+    const ok = await runnerCall('START', authPack());
+    if (!ok) {
+      runnerAnswered = false;
+      showToast('The queue needs the SpotApply extension (1.3.0 or later) in this browser. Your approved jobs stay in the queue.', 'error');
+    } else {
+      setPolling(true);
+      if (announce) showToast('Queue started. It opens each job in its own window.', 'success');
+    }
+    renderApplyQueue();
+    return ok;
+  }
+
+  async function openApplyQueue() {
+    const m = $('apply-queue-modal');
+    if (!m) return;
+    m.style.display = 'flex';
+    try { sessionStorage.setItem('aq_open', '1'); } catch (_) {}
+    setPolling(true);
+    renderApplyQueue();
+    runnerAnswered = await runnerCall('STATUS');
+    await load(true);
+  }
+  function closeApplyQueue() {
+    const m = $('apply-queue-modal');
+    if (m) m.style.display = 'none';
+    try { sessionStorage.removeItem('aq_open'); } catch (_) {}
+    const active = runner && (runner.state === 'running' || runner.state === 'stopping');
+    setPolling(!!active);
+    if (boardStale) {
+      // Jobs were submitted while this was open: bring the board up to date.
+      boardStale = false;
+      if (typeof refreshShortlistInPlace === 'function') refreshShortlistInPlace().then((ok) => { if (!ok) location.reload(); });
+      else location.reload();
+    }
+  }
+  window.openApplyQueue = openApplyQueue;
+  window.closeApplyQueue = closeApplyQueue;
+  window.renderApplyQueue = renderApplyQueue;
+
+  // On load: show the strip, pick the run back up after a reload, and open
+  // straight to the queue from a "queue finished" notification (?queue=1).
+  const boot = async () => {
+    if (typeof tokenReady === 'function') await tokenReady();
+    await load(false);
+    let wanted = false;
+    try { wanted = sessionStorage.getItem('aq_open') === '1' || new URLSearchParams(location.search).get('queue') === '1'; } catch (_) {}
+    if (wanted) openApplyQueue();
+    else if (state && state.counts && (state.counts.running || state.counts.queued)) askRunner('STATUS');
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
 </script> <script src="/static/cookie-notice.js" defer></script>
 </body> </html>

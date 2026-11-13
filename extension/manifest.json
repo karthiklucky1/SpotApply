@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "SpotApply Autofill",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Fills job applications from your SpotApply profile on Greenhouse, Lever, Ashby, Workday and more. You review and approve every one.",
   "permissions": [
     "activeTab",
+    "alarms",
     "storage",
     "tabs"
   ],

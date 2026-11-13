@@ -383,7 +383,24 @@ _PASSIVE_WRITE_PATHS = frozenset({
     # that the one-time review request was shown. A popup appearing is not a
     # person using the product.
     "/api/review-prompt/seen",
+    # extension/background.js queueAdvance(): the apply-queue runner asking for
+    # its next item, on a timer, long after the person approved the list and
+    # walked away. The approval itself (POST /api/apply-queue) is the action.
+    "/api/apply-queue/next",
+    # extension/background.js queueTellServer(): the same worker saying it has
+    # paused or stopped, so the person gets one notification.
+    "/api/apply-queue/summary",
 })
+
+
+def _is_passive_write(path: str) -> bool:
+    """A write the client made on its own (see _PASSIVE_WRITE_PATHS)."""
+    path = (path or "").rstrip("/")
+    if path in _PASSIVE_WRITE_PATHS:
+        return True
+    # extension/background.js queuePark(): the runner reporting that a queue
+    # item is waiting for the person. Same reasoning as /next above.
+    return path.startswith("/api/apply-queue/items/") and path.endswith("/outcome")
 
 
 def _activity_kind(request) -> str | None:
@@ -403,7 +420,7 @@ def _activity_kind(request) -> str | None:
     except Exception:
         return None
     if method in ("POST", "PUT", "PATCH", "DELETE"):
-        if path.rstrip("/") in _PASSIVE_WRITE_PATHS:
+        if _is_passive_write(path):
             return None
         return "meaningful"
     if method != "GET":
@@ -5929,7 +5946,8 @@ def _one_click_setting(owner) -> bool:
         return False
 
 
-def _one_click_decision(uid, profile, apply_url: str, job, requested: bool) -> dict:
+def _one_click_decision(uid, profile, apply_url: str, job, requested: bool,
+                         *, reserve: bool = True) -> dict:
     """May the extension press Submit for THIS application?
     (docs/AUTO_APPLY_RESEARCH.md §5; founder decision 2026-10-11.)
 
@@ -5939,6 +5957,10 @@ def _one_click_decision(uid, profile, apply_url: str, job, requested: bool) -> d
     host_not_allowed · daily_cap · ok. A requested, allowed click RESERVES one
     of the day's ``one_click_submit_daily_limit`` at once: the click is the
     consent, and a cap on consents bounds the blast radius of a bad fill.
+
+    ``reserve=False`` answers the same question WITHOUT spending anything — the
+    apply queue's review list shows what each job would do before the user
+    approves it, and looking must never cost a submission.
     """
     hosts = _one_click_hosts()
     out = {"auto_submit": False, "auto_submit_reason": "not_requested", "auto_submit_hosts": hosts}
@@ -5968,9 +5990,10 @@ def _one_click_decision(uid, profile, apply_url: str, job, requested: bool) -> d
             if row.one_click_submit_count >= max(0, int(settings.one_click_submit_daily_limit)):
                 out["auto_submit_reason"] = "daily_cap"
                 return out
-            row.one_click_submit_count += 1
-            session.add(row)
-            session.commit()
+            if reserve:
+                row.one_click_submit_count += 1
+                session.add(row)
+                session.commit()
     out["auto_submit"] = True
     out["auto_submit_reason"] = "ok"
     return out
@@ -6742,8 +6765,12 @@ def extension_telemetry(request: Request, body: ExtensionTelemetryBody) -> dict:
     # "A human is needed in the open tab" reaches the dashboard bell too: a
     # user who clicked Apply & Submit and switched tabs would otherwise never
     # learn that the form is waiting on a CAPTCHA, a sign-in or an answer.
+    # An application the apply queue is running right now is reported ONCE, in
+    # the queue's own summary (_aq_finish_summary): twenty-five approved jobs
+    # must not ring the bell twenty-five times.
     if event in _NEEDS_YOU_EVENTS and not (event == "auto_submit_blocked" and
-                                           (meta.get("reason") or "") == "cancelled_by_user"):
+                                           (meta.get("reason") or "") == "cancelled_by_user") \
+            and not _aq_running_for(uid, body.app_id):
         try:
             _notify_needs_you(uid, event, body.app_id, job_id, meta)
         except Exception as e:
@@ -6799,6 +6826,649 @@ def _notify_needs_you(uid, event: str, app_id, job_id, meta: dict) -> None:
         session.add(UserNotification(user_id=uid or "local", title="Your application needs you",
                                      message=message, type="needs_you", link=link))
         session.commit()
+
+
+# ── Apply queue ──────────────────────────────────────────────────────────────
+# Founder decision 2026-11-13 (docs/AUTO_APPLY_RESEARCH.md §8): people at work
+# or in class cannot click through twenty forms. They tick the jobs, read the
+# list and approve it ONCE; the extension then applies to them one at a time in
+# their own Chrome. Nothing about what may be submitted changes — every item
+# goes through the same fill pack and the same _one_click_decision as a single
+# "Apply & Submit" click (login-free allow-list, daily cap, kill switch), and
+# "Submitted" is still written only by mark_as_submitted. What is new is the
+# LIST: the server owns it (ApplyQueueItem), hands out one item at a time, and
+# an item that needs a person — a CAPTCHA, a sign-in, an unanswered question,
+# a board the queue only fills — is PARKED with its reason and its tab left
+# open. Never solved, never skipped past, never retried.
+
+_AQ_ACTIVE = ("queued", "running", "needs_you")
+_AQ_BOARD_STATUSES = (
+    ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED,
+    ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
+    ApplicationStatus.READY_TO_SUBMIT,
+)
+_AQ_FILL_ONLY = "Filled. This site is not on the automatic-submit list, so review it and click Submit."
+#: What the person reads beside an item. Keys are the machine reasons the
+#: extension and the server write; an unknown one falls back to a plain line.
+_AQ_REASON_TEXT = {
+    # a filled form that waits for the person
+    "captcha": "The site shows a CAPTCHA. Solve it, then click Submit.",
+    "login_wall": "The site asks you to sign in. Sign in and the form fills itself.",
+    "verification_code": "The site emailed you a code. Enter it to finish.",
+    "fields_need_you": "Some questions need your answer. Fill them and click Submit.",
+    "resume_not_attached": "Your resume could not be attached. Attach it in the tab, then click Submit.",
+    "no_submit_button": "Filled. This form has more steps, so finish it and click Submit.",
+    "submit_disabled": "Filled, but the Submit button is disabled. Check the form.",
+    "validation": "The site rejected a field. Fix it and click Submit.",
+    "different_page": "The link opened a different page from the job you approved.",
+    "cancelled_by_user": "You stopped the countdown. Click Submit when you are ready.",
+    "unconfirmed": "Submit was pressed, but the site showed no confirmation. Check the tab.",
+    "timeout": "The page did not finish in time. Open it and check.",
+    "tab_closed": "The tab was closed before it finished.",
+    "no_answer": "The browser stopped answering (closed or asleep). Run it again.",
+    "no_form": "No application form was found on the page.",
+    "error": "Something went wrong preparing this application. Open it from the board.",
+    "fill_only": _AQ_FILL_ONLY,
+    "host_not_allowed": _AQ_FILL_ONLY,
+    "host_blocked": _AQ_FILL_ONLY,
+    "setting_off": "Filled. One-click submit is off in Settings, so Submit is yours.",
+    "kill_switch": "Filled. Automatic submit is switched off right now, so Submit is yours.",
+    "daily_cap": "Today's automatic-submit limit is used up.",
+    # why an item left the queue, or cannot join it
+    "removed": "Removed from the queue.",
+    "left_board": "The job left your board before its turn.",
+    "closed": "This job has closed.",
+    "expired": "The approval was not used within a day.",
+    "not_open": "This application is no longer waiting to be submitted.",
+    "aggregator_link": "The link opens a job board, which SpotApply cannot fill.",
+    "no_link": "This job has no application link.",
+    "already": "Already in the queue.",
+    "queue_full": "The queue is full.",
+    "not_found": "Application not found.",
+}
+
+
+def _aq_text(reason: str) -> str:
+    return _AQ_REASON_TEXT.get(reason or "", "It needs a look. Open the tab and finish it.")
+
+
+#: The same reasons BEFORE the job is run — on the review list nothing has been
+#: filled yet, so "Filled. …" would be untrue there.
+_AQ_PLAN_TEXT = {
+    "host_not_allowed": "Not on the automatic-submit list: SpotApply fills it, you click Submit.",
+    "host_blocked": "Not on the automatic-submit list: SpotApply fills it, you click Submit.",
+    "setting_off": "One-click submit is off: SpotApply fills it, you click Submit.",
+    "kill_switch": "Automatic submit is switched off right now: SpotApply fills it, you click Submit.",
+    "daily_cap": "Today's automatic-submit limit would be used up: SpotApply fills it, you click Submit.",
+}
+
+
+class ApplyQueueBody(BaseModel):
+    application_ids: list[int]
+
+
+class ApplyQueueOutcomeBody(BaseModel):
+    reason: _Opt[str] = None
+
+
+class ApplyQueueNextBody(BaseModel):
+    # The runner is holding no application right now (it only asks when it is
+    # free). An item still marked running is then an orphan — a crashed tab, a
+    # worker that lost its state — and is parked instead of waited on.
+    idle: bool = False
+
+
+def _aq_profile_flag(session, uid: str) -> bool:
+    """Is one-click submit ON for this user (profile flag AND kill switch)?
+    The profile is resolved exactly as the fill pack resolves it."""
+    if not settings.one_click_submit_enabled:
+        return False
+    from app.db.models import UserProfile
+    if uid and uid != "local":
+        prof = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+    else:
+        prof = session.exec(select(UserProfile)).first()
+    return bool(getattr(prof, "one_click_submit", False)) if prof else False
+
+
+def _aq_cap_left(session, uid: str) -> int:
+    """Automatic submissions still allowed today (read only)."""
+    limit = max(0, int(settings.one_click_submit_daily_limit))
+    if not uid or uid == "local":
+        return limit
+    from datetime import date
+    used = session.exec(select(UserUsage.one_click_submit_count).where(
+        UserUsage.user_id == uid, UserUsage.usage_date == date.today())).first()
+    return max(0, limit - int(used or 0))
+
+
+def _aq_assess(flag_on: bool, status, apply_url: str, job_closed: bool, ghost_flags: str) -> dict:
+    """What approving ONE application would do, without spending anything.
+
+    ``ok`` False = it cannot join the queue (``why``). Otherwise ``mode`` is
+    "submit" (the extension may press Submit when the form is complete) or
+    "fill_only" (it fills and the person submits). The verdict is
+    _one_click_decision's own — asked without a user id so the day's cap is
+    not read per row; the caller applies the cap across the whole list."""
+    from types import SimpleNamespace
+    if status not in _PRE_SUBMIT_STATUSES:
+        return {"ok": False, "why": "not_open"}
+    if job_closed:
+        return {"ok": False, "why": "closed"}
+    if not (apply_url or "").strip():
+        return {"ok": False, "why": "no_link"}
+    if _aggregator_host(apply_url):
+        return {"ok": False, "why": "aggregator_link"}
+    verdict = _one_click_decision(None, SimpleNamespace(one_click_submit=flag_on), apply_url,
+                                  SimpleNamespace(ghost_flags=ghost_flags or ""), True, reserve=False)
+    if verdict["auto_submit_reason"] == "aggregator_link":
+        return {"ok": False, "why": "aggregator_link"}
+    return {"ok": True, "mode": "submit" if verdict["auto_submit"] else "fill_only",
+            "why": verdict["auto_submit_reason"]}
+
+
+def _aq_host(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(url or "").hostname or "").lower()[:120]
+    except Exception:
+        return ""
+
+
+def _aq_sweep(session, uid: str) -> None:
+    """Bring this user's queue in line with what actually happened. Cheap (the
+    queue is at most a few dozen rows) and idempotent; the caller commits.
+
+    * an approval nobody ran within APPLY_QUEUE_APPROVAL_HOURS expires — a
+      posting and a resume can both change in a day, and yesterday's "yes" is
+      not today's;
+    * an item handed to a browser that never answered (closed, asleep) stops
+      blocking the queue;
+    * an item whose application was submitted, dismissed or deleted in the
+      meantime follows it."""
+    from datetime import datetime, timedelta
+    from app.db.models import ApplyQueueItem
+    now = datetime.utcnow()
+    items = session.exec(select(ApplyQueueItem).where(
+        ApplyQueueItem.user_id == uid, ApplyQueueItem.status.in_(_AQ_ACTIVE))).all()
+    if not items:
+        return
+    stale_run = now - timedelta(seconds=2 * max(30, int(settings.apply_queue_item_timeout_seconds)) + 60)
+    stale_ok = now - timedelta(hours=max(1, int(settings.apply_queue_approval_hours)))
+    # Owner-scoped although the ids come from the caller's own items: an item
+    # that ever pointed at someone else's application must read as "gone" (and
+    # be cancelled below), never be followed.
+    stmt = select(Application.id, Application.status).where(
+        Application.id.in_([i.application_id for i in items]))
+    if uid != "local":
+        stmt = stmt.where(Application.user_id == uid)
+    status_of = {r[0]: r[1] for r in session.exec(stmt).all()}
+    for item in items:
+        st = status_of.get(item.application_id)
+        if st == ApplicationStatus.SUBMITTED:
+            item.status, item.reason = "submitted", "confirmed"
+        elif st is None or st not in _PRE_SUBMIT_STATUSES:
+            item.status, item.reason = "cancelled", "left_board"
+        elif item.status == "queued" and item.approved_at < stale_ok:
+            item.status, item.reason = "expired", "expired"
+        elif item.status == "running" and (item.started_at or now) < stale_run:
+            item.status, item.reason = "needs_you", "no_answer"
+        else:
+            continue
+        item.finished_at = now
+        session.add(item)
+
+
+def _aq_close_for_application(application_id: int) -> None:
+    """The application was SUBMITTED: its queue item says so. Called only by
+    mark_as_submitted, so a queue item can never claim a submission the
+    employer's page (or the user) did not confirm. Never fails the submit."""
+    try:
+        from datetime import datetime
+        from app.db.models import ApplyQueueItem
+        with get_session() as session:
+            items = session.exec(select(ApplyQueueItem).where(
+                ApplyQueueItem.application_id == application_id,
+                ApplyQueueItem.status.in_(_AQ_ACTIVE))).all()
+            for item in items:
+                item.status, item.reason = "submitted", "confirmed"
+                item.finished_at = datetime.utcnow()
+                session.add(item)
+            if items:
+                session.commit()
+    except Exception as e:
+        log.debug("apply-queue close skipped for app %s: %s", application_id, e)
+
+
+def _aq_running_for(uid: str, application_id) -> bool:
+    """Is the apply queue running this application right now?"""
+    if not application_id:
+        return False
+    try:
+        from app.db.models import ApplyQueueItem
+        with get_session() as session:
+            return session.exec(select(ApplyQueueItem.id).where(
+                ApplyQueueItem.user_id == (uid or "local"),
+                ApplyQueueItem.application_id == int(application_id),
+                ApplyQueueItem.status == "running").limit(1)).first() is not None
+    except Exception:
+        return False
+
+
+def _aq_finish_summary(session, uid: str, stopped: str = "") -> dict:
+    """ONE notification when a run ends or stands still: how many went in, how
+    many wait for the person. Counts each item once (``notified``); the caller
+    commits. ``stopped`` is why the worker stopped short of the end
+    ("parked_limit" = it is waiting on the person; anything else = stopped) —
+    someone who walked away must hear that tabs are waiting, not only when the
+    whole list is done."""
+    from datetime import datetime, timedelta
+    from app.db.models import ApplyQueueItem, UserNotification
+    since = datetime.utcnow() - timedelta(hours=12)
+    items = session.exec(select(ApplyQueueItem).where(
+        ApplyQueueItem.user_id == uid, ApplyQueueItem.notified == False,   # noqa: E712
+        ApplyQueueItem.status.in_(("submitted", "needs_you")),
+        ApplyQueueItem.finished_at >= since)).all()
+    submitted = sum(1 for i in items if i.status == "submitted")
+    waiting = sum(1 for i in items if i.status == "needs_you")
+    if items:
+        for item in items:
+            item.notified = True
+            session.add(item)
+        parts = []
+        if submitted:
+            parts.append(f"{submitted} submitted")
+        if waiting:
+            parts.append(f"{waiting} need{'s' if waiting == 1 else ''} you")
+        if stopped == "parked_limit":
+            title, lead = "Apply queue paused", "Your apply queue is paused: "
+            tail = " It continues by itself when you finish one of the waiting tabs."
+        elif stopped:
+            title, lead = "Apply queue stopped", "Your apply queue stopped: "
+            tail = " Open the queue to finish the ones that are waiting." if waiting else ""
+        else:
+            title, lead = "Apply queue finished", "Your apply queue finished: "
+            tail = " Open the queue to finish the ones that are waiting." if waiting else ""
+        session.add(UserNotification(
+            user_id=uid or "local", title=title, message=lead + ", ".join(parts) + "." + tail,
+            type="needs_you" if waiting else "general", link="/dashboard?queue=1"))
+    return {"submitted": submitted, "needs_you": waiting}
+
+
+def _aq_tailor_ahead(application_id: int, uid: str) -> None:
+    """Start the NEXT item's tailored resume while the current one is being
+    filled, so the queue never waits 25-47 s per job for a document. Exactly
+    the fill pack's own conditions (documents missing, not grounding-blocked,
+    not "original resume", inside the daily limit) and its own writer
+    (_tailor_and_settle: one generation per application, charged on success)."""
+    try:
+        with get_session() as session:
+            application = session.get(Application, application_id)
+            if application is None or application.status == ApplicationStatus.ERROR:
+                return
+            if uid != "local" and application.user_id != uid:
+                return
+            if application.tailored_resume_path and application.cover_letter_path:
+                return
+            if _autofill_resume_source(session, uid) == "original":
+                return
+        allowed, _detail, _usage = _check_tailor_limit(uid or "local")
+        if not allowed:
+            return
+        import threading
+        threading.Thread(target=_tailor_and_settle, args=(application_id, uid or "local"),
+                         daemon=True).start()
+    except Exception as e:
+        log.debug("apply-queue tailor-ahead skipped for app %s: %s", application_id, e)
+
+
+def _aq_state(uid: str, with_candidates: bool = False) -> dict:
+    """The queue as the dashboard shows it: what is waiting, running, parked
+    and done today — and, when asked, the board jobs that could join it."""
+    from datetime import datetime, timedelta
+    from app.db.models import ApplyQueueItem
+    with get_session() as session:
+        _aq_sweep(session, uid)
+        session.commit()
+        flag_on = _aq_profile_flag(session, uid)
+        cap_left = _aq_cap_left(session, uid)
+        recent = datetime.utcnow() - timedelta(hours=24)
+        items = session.exec(select(ApplyQueueItem).where(
+            ApplyQueueItem.user_id == uid,
+            (ApplyQueueItem.status.in_(_AQ_ACTIVE)) | (ApplyQueueItem.finished_at >= recent),
+        ).order_by(ApplyQueueItem.approved_at, ApplyQueueItem.id).limit(120)).all()
+        app_ids = [i.application_id for i in items]
+        meta = {}
+        if app_ids:
+            meta_stmt = (select(Application.id, Application.apply_url, Job.title, Job.company, Job.url)
+                         .join(Job, Job.id == Application.job_id)
+                         .where(Application.id.in_(app_ids)))
+            if uid != "local":
+                meta_stmt = meta_stmt.where(Application.user_id == uid)
+            for r in session.exec(meta_stmt).all():
+                meta[r[0]] = {"title": r[2] or "", "company": r[3] or "", "url": r[1] or r[4] or ""}
+        rank = {"running": 0, "needs_you": 1, "queued": 2}
+        out_items = []
+        for i in sorted(items, key=lambda x: (rank.get(x.status, 3), x.approved_at, x.id or 0)):
+            m = meta.get(i.application_id, {})
+            out_items.append({
+                "id": i.id, "application_id": i.application_id, "status": i.status,
+                "reason": i.reason or "",
+                "reason_text": _aq_text(i.reason) if i.status in ("needs_you", "cancelled", "expired") else "",
+                "company": m.get("company", ""), "title": m.get("title", ""),
+                "host": i.host or _aq_host(m.get("url", "")), "apply_url": m.get("url", ""),
+                "auto_submit": bool(i.auto_submit),
+            })
+        counts = {k: sum(1 for i in items if i.status == k)
+                  for k in ("queued", "running", "needs_you", "submitted")}
+        state = {
+            "enabled": bool(settings.apply_queue_enabled),
+            "one_click_submit": flag_on,
+            "submit_hosts": _one_click_hosts(),
+            "daily_limit": max(0, int(settings.one_click_submit_daily_limit)),
+            "submits_left_today": cap_left,
+            "max_items": max(1, int(settings.apply_queue_max_items)),
+            "items": out_items, "counts": counts,
+        }
+        if with_candidates:
+            queued_apps = {i.application_id for i in items if i.status in _AQ_ACTIVE}
+            stmt = (select(Application.id, Application.status, Application.apply_url,
+                           Job.title, Job.company, Job.url, Job.is_closed, Job.ghost_flags,
+                           Job.rerank_score)
+                    .join(Job, Job.id == Application.job_id)
+                    .where(Application.status.in_(_AQ_BOARD_STATUSES)))
+            if uid != "local":
+                stmt = stmt.where(Application.user_id == uid)
+            rows = session.exec(stmt.order_by(Job.rerank_score.desc()).limit(80)).all()
+            # The cap is spent in queue order: jobs already waiting come first.
+            left = cap_left - sum(1 for i in items if i.status == "queued" and i.auto_submit)
+            cands = []
+            for r in rows:
+                if r[0] in queued_apps:
+                    continue
+                url = r[2] or r[5] or ""
+                a = _aq_assess(flag_on, r[1], url, bool(r[6]), r[7] or "")
+                mode, why = (a.get("mode"), a.get("why", "")) if a["ok"] else ("excluded", a["why"])
+                if mode == "submit":
+                    if left <= 0:
+                        mode, why = "fill_only", "daily_cap"
+                    else:
+                        left -= 1
+                cands.append({
+                    "application_id": r[0], "title": r[3] or "", "company": r[4] or "",
+                    "host": _aq_host(url), "score": round(float(r[8]), 0) if r[8] is not None else None,
+                    "mode": mode, "why": why,
+                    "why_text": "" if mode == "submit" else (
+                        _AQ_PLAN_TEXT.get(why) if mode == "fill_only" else None) or _aq_text(why),
+                })
+            state["candidates"] = cands
+        return state
+
+
+@app.get("/api/apply-queue")
+def apply_queue_state(request: Request, candidates: bool = False) -> dict:
+    """The apply queue for the dashboard (polled while a run is on; a GET, so
+    it never counts as the person using the product)."""
+    uid = _require_user(request)
+    return _aq_state(uid, with_candidates=candidates)
+
+
+@app.post("/api/apply-queue")
+@_rate_limit("20/minute")
+def apply_queue_approve(request: Request, body: ApplyQueueBody) -> dict:
+    """The user's approval of a LIST of applications — the one click the queue
+    runs on. Each id is checked for ownership and for what the queue may do
+    with it; anything it cannot take is returned with the reason, never
+    silently dropped."""
+    from datetime import datetime, timedelta
+    from app.db.models import ApplyQueueItem
+    uid = _require_user(request)
+    if not settings.apply_queue_enabled:
+        raise HTTPException(status_code=409, detail="The apply queue is switched off right now.")
+    ids = list(dict.fromkeys(int(i) for i in (body.application_ids or [])))[:60]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Pick at least one job.")
+    accepted, rejected = [], []
+    with get_session() as session:
+        _aq_sweep(session, uid)
+        flag_on = _aq_profile_flag(session, uid)
+        active = session.exec(select(ApplyQueueItem.application_id, ApplyQueueItem.status).where(
+            ApplyQueueItem.user_id == uid, ApplyQueueItem.status.in_(_AQ_ACTIVE))).all()
+        in_queue = {r[0] for r in active}
+        waiting = sum(1 for r in active if r[1] in ("queued", "running"))
+        room = max(0, int(settings.apply_queue_max_items) - waiting)
+        rows = session.exec(
+            select(Application.id, Application.user_id, Application.status, Application.apply_url,
+                   Job.url, Job.is_closed, Job.ghost_flags)
+            .join(Job, Job.id == Application.job_id)
+            .where(Application.id.in_(ids))).all()
+        by_id = {r[0]: r for r in rows}
+        plan = []
+        for app_id in ids:
+            r = by_id.get(app_id)
+            # Not yours reads exactly like not there (never leak that an id exists).
+            if r is None or (uid != "local" and r[1] != uid):
+                rejected.append({"application_id": app_id, "why": "not_found"})
+                continue
+            if app_id in in_queue:
+                rejected.append({"application_id": app_id, "why": "already"})
+                continue
+            url = r[3] or r[4] or ""
+            a = _aq_assess(flag_on, r[2], url, bool(r[5]), r[6] or "")
+            if not a["ok"]:
+                rejected.append({"application_id": app_id, "why": a["why"]})
+                continue
+            plan.append((app_id, url, a["mode"]))
+        # Jobs the extension may submit go first; the ones it only fills wait
+        # at the end, where the parked-tab limit paces them.
+        plan.sort(key=lambda t: 0 if t[2] == "submit" else 1)
+        now = datetime.utcnow()
+        for n, (app_id, url, mode) in enumerate(plan):
+            if room <= 0:
+                rejected.append({"application_id": app_id, "why": "queue_full"})
+                continue
+            room -= 1
+            session.add(ApplyQueueItem(
+                user_id=uid, application_id=app_id, status="queued", host=_aq_host(url),
+                auto_submit=(mode == "submit"), approved_at=now + timedelta(microseconds=n)))
+            accepted.append(app_id)
+        session.commit()
+    for rej in rejected:
+        rej["why_text"] = _aq_text(rej["why"])
+    if accepted:
+        _aq_tailor_ahead(accepted[0], uid)
+    state = _aq_state(uid)
+    state.update({"accepted": accepted, "rejected": rejected})
+    return state
+
+
+@app.post("/api/apply-queue/next")
+@_rate_limit("30/minute")
+def apply_queue_next(request: Request, body: _Opt[ApplyQueueNextBody] = None) -> dict:
+    """The extension asks: which application do I open now?
+
+    Hands out ONE item at a time, oldest approval first, as a claimed
+    ``running`` row plus the ordinary fill pack (requested with the queue's
+    approval, so _one_click_decision decides and reserves exactly as it does
+    for a single "Apply & Submit" click). Everything the runner obeys — the
+    pause between jobs, how long one may take, how many parked tabs stop it —
+    travels with the answer."""
+    from datetime import datetime
+    from sqlalchemy import update as _update
+    from app.db.models import ApplyQueueItem
+    uid = _require_user(request)
+    limits = {
+        "gap_seconds": max(5, int(settings.apply_queue_gap_seconds)),
+        "timeout_seconds": max(30, int(settings.apply_queue_item_timeout_seconds)),
+        "max_parked_tabs": max(1, int(settings.apply_queue_max_parked_tabs)),
+    }
+    if not settings.apply_queue_enabled:
+        return dict(limits, done=True, reason="disabled")
+    with get_session() as session:
+        _aq_sweep(session, uid)
+        session.commit()
+        busy = session.exec(select(ApplyQueueItem).where(
+            ApplyQueueItem.user_id == uid, ApplyQueueItem.status == "running").limit(1)).first()
+        if busy is not None:
+            young = (datetime.utcnow() - (busy.started_at or datetime.utcnow())).total_seconds() < 30
+            if not (body and body.idle) or young:
+                # One at a time, whoever is asking (a second window, a second device).
+                return dict(limits, done=False, wait=True, retry_seconds=20)
+            busy.status, busy.reason, busy.finished_at = "needs_you", "no_answer", datetime.utcnow()
+            session.add(busy)
+            session.commit()
+        queued = session.exec(select(ApplyQueueItem.id, ApplyQueueItem.application_id).where(
+            ApplyQueueItem.user_id == uid, ApplyQueueItem.status == "queued",
+        ).order_by(ApplyQueueItem.approved_at, ApplyQueueItem.id).limit(2)).all()
+        if not queued:
+            summary = _aq_finish_summary(session, uid)
+            session.commit()
+            return dict(limits, done=True, reason="empty", summary=summary)
+        item_id, app_id = queued[0][0], queued[0][1]
+        # Claim it: two browsers asking in the same instant must not both run it.
+        claimed = session.exec(_update(ApplyQueueItem).where(
+            ApplyQueueItem.id == item_id, ApplyQueueItem.status == "queued",
+        ).values(status="running", started_at=datetime.utcnow()))
+        session.commit()
+        if not getattr(claimed, "rowcount", 1):
+            return dict(limits, done=False, wait=True, retry_seconds=5)
+        ahead = queued[1][1] if len(queued) > 1 else None
+        remaining = session.exec(select(func.count()).select_from(ApplyQueueItem).where(
+            ApplyQueueItem.user_id == uid, ApplyQueueItem.status == "queued")).one()
+
+    def _settle(status: str, reason: str) -> None:
+        with get_session() as session:
+            item = session.get(ApplyQueueItem, item_id)
+            if item is not None and item.status == "running":
+                item.status, item.reason = status, reason
+                if status == "queued":
+                    item.started_at = None
+                else:
+                    item.finished_at = datetime.utcnow()
+                session.add(item)
+                session.commit()
+
+    build = getattr(get_fill_pack, "__wrapped__", get_fill_pack)   # past the route's rate limit
+    try:
+        pack = build(app_id, request, True)
+    except HTTPException:
+        _settle("cancelled", "left_board")
+        return dict(limits, done=False, wait=True, retry_seconds=1)
+    except Exception as e:
+        log.warning("apply-queue: fill pack failed for app %s: %s", app_id, e)
+        _settle("needs_you", "error")
+        return dict(limits, done=False, wait=True, retry_seconds=1)
+    if pack.get("auto_submit_reason") == "daily_cap":
+        # The day's automatic submissions are spent. The item goes back
+        # untouched: its approval stands, and the run ends here saying why.
+        _settle("queued", "")
+        return dict(limits, done=True, reason="daily_cap")
+    pack["queue_item_id"] = item_id
+    pack["auto_submit_background"] = bool(pack.get("auto_submit")) and \
+        bool(settings.apply_queue_background_submit)
+    with get_session() as session:
+        item = session.get(ApplyQueueItem, item_id)
+        if item is not None:
+            item.auto_submit = bool(pack.get("auto_submit"))
+            item.host = _aq_host(pack.get("apply_url") or "") or item.host
+            session.add(item)
+            session.commit()
+    if ahead:
+        _aq_tailor_ahead(ahead, uid)
+    return dict(limits, done=False, remaining=int(remaining or 0), pack=pack, item={
+        "id": item_id, "application_id": app_id, "company": pack.get("company") or "",
+        "title": pack.get("job_title") or "",
+        "mode": "submit" if pack.get("auto_submit") else "fill_only",
+        "why": pack.get("auto_submit_reason") or "",
+    })
+
+
+@app.post("/api/apply-queue/items/{item_id}/outcome")
+def apply_queue_outcome(item_id: int, request: Request, body: ApplyQueueOutcomeBody) -> dict:
+    """The extension reports that an item is PARKED: the form is filled as far
+    as software may go and the tab is waiting for the person. There is no way
+    to report "submitted" here — that is mark_as_submitted's alone."""
+    import re as _re
+    from datetime import datetime
+    from app.db.models import ApplyQueueItem
+    uid = _require_user(request)
+    reason = (body.reason or "").strip().lower()
+    if not _re.fullmatch(r"[a-z0-9_]{1,40}", reason):
+        reason = "needs_you"
+    with get_session() as session:
+        item = session.get(ApplyQueueItem, item_id)
+        if not item or item.user_id != uid:
+            raise HTTPException(status_code=404, detail="Queue item not found")
+        if item.status == "running":
+            application = session.get(Application, item.application_id)
+            if application is not None and (uid == "local" or application.user_id == uid) \
+                    and application.status == ApplicationStatus.SUBMITTED:
+                item.status, item.reason = "submitted", "confirmed"
+            else:
+                item.status, item.reason = "needs_you", reason
+            item.finished_at = datetime.utcnow()
+            session.add(item)
+            session.commit()
+        return {"ok": True, "status": item.status}
+
+
+class ApplyQueueSummaryBody(BaseModel):
+    reason: _Opt[str] = None
+
+
+@app.post("/api/apply-queue/summary")
+def apply_queue_summary(request: Request, body: _Opt[ApplyQueueSummaryBody] = None) -> dict:
+    """The worker stopped before the list was done — it is waiting on the
+    person, or was stopped. Raise the one notification for what happened so
+    far (a finished run gets it from /next). It carries no claim about any
+    item: the counts are read from the server's own rows."""
+    import re as _re
+    uid = _require_user(request)
+    reason = ((body.reason if body else "") or "").strip().lower()
+    if not _re.fullmatch(r"[a-z0-9_]{1,40}", reason):
+        reason = "stopped"
+    with get_session() as session:
+        _aq_sweep(session, uid)
+        summary = _aq_finish_summary(session, uid, stopped=reason)
+        session.commit()
+    return {"ok": True, "summary": summary}
+
+
+@app.delete("/api/apply-queue/items/{item_id}")
+def apply_queue_remove(item_id: int, request: Request) -> dict:
+    """Take one job out of the queue (or dismiss a parked one)."""
+    from datetime import datetime
+    from app.db.models import ApplyQueueItem
+    uid = _require_user(request)
+    with get_session() as session:
+        item = session.get(ApplyQueueItem, item_id)
+        if not item or item.user_id != uid:
+            raise HTTPException(status_code=404, detail="Queue item not found")
+        if item.status == "running":
+            raise HTTPException(status_code=409, detail="This one is being filled right now.")
+        if item.status in ("queued", "needs_you"):
+            item.status, item.reason = "cancelled", "removed"
+            item.finished_at = datetime.utcnow()
+            session.add(item)
+            session.commit()
+    return _aq_state(uid)
+
+
+@app.post("/api/apply-queue/clear")
+def apply_queue_clear(request: Request) -> dict:
+    """Withdraw every approval that has not started yet."""
+    from datetime import datetime
+    from app.db.models import ApplyQueueItem
+    uid = _require_user(request)
+    with get_session() as session:
+        items = session.exec(select(ApplyQueueItem).where(
+            ApplyQueueItem.user_id == uid, ApplyQueueItem.status == "queued")).all()
+        for item in items:
+            item.status, item.reason = "cancelled", "removed"
+            item.finished_at = datetime.utcnow()
+            session.add(item)
+        session.commit()
+    return _aq_state(uid)
 
 
 class JobCheckBody(BaseModel):
@@ -7670,6 +8340,7 @@ def mark_as_submitted(application_id: int, request: Request) -> dict:
             log.debug("earliness stamp skipped for app %s: %s", application_id, e)
         session.add(application)
         session.commit()
+    _aq_close_for_application(application_id)
     return {"success": True, "application_id": application_id}
 
 

@@ -714,6 +714,46 @@ class UserUsage(SQLModel, table=True):
     one_click_submit_count: int = Field(default=0)
 
 
+class ApplyQueueItem(SQLModel, table=True):
+    """One application the user approved for the apply queue (2026-11-13).
+
+    The user ticks jobs on the dashboard, reads the list and clicks Approve
+    once; the extension then works through them ONE AT A TIME in the user's own
+    Chrome (``POST /api/apply-queue/next``). The server owns the list so a
+    closed tab, a restarted browser or a second device can never run an item
+    twice or lose one.
+
+    ``status``:
+      queued     approved, waiting its turn
+      running    handed to the extension; a tab is filling it now
+      submitted  the application itself became SUBMITTED (set ONLY by
+                 ``mark_as_submitted`` — the employer's confirmation page or
+                 the user's Yes; the extension can never claim it)
+      needs_you  filled as far as software may go; ``reason`` says what is left
+                 (a CAPTCHA, a sign-in, an unanswered question, a board the
+                 queue only fills…) and the tab stays open for the person
+      cancelled  removed by the user, or the job left the board before its turn
+      expired    the approval was never run within APPLY_QUEUE_APPROVAL_HOURS
+
+    No foreign key on ``application_id`` on purpose: retention deletes old
+    applications, and a queue row must never be the reason that fails. A row
+    whose application is gone is cancelled the next time the queue is read.
+    """
+    __tablename__ = "apply_queue_item"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)              # "local" in SQLite dev mode
+    application_id: int = Field(index=True)
+    status: str = Field(default="queued", index=True)
+    reason: str = Field(default="")               # machine reason for needs_you / cancelled
+    host: str = Field(default="")                 # apply-link host when approved
+    auto_submit: bool = Field(default=False)      # the server's verdict when it started
+    approved_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    notified: bool = Field(default=False)         # counted in a "queue finished" notification
+
+
 class FunnelEvent(SQLModel, table=True):
     """Event log for job application funnel analysis."""
     __tablename__ = "funnel_events"

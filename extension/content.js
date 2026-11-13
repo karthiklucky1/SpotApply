@@ -2101,6 +2101,7 @@ let _confirmPromptOpen = false;
 function askIfSubmitted(pack) {
   if (_confirmedApps.has(pack.app_id)) return;
   _confirmPromptOpen = true;
+  queueSignal(pack, 'parked', 'unconfirmed');   // a later confirmation still counts
   showOverlay(
     '📨 <b>Did the employer confirm your application?</b><br>' +
     '<small>SpotApply marks it Submitted only when you say so or the site shows a confirmation.</small>' +
@@ -5013,6 +5014,17 @@ async function fillForm(fillPack) {
           fresh.auto_submit_hosts = Array.isArray(fillPack.auto_submit_hosts) ? fillPack.auto_submit_hosts : [];
         }
       }
+      // The apply queue's marks travel with the pack the runner handed over:
+      // this refresh is a plain GET and knows nothing about the queue. Never
+      // onto another application, and the "may submit unseen" flag only while
+      // the submit approval itself still stands.
+      if (fillPack && fillPack.queue_item_id && String(fillPack.app_id) === String(fresh.app_id)) {
+        fresh.queue_item_id = fillPack.queue_item_id;
+        fresh.auto_submit_background = fresh.auto_submit === true && fillPack.auto_submit_background === true;
+        if (fresh.auto_submit !== true && fresh.auto_submit_reason === 'not_requested' && fillPack.auto_submit_reason) {
+          fresh.auto_submit_reason = fillPack.auto_submit_reason;
+        }
+      }
       pack = fresh;
     } else if (res.timedOut) {
       // Keep going with what we have, and say so — never a silent stall.
@@ -5186,6 +5198,9 @@ async function runCopilotStep() {
       autoSubmit = { requested: true, attempted: false, reason: 'error' };
     }
   }
+
+  const queued = queueSignalForFill(pack, autoSubmit);
+  if (queued) queueSignal(pack, queued.kind, queued.reason);
 
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
@@ -5392,7 +5407,10 @@ function submitCountdown(pack) {
     document.addEventListener('keydown', onUser, true);
     render();
     const tick = setInterval(() => {
-      if (document.visibilityState !== 'visible') return;   // hold while the tab is hidden
+      // Hold while the tab is hidden — except for an apply-queue item the user
+      // approved by name and the server flagged (pack.auto_submit_background):
+      // the queue exists for people who are not watching the tab.
+      if (document.visibilityState !== 'visible' && !pack.auto_submit_background) return;
       left -= 1;
       if (left <= 0) { finish(true); return; }
       render();
@@ -5442,6 +5460,50 @@ function reportHandoff(pack, event, meta) {
   if (_handoffReported.has(key)) return;
   _handoffReported.add(key);
   reportTelemetry(pack, event, Object.assign({ host: location.hostname }, meta || {}));
+  // In the apply queue a handoff PARKS the job: the tab stays open for the
+  // person and the queue moves on to the next approved application.
+  if (QUEUE_HANDOFF_REASON[event]) queueSignal(pack, 'parked', QUEUE_HANDOFF_REASON[event]);
+}
+
+// ── Apply queue: tell the runner how this tab's application went ─────────────
+// Founder decision 2026-11-13 (docs/AUTO_APPLY_RESEARCH.md §8). A pack handed
+// out by the queue carries queue_item_id; the background runner waits on two
+// signals from the tab it opened:
+//   attempted  the form's own Submit was pressed (one-click rules, unchanged);
+//              the runner then waits for the employer's confirmation, which
+//              still arrives only through FORM_SUBMITTED
+//   parked     the form is filled as far as software may go and needs the
+//              person — the reason says why. Nothing is retried or worked
+//              around; the tab simply stays open.
+// A tab that is not a queue item sends nothing.
+const QUEUE_HANDOFF_REASON = {
+  captcha_needed: 'captcha',
+  login_needed: 'login_wall',
+  verification_code_needed: 'verification_code',
+};
+// Why the server did not ask for a submit (pack.auto_submit_reason): the
+// queue shows it beside the parked job.
+const QUEUE_FILL_ONLY_REASONS = ['host_not_allowed', 'host_blocked', 'setting_off', 'kill_switch', 'daily_cap'];
+function queueSignal(pack, kind, reason) {
+  if (!pack || !pack.queue_item_id) return;
+  chromeCall(() => chrome.runtime.sendMessage(
+    { type: 'QUEUE_SIGNAL', itemId: pack.queue_item_id, appId: pack.app_id, kind, reason: reason || '' },
+    () => { void chrome.runtime.lastError; }));
+}
+/** After a fill: what the queue runner should hear. Null = nothing to say. */
+function queueSignalForFill(pack, autoSubmit) {
+  if (!pack || !pack.queue_item_id) return null;
+  if (autoSubmit && autoSubmit.attempted) return { kind: 'attempted', reason: '' };
+  // A second pass over a page already submitted from this tab is not a park.
+  if (autoSubmit && autoSubmit.reason === 'already_attempted') return null;
+  if (autoSubmit && autoSubmit.requested) {
+    // "Some questions need your answer" is the wrong thing to tell someone
+    // whose form is complete except for the resume upload.
+    if (autoSubmit.detail === 'resume not attached') return { kind: 'parked', reason: 'resume_not_attached' };
+    return { kind: 'parked', reason: autoSubmit.reason || 'fields_need_you' };
+  }
+  const why = String(pack.auto_submit_reason || '');
+  return { kind: 'parked', reason: QUEUE_FILL_ONLY_REASONS.includes(why) ? why : 'fill_only' };
 }
 
 // Re-audit and re-render the status widget. Cheap (one querySelectorAll pass),
@@ -6244,6 +6306,7 @@ function findAndClickApply(pack) {
     return true;
   }
   // No apply button found — guide the user
+  queueSignal(pack, 'parked', 'no_form');
   showOverlay(
     '👆 I couldn\'t find the <strong>Apply</strong> button automatically.<br>' +
     '<small style="color:#5B7186">Please click it yourself — I\'ll take over once the form loads.</small>',
@@ -6373,6 +6436,14 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
     catch (e) { sendResponse({ error: String(e && e.message || e) }); }
     return true;
   }
+  // The apply-queue runner's state changed: hand it to the dashboard page
+  // (top frame of the SpotApply origin only — it names the user's own jobs).
+  if (msg.type === 'QUEUE_UPDATE') {
+    if (HP_IS_TOP && _DASHBOARD_ORIGIN_RE.test(location.origin)) {
+      window.postMessage({ type: 'SPOTAPPLY_QUEUE_STATE', ok: true, queue: msg.queue || null }, location.origin);
+    }
+    return false;
+  }
   if (msg.type === 'DASHBOARD_REFRESH') {
     console.log('[SpotApply] DASHBOARD_REFRESH received, clearing pending apply and reloading dashboard page');
     try {
@@ -6439,7 +6510,28 @@ function buildDiagnosticReport() {
     filledCount: fields.filter(f => f.filledBySpotApply).length,
     nativeAutofill: nativeAutofillOutcome(),
     emptyRequired: fields.filter(f => f.required && !f.valueLen).map(f => f.signals.slice(0, 60)),
+    // What one-click submit and the apply queue would meet on this page. Read
+    // only: nothing is pressed, and each check is the one the gate itself uses.
+    submitReadiness: submitReadiness(),
     fields,
+  };
+}
+
+function submitReadiness() {
+  const safe = (fn) => { try { return fn(); } catch (_) { return null; } };
+  return {
+    applicationForm: safe(() => hasApplicationForm()),
+    loginWall: safe(() => isLoginWall()),
+    captchaVisible: safe(() => isCaptcha() || captchaBlocksSubmit()),
+    verificationCodeStep: safe(() => !!verificationCodeField()),
+    // The label of the Submit control the gate would press, or null if none
+    // qualifies (a "Next" step, a sign-in form, a job page's "Apply now").
+    submitControl: safe(() => {
+      const b = findSubmitControl();
+      return b ? String(b.value || b.textContent || b.getAttribute('aria-label') || '')
+        .replace(/\s+/g, ' ').trim().slice(0, 40) : null;
+    }),
+    applyButtonOnly: safe(() => !hasApplicationForm() && pageHasApplyControl()),
   };
 }
 
@@ -6460,6 +6552,10 @@ const _MSG = {
   ping: ['SPOTAPPLY_EXT_PING', 'HIREPATH_EXT_PING'],
   loadPack: ['SPOTAPPLY_LOAD_PACK', 'HIREPATH_LOAD_PACK'],
   init: ['SPOTAPPLY_INIT_EXTENSION', 'HIREPATH_INIT_EXTENSION'],
+  // Apply queue (1.3.0+). No legacy dialect: an older dashboard never sends these.
+  queueStart: ['SPOTAPPLY_QUEUE_START'],
+  queueStop: ['SPOTAPPLY_QUEUE_STOP'],
+  queueStatus: ['SPOTAPPLY_QUEUE_STATUS'],
 };
 const _isMsg = (type, kind) => _MSG[kind].includes(type);
 // Replies go out under both names: the listener on the other side belongs to
@@ -6506,6 +6602,29 @@ window.addEventListener('message', (e) => {
       console.warn('[SpotApply] Extension context error:', err.message);
       _replyToDashboard('RELOAD');
     }
+  }
+
+  // Apply queue: the dashboard starts, stops or asks about the runner. The
+  // API base is THIS page's own origin (already checked above), never a value
+  // the message carries; the answer goes back as SPOTAPPLY_QUEUE_STATE.
+  const _queueKind = _isMsg(_type, 'queueStart') ? 'QUEUE_START'
+    : _isMsg(_type, 'queueStop') ? 'QUEUE_STOP'
+    : _isMsg(_type, 'queueStatus') ? 'QUEUE_STATUS' : null;
+  if (_queueKind) {
+    const answer = (ok, queue) =>
+      window.postMessage({ type: 'SPOTAPPLY_QUEUE_STATE', ok, queue: queue || null }, location.origin);
+    try {
+      chrome.runtime.sendMessage(
+        { type: _queueKind, base: location.origin, payload: _queueKind === 'QUEUE_START' ? (e.data.pack || {}) : null },
+        (res) => {
+          if (chrome.runtime.lastError || !res) { answer(false, null); return; }
+          answer(!!res.ok, res.queue);
+        });
+    } catch (err) {
+      console.warn('[SpotApply] Extension context error:', err.message);
+      _replyToDashboard('RELOAD');
+    }
+    return;
   }
 
   if (_isMsg(_type, 'init') && e.data?.pack) {
@@ -6563,6 +6682,7 @@ chromeCall(() => HP_FRAME_ACTIVE && getTabPack((pack, info) => {
           console.log('[SpotApply] Login wall detected — waiting for user to log in');
           _copilotActive = true;
           _copilotPack = pack;
+          queueSignal(pack, 'parked', 'login_wall');
           showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
           watchForFormAppearance();
           return;
@@ -6577,6 +6697,7 @@ chromeCall(() => HP_FRAME_ACTIVE && getTabPack((pack, info) => {
             if (isLoginWall()) {
               _copilotActive = true;
               _copilotPack = pack;
+              queueSignal(pack, 'parked', 'login_wall');
               showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
               watchForFormAppearance();
             } else if (isActionablePage()) {

@@ -250,7 +250,7 @@ def test_terms_describe_one_click_submit_and_its_limits():
     terms = (Path(__file__).resolve().parents[1] / "app" / "templates" / "terms.html").read_text()
     assert "One-click submit" in terms and "off by default" in terms
     assert "never solve or bypass a CAPTCHA" in terms and "store passwords" in terms
-    assert "Last updated: October 2026" in terms
+    assert "Last updated: November 2026" in terms   # revised 2026-11-13: the apply queue (section 4)
 
 
 def test_the_settings_defaults_are_sane():

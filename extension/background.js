@@ -104,7 +104,9 @@ function endTabSession(tabId) {
 }
 
 function clearAllSessions() {
-  return chrome.storage.local.remove(["spotapply_sessions", "spotapply_fill_pack", ..._RETIRED_KEYS]);
+  // spotapply_queue too: a run belongs to the account that approved it.
+  return chrome.storage.local.remove(["spotapply_sessions", "spotapply_fill_pack", "spotapply_queue",
+                                      ..._RETIRED_KEYS]);
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => { endTabSession(tabId); });
@@ -442,26 +444,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: (result && result.error) || `HTTP ${result && result.status}` });
         return;
       }
-      endTabSession(tabId).then(() => {
-        chrome.tabs.query({}, (tabs) => {
-          (tabs || []).forEach((tab) => {
-            let h = "";
-            try { h = new URL(tab.url || "").hostname; } catch (_) {}
-            if (h === "app.spotapply.ai" || h === "localhost" || h === "127.0.0.1") {
-              chrome.tabs.sendMessage(tab.id, { type: "DASHBOARD_REFRESH", appId }, () => {
-                void chrome.runtime.lastError;
-              });
-            }
+      // An application the apply queue ran: the dashboard hears through the
+      // queue's own update (QUEUE_UPDATE) and refreshes its board when the
+      // person closes the queue. Reloading the dashboard after each of twenty
+      // submissions would throw away whatever they were doing there.
+      queueOnSubmitted(tabId, appId).then((ranByQueue) => endTabSession(tabId).then(() => {
+        if (!ranByQueue) {
+          chrome.tabs.query({}, (tabs) => {
+            (tabs || []).forEach((tab) => {
+              let h = "";
+              try { h = new URL(tab.url || "").hostname; } catch (_) {}
+              if (h === "app.spotapply.ai" || h === "localhost" || h === "127.0.0.1") {
+                chrome.tabs.sendMessage(tab.id, { type: "DASHBOARD_REFRESH", appId }, () => {
+                  void chrome.runtime.lastError;
+                });
+              }
+            });
           });
-        });
+        }
         sendResponse({ ok: true });
-      });
+      }));
     });
     return true;
   }
 
   if (msg.type === "PING") {
     sendResponse({ ok: true, version: chrome.runtime.getManifest().version });
+  }
+
+  // ── Apply queue (see the runner below) ─────────────────────────────────────
+  // Start / stop / status come from the dashboard page through content.js,
+  // which accepts them only from the SpotApply origin and supplies `base`
+  // from its own location.
+  if (msg.type === "QUEUE_START") {
+    queueStart(msg.base, msg.payload || {}).then((queue) => sendResponse({ ok: true, queue }));
+    return true;
+  }
+  if (msg.type === "QUEUE_STOP") {
+    queueStop().then((queue) => sendResponse({ ok: true, queue }));
+    return true;
+  }
+  if (msg.type === "QUEUE_STATUS") {
+    queueView().then((queue) => sendResponse({ ok: true, queue }));
+    return true;
+  }
+  // A tab the queue opened says how its application went (content.js queueSignal).
+  if (msg.type === "QUEUE_SIGNAL") {
+    queueOnSignal(sender && sender.tab && sender.tab.id, msg);
+    return false;
   }
 
   // Content script asks the background worker to make a cross-origin API call.
@@ -515,4 +545,418 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       });
     }, 2000);
   });
+});
+
+// ── Apply queue runner ───────────────────────────────────────────────────────
+// Founder decision 2026-11-13 (docs/AUTO_APPLY_RESEARCH.md §8). The user
+// approves a LIST of applications on the dashboard; this worker applies to
+// them ONE AT A TIME in the user's own Chrome:
+//
+//   ask the server for the next approved item  (POST /api/apply-queue/next)
+//   → open its form in the queue's window and bind the tab, exactly as
+//     "Auto-Fill & Apply" does (the same fill, the same one-click rules)
+//   → wait for the tab to say  attempted  (Submit pressed; the employer's
+//     confirmation then arrives through FORM_SUBMITTED, as it always has)
+//     or  parked  (a CAPTCHA, a sign-in, a question, a board the queue only
+//     fills): the tab stays open for the person and the reason is reported
+//   → pause, then the next one.
+//
+// The server owns the list and every limit (pause, timeout, how many parked
+// tabs stop the run); this worker holds only where it is. It never decides
+// what may be submitted, never retries a parked form, and has no way to
+// report an item as submitted — only as waiting for the person.
+//
+// MV3: the worker is put to sleep after ~30 s idle, so nothing here lives in
+// memory. State is in chrome.storage.local and an alarm wakes the worker to
+// take the next step.
+const QUEUE_ALARM = "spotapply_queue_tick";
+const QUEUE_LIMITS = { gap_seconds: 20, timeout_seconds: 240, max_parked_tabs: 4 };
+const QUEUE_CLOSE_DELAY_MS = 4000;      // a confirmed tab stays this long, then closes
+const QUEUE_ASK_STALE_MS = 45000;       // an unanswered "next?" may be asked again
+
+function queueBlank() {
+  return { state: "idle", reason: "", base: "", windowId: null, current: null, parked: [],
+           nextAt: 0, asking: 0, failures: 0, limits: Object.assign({}, QUEUE_LIMITS),
+           stats: { submitted: 0, parked: 0 }, token: "" };
+}
+
+let _queueLock = Promise.resolve();
+/** Read-modify-write of the runner's state, serialised. `fn` must be quick:
+ * network calls and tab creation happen OUTSIDE it, so a slow server can never
+ * hold up a signal from the tab being filled. */
+function withQueue(fn) {
+  const run = _queueLock.then(async () => {
+    const s = await chrome.storage.local.get(["spotapply_queue"]);
+    const q = Object.assign(queueBlank(), s.spotapply_queue || {});
+    const out = await fn(q);
+    await chrome.storage.local.set({ spotapply_queue: q });
+    return out;
+  });
+  _queueLock = run.catch(() => {});
+  return run;
+}
+
+/** What the dashboard may see: where the run is, never a token. */
+function queuePublic(q) {
+  return {
+    state: q.state, reason: q.reason || "",
+    current: q.current ? { itemId: q.current.itemId, appId: q.current.appId,
+                           company: q.current.company || "", title: q.current.title || "",
+                           attempted: !!q.current.attemptedAt } : null,
+    parked: (q.parked || []).map((p) => ({ itemId: p.itemId, appId: p.appId, reason: p.reason || "" })),
+    stats: q.stats || { submitted: 0, parked: 0 },
+    version: chrome.runtime.getManifest().version,
+  };
+}
+function queueView() { return withQueue((q) => queuePublic(q)); }
+
+function isDashboardHost(h) {
+  return h === "app.spotapply.ai" || h === "localhost" || h === "127.0.0.1";
+}
+function queueBroadcast() {
+  queueView().then((queue) => {
+    chrome.tabs.query({}, (tabs) => {
+      (tabs || []).forEach((tab) => {
+        let h = "";
+        try { h = new URL(tab.url || "").hostname; } catch (_) {}
+        if (!isDashboardHost(h)) return;
+        chrome.tabs.sendMessage(tab.id, { type: "QUEUE_UPDATE", queue }, () => { void chrome.runtime.lastError; });
+      });
+    });
+  });
+}
+
+function queueAlarm(on) {
+  try {
+    if (!chrome.alarms) return;
+    if (on) chrome.alarms.create(QUEUE_ALARM, { periodInMinutes: 0.5 });
+    else chrome.alarms.clear(QUEUE_ALARM);
+  } catch (_) {}
+}
+/** Take the next step soon (while the worker is awake) — the alarm is the backstop. */
+function queueSoon(ms) { setTimeout(() => { queueAdvance(); }, Math.max(50, ms || 50)); }
+
+function queueApi(q, path, body) {
+  return handleApiFetch({ url: `${q.base}${path}`, method: "POST", token: q.token || "queue", body: body || {} });
+}
+
+/** Where the run stops needing the worker: the alarm goes, the dashboard hears. */
+function queueSettle(q, state, reason) {
+  q.state = state;
+  q.reason = reason || "";
+  q.asking = 0;
+}
+
+async function queueStart(base, payload) {
+  // Credentials first: the pack is auth-only (INIT_EXTENSION's shape) and the
+  // long-lived secrets never leave the worker.
+  const token = payload && payload.auth_token ? String(payload.auth_token) : "";
+  stashAuth(payload);
+  await withQueue(async (q) => {
+    const tabs = await chrome.tabs.query({});
+    const open = new Set((tabs || []).map((t) => t.id));
+    q.parked = (q.parked || []).filter((p) => open.has(p.tabId));   // tabs closed while asleep
+    if (q.current && !open.has(q.current.tabId)) q.current = null;
+    q.base = String(base || q.base || "").replace(/\/+$/, "");
+    if (token) q.token = token;
+    q.limits = Object.assign({}, QUEUE_LIMITS, q.limits || {});
+    if (q.state !== "running") { q.stats = { submitted: 0, parked: 0 }; q.nextAt = 0; q.failures = 0; }
+    queueSettle(q, "running", "");
+  });
+  queueAlarm(true);
+  await queueAdvance();
+  return queueView();
+}
+
+async function queueStop() {
+  const tell = await withQueue((q) => {
+    // The application being filled right now finishes on its own rules; no
+    // new one is started.
+    if (q.state !== "running" && q.state !== "paused") return null;
+    queueSettle(q, q.current ? "stopping" : "idle", "stopped");
+    return q.current ? null : { base: q.base, token: q.token };
+  });
+  const view = await queueView();
+  if (view.state === "idle") queueAlarm(false);
+  if (tell) await queueTellServer(tell, "stopped");
+  queueBroadcast();
+  return view;
+}
+
+/** Open the application in the queue's own window (created on the first job,
+ * reused after), so twenty forms never take over the window the user is
+ * working in. Falls back to an ordinary tab. */
+async function queueOpenTab(windowId, url) {
+  if (windowId != null) {
+    try {
+      await chrome.windows.get(windowId);
+      const tab = await chrome.tabs.create({ windowId, url, active: true });
+      return { tab, windowId };
+    } catch (_) { /* the window is gone — make a new one */ }
+  }
+  try {
+    const win = await chrome.windows.create({ url, focused: true, type: "normal" });
+    const tab = win && win.tabs && win.tabs[0];
+    if (tab) return { tab, windowId: win.id };
+  } catch (_) { /* no window API here — an ordinary tab */ }
+  try {
+    const tab = await chrome.tabs.create({ url, active: true });
+    return { tab, windowId: null };
+  } catch (_) {
+    return { tab: null, windowId: null };
+  }
+}
+
+let _queueAdvancing = false;
+async function queueAdvance() {
+  if (_queueAdvancing) return;
+  _queueAdvancing = true;
+  try { await queueStep(); } catch (e) { console.warn("[SpotApply BG] queue step failed:", e && e.message); }
+  finally { _queueAdvancing = false; }
+}
+
+async function queueStep() {
+  // 1. Decide, under the lock, what this step is.
+  const plan = await withQueue((q) => {
+    const now = Date.now();
+    if (q.state === "stopping" && !q.current) {
+      queueSettle(q, "idle", "stopped");
+      return { settled: true, tell: { base: q.base, token: q.token, reason: "stopped" } };
+    }
+    if (q.state !== "running" && q.state !== "stopping") return null;
+    if (q.current) {
+      // One job with no outcome for too long is parked, not waited on forever.
+      const limit = Math.max(30, (q.limits && q.limits.timeout_seconds) || QUEUE_LIMITS.timeout_seconds) * 1000;
+      if (now - (q.current.startedAt || now) < limit) return null;
+      return { park: queueParkCurrent(q, q.current.attemptedAt ? "unconfirmed" : "timeout") };
+    }
+    if (q.state !== "running") return null;
+    const maxParked = Math.max(1, (q.limits && q.limits.max_parked_tabs) || QUEUE_LIMITS.max_parked_tabs);
+    if ((q.parked || []).length >= maxParked) {
+      queueSettle(q, "paused", "parked_limit");
+      return { settled: true, tell: { base: q.base, token: q.token, reason: "parked_limit" } };
+    }
+    if (now < (q.nextAt || 0)) return { later: (q.nextAt || 0) - now };
+    if (q.asking && now - q.asking < QUEUE_ASK_STALE_MS) return null;
+    q.asking = now;
+    return { ask: { base: q.base, token: q.token } };
+  });
+  if (!plan) return;
+  if (plan.settled) {
+    queueAlarm(false);
+    if (plan.tell) await queueTellServer(plan.tell, plan.tell.reason);
+    queueBroadcast();
+    return;
+  }
+  if (plan.later) { queueSoon(plan.later + 100); return; }
+  if (plan.park) { await queueReportParked(plan.park); queueBroadcast(); queueSoon(200); return; }
+
+  // 2. Ask the server which application is next (outside the lock).
+  // `idle`: this worker is holding no application, so one the server still
+  // shows as running was orphaned (a crashed tab, a lost worker) — it is
+  // parked at once instead of blocking the queue until it times out.
+  const res = await queueApi(plan.ask, "/api/apply-queue/next", { idle: true });
+  const data = (res && res.data) || {};
+  if (!res || !res.ok) {
+    const signedOut = res && (res.status === 401 || res.status === 403);
+    await withQueue((q) => {
+      q.asking = 0;
+      q.failures = (q.failures || 0) + 1;
+      if (signedOut) queueSettle(q, "paused", "signed_out");
+      else if (q.failures >= 3) queueSettle(q, "paused", "server");
+      else q.nextAt = Date.now() + 60000;
+    });
+    queueBroadcast();
+    return;
+  }
+  const limits = {
+    gap_seconds: Number(data.gap_seconds) || QUEUE_LIMITS.gap_seconds,
+    timeout_seconds: Number(data.timeout_seconds) || QUEUE_LIMITS.timeout_seconds,
+    max_parked_tabs: Number(data.max_parked_tabs) || QUEUE_LIMITS.max_parked_tabs,
+  };
+  if (data.done) {
+    // Nothing left (or the day's limit, or switched off): the run is over.
+    await withQueue((q) => { q.limits = limits; q.failures = 0; queueSettle(q, "idle", data.reason || "empty"); });
+    queueAlarm(false);
+    queueBroadcast();
+    return;
+  }
+  if (data.wait || !data.pack || !data.item) {
+    const retry = Math.max(1, Number(data.retry_seconds) || 20) * 1000;
+    await withQueue((q) => { q.limits = limits; q.asking = 0; q.failures = 0; q.nextAt = Date.now() + retry; });
+    queueSoon(retry + 100);
+    return;
+  }
+
+  // 3. Open it and bind the tab — from here it is an ordinary SpotApply fill.
+  const pack = data.pack;
+  stashAuth(pack);
+  const win = await withQueue((q) => q.windowId);
+  const opened = await queueOpenTab(win, pack.apply_url);
+  if (!opened.tab) {
+    await withQueue((q) => { q.limits = limits; q.asking = 0; q.nextAt = Date.now() + limits.gap_seconds * 1000; });
+    await queueReportParked({ base: plan.ask.base, token: plan.ask.token, itemId: data.item.id, reason: "error" });
+    queueBroadcast();
+    return;
+  }
+  await bindTab(opened.tab.id, pack, true);
+  await chrome.storage.local.set({ spotapply_fill_pack: pack });
+  await withQueue((q) => {
+    q.limits = limits;
+    q.asking = 0;
+    q.failures = 0;
+    q.windowId = opened.windowId != null ? opened.windowId : q.windowId;
+    q.current = { itemId: data.item.id, appId: data.item.application_id, tabId: opened.tab.id,
+                  startedAt: Date.now(), attemptedAt: 0, mode: data.item.mode || "",
+                  company: data.item.company || "", title: data.item.title || "" };
+  });
+  console.log("[SpotApply BG] Queue: opened tab", opened.tab.id, "for", pack.apply_url);
+  queueBroadcast();
+}
+
+/** Move the running item to the parked list. Call INSIDE withQueue; returns
+ * what queueReportParked needs once the lock is released. */
+function queueParkCurrent(q, reason) {
+  const cur = q.current;
+  if (!cur) return null;
+  q.current = null;
+  q.parked = (q.parked || []).concat([{ itemId: cur.itemId, appId: cur.appId, tabId: cur.tabId, reason }]);
+  q.stats = q.stats || { submitted: 0, parked: 0 };
+  q.stats.parked += 1;
+  q.nextAt = Date.now() + Math.max(5, (q.limits && q.limits.gap_seconds) || QUEUE_LIMITS.gap_seconds) * 1000;
+  return { base: q.base, token: q.token, itemId: cur.itemId, reason };
+}
+
+/** Tell the server an item is waiting for the person. The ONLY outcome this
+ * worker can report — "submitted" is the server's own, from the confirmation. */
+function queueReportParked(park) {
+  if (!park || !park.itemId) return Promise.resolve();
+  return queueApi(park, `/api/apply-queue/items/${park.itemId}/outcome`, { reason: park.reason || "needs_you" })
+    .catch(() => {});
+}
+
+/** The run stopped short of the end (waiting on the person, or stopped): the
+ * server raises ONE notification from its own rows. Nothing about any item is
+ * claimed here. A finished run needs no call — /next already knows. */
+function queueTellServer(q, reason) {
+  if (!q || !q.base) return Promise.resolve();
+  return queueApi(q, "/api/apply-queue/summary", { reason: reason || "stopped" }).catch(() => {});
+}
+
+function queueOnSignal(tabId, msg) {
+  if (tabId == null || !msg) return;
+  withQueue((q) => {
+    const cur = q.current;
+    if (!cur || cur.tabId !== tabId || (msg.itemId && cur.itemId !== msg.itemId)) return null;
+    if (msg.kind === "attempted") { cur.attemptedAt = Date.now(); return { attempted: true }; }
+    if (msg.kind === "parked") return { park: queueParkCurrent(q, String(msg.reason || "needs_you").slice(0, 40)) };
+    return null;
+  }).then(async (out) => {
+    if (!out) return;
+    if (out.park) await queueReportParked(out.park);
+    queueBroadcast();
+    if (out.park) queueSoon(200);
+  });
+}
+
+/** The application's status was saved as Submitted (FORM_SUBMITTED succeeded).
+ * Resolves true when it was the application the queue was running. */
+function queueOnSubmitted(tabId, appId) {
+  return withQueue((q) => {
+    const now = Date.now();
+    const cur = q.current;
+    if (cur && (cur.tabId === tabId || cur.appId === appId)) {
+      q.current = null;
+      q.stats = q.stats || { submitted: 0, parked: 0 };
+      q.stats.submitted += 1;
+      q.nextAt = now + Math.max(5, (q.limits && q.limits.gap_seconds) || QUEUE_LIMITS.gap_seconds) * 1000;
+      return { closeTab: cur.tabId, touched: true };
+    }
+    // A parked one the person finished (or a slow confirmation that arrived
+    // after the queue had moved on): it leaves the parked list. Its tab is the
+    // person's — never closed for them.
+    const before = (q.parked || []).length;
+    q.parked = (q.parked || []).filter((p) => p.tabId !== tabId && p.appId !== appId);
+    if (q.parked.length === before) return null;
+    q.stats = q.stats || { submitted: 0, parked: 0 };
+    q.stats.submitted += 1;
+    q.stats.parked = Math.max(0, (q.stats.parked || 0) - 1);
+    return { touched: true, resume: queueResumeIfRoom(q) };
+  }).then((out) => {
+    if (!out) return false;
+    if (out.closeTab != null) {
+      // The confirmation page has been read and saved; the tab is done.
+      setTimeout(() => { chrome.tabs.remove(out.closeTab, () => { void chrome.runtime.lastError; }); },
+                 QUEUE_CLOSE_DELAY_MS);
+    }
+    if (out.resume) queueAlarm(true);
+    queueBroadcast();
+    queueSoon(200);
+    return out.closeTab != null;
+  }).catch(() => false);
+}
+
+/** Paused only because too many tabs were waiting, and one just cleared. */
+function queueResumeIfRoom(q) {
+  const maxParked = Math.max(1, (q.limits && q.limits.max_parked_tabs) || QUEUE_LIMITS.max_parked_tabs);
+  if (q.state === "paused" && q.reason === "parked_limit" && (q.parked || []).length < maxParked) {
+    queueSettle(q, "running", "");
+    return true;
+  }
+  return false;
+}
+
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  withQueue((q) => {
+    const cur = q.current;
+    // Closing the queue's own window is the person saying stop.
+    const windowClosing = !!(removeInfo && removeInfo.isWindowClosing && q.windowId != null &&
+                             removeInfo.windowId === q.windowId);
+    let out = null;
+    if (cur && cur.tabId === tabId) {
+      const park = queueParkCurrent(q, cur.attemptedAt ? "unconfirmed" : "tab_closed");
+      q.parked = (q.parked || []).filter((p) => p.tabId !== tabId);   // nothing is open to come back to
+      out = { park };
+    } else if ((q.parked || []).some((p) => p.tabId === tabId)) {
+      q.parked = q.parked.filter((p) => p.tabId !== tabId);
+      out = { resume: queueResumeIfRoom(q) };
+    }
+    if (windowClosing) {
+      q.windowId = null;
+      if (q.state === "running" || q.state === "stopping" || q.state === "paused") {
+        queueSettle(q, "idle", "window_closed");
+        out = Object.assign(out || {}, { stopped: true, tell: { base: q.base, token: q.token } });
+      }
+    }
+    return out;
+  }).then(async (out) => {
+    if (!out) return;
+    if (out.park) await queueReportParked(out.park);
+    if (out.tell) await queueTellServer(out.tell, "window_closed");
+    if (out.stopped) queueAlarm(false);
+    else if (out.resume) queueAlarm(true);
+    queueBroadcast();
+    if (!out.stopped) queueSoon(200);
+  });
+});
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === QUEUE_ALARM) queueAdvance();
+  });
+}
+// An extension update restarts the worker mid-run and drops its alarm: the
+// run is still in storage, so wake it again.
+chrome.runtime.onInstalled.addListener(() => {
+  withQueue((q) => q.state).then((state) => {
+    if (state === "running" || state === "stopping") { queueAlarm(true); queueSoon(1000); }
+  });
+});
+// A browser restart wakes the worker with a run still marked in storage: its
+// tabs are gone, so the run is over (the server parks the orphaned item).
+chrome.runtime.onStartup.addListener(() => {
+  withQueue((q) => {
+    q.current = null; q.parked = []; q.windowId = null;
+    if (q.state !== "idle") queueSettle(q, "idle", "browser_restarted");
+  }).then(() => queueAlarm(false));
 });
