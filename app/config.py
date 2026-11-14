@@ -482,6 +482,18 @@ class Settings(BaseSettings):
     # queue exists for people who are not watching, and each job in it was
     # approved by name. 0 = the queue waits for its tab to be visible too.
     apply_queue_background_submit: bool = True            # APPLY_QUEUE_BACKGROUND_SUBMIT
+    # AI answers for the questions a form asks that no rule and no saved answer
+    # covers (app/autofill/form_answers.py): one model call per form, an answer
+    # only with a line of evidence from the candidate's own facts. Sent to the
+    # extension with the fill pack, so each is an env var, never a release.
+    ai_form_answers_enabled: bool = True                  # AI_FORM_ANSWERS_ENABLED (kill switch)
+    ai_form_answers_max_questions: int = 30               # AI_FORM_ANSWERS_MAX_QUESTIONS per call
+    ai_form_answers_daily_cap: int = 60                   # AI_FORM_ANSWERS_DAILY_CAP model calls per user per day
+    ai_form_answers_timeout_seconds: float = 25.0         # AI_FORM_ANSWERS_TIMEOUT_SECONDS
+    # An AI answer is shown to the person ONCE before it is trusted: until they
+    # confirm it (or submit the form themselves) a form holding one is never
+    # submitted for them. 1 = submit without that look (not recommended).
+    ai_form_answers_auto_submit: bool = False             # AI_FORM_ANSWERS_AUTO_SUBMIT
     # "This job is no longer available" (POST /application/{id}/unavailable).
     # The reporter's own copy closes at once; the posting is RE-CHECKED for
     # everyone else, forced past a LIVE verdict younger than

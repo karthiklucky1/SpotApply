@@ -627,6 +627,8 @@ async function pickCustomOption(control, choose) {
   if (!choiceDropdownPicked(control)) { close(); return false; }
   try {
     control.dataset.spotapplyFilled = 'true';
+    // WHAT we picked: a later, different pick is the person's own.
+    control.dataset.spotapplyPicked = choiceDropdownPicked(control);
     if (trigger.dataset) trigger.dataset.spotapplyFilled = 'true';
   } catch (_) {}
   return true;
@@ -692,6 +694,13 @@ async function answerChoiceDropdowns(pack) {
   return answered;
 }
 
+/** A choice question as the key its answer is saved and recalled under: the
+ * same on a form that writes "…?*", "…? ✱" or "…? (required)". */
+function questionKey(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim()
+    .replace(/(?:\s*(?:\*|\u2731|\(required\)))+\s*$/i, '').trim();
+}
+
 /** Which of `texts` IS the saved answer: the one option that says exactly
  * that, or — for a saved Yes / No — the one option that starts with it
  * ("Yes.", "No, I do not"). Two candidates, or none, is no answer: an option
@@ -729,7 +738,7 @@ function savedOptionIndex(texts, answer) {
  */
 async function answerSavedChoices(pack) {
   if (!packBase(pack) || !pack.auth_token) return 0;
-  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const clean = (t) => questionKey(t);
   const skip = (q) => !q || q.length < 3 || q.length > 300 || isDemographicQuestion(q) || isHowHeardQuestion(q) ||
     /sponsor|authoriz|visa|work permit|right to work/i.test(q);
   const open = [];
@@ -763,6 +772,14 @@ async function answerSavedChoices(pack) {
     if (skip(question)) continue;
     open.push({ kind: 'radio', question, group });
   }
+  // Yes/No button pairs (Ashby has no radios for these).
+  for (const g of yesNoButtonGroups(document)) {
+    if (!g.box.getClientRects().length || yesNoChoice(g)) continue;
+    if (g.box.dataset.spotapplyUserModified === 'true') continue;
+    const question = clean(g.question);
+    if (skip(question)) continue;
+    open.push({ kind: 'buttons', question, pair: g });
+  }
   if (!open.length) return 0;
 
   const res = await apiFetch(`${packBase(pack)}/api/recall-answers`, 'POST', pack.auth_token,
@@ -780,6 +797,15 @@ async function answerSavedChoices(pack) {
     try {
       if (item.kind === 'dropdown') {
         ok = await pickCustomOption(item.control, (texts) => savedOptionIndex(texts, answer));
+      } else if (item.kind === 'buttons') {
+        const which = savedOptionIndex(['Yes', 'No'], answer);
+        const btn = which === 0 ? item.pair.yes : which === 1 ? item.pair.no : null;
+        if (btn && !btn.disabled) {
+          btn.click();
+          item.pair.box.dataset.spotapplyChoice = which === 0 ? 'yes' : 'no';
+          item.pair.box.dataset.spotapplyFilled = 'true';
+          ok = true;
+        }
       } else {
         const caption = (r) => {
           const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
@@ -806,6 +832,313 @@ async function answerSavedChoices(pack) {
   }
   if (picked) console.log(`[SpotApply] Picked ${picked} answer(s) you saved in your profile`);
   return picked;
+}
+
+// ── AI answers for the questions nothing else answers ───────────────────────
+// Founder, 2026-11-14. Over 16 real forms, about 80% of the required fields
+// left open were questions only that employer asks ("Have you worked here
+// before?", "Are you local to Austin?"). The profile's own rules answer what
+// they can prove and the saved answers what the person saved; what is still
+// open is sent ONCE to /api/answer-form-questions, which answers only with a
+// line of evidence from the person's own facts (app/autofill/form_answers.py).
+//
+// An AI answer is a SUGGESTION until the person has seen it: the field is
+// marked, the panel lists it with its reason, and a form holding one is not
+// submitted for them (autoSubmitBlocker: 'ai_review') unless the server says
+// otherwise. "These are right" — or submitting the form themselves — saves
+// each as their own answer, which then fills with no AI next time.
+//
+// Never sent to a model, here or on the server: work authorization (one
+// interpreter), self-identification, "how did you hear", an agreement or
+// consent, and the facts only the applicant states (age, criminal history,
+// clearance, an identity number). The two patterns mirror form_answers.py.
+const _AGREEMENT_RE = /\bi (?:hereby |also |further )?(?:agree|consent|certify|acknowledge|attest|authori[sz]e|confirm|understand|declare|accept)\b|\bby (?:checking|clicking|submitting|signing|applying|typing|entering|selecting)\b|\b(?:agree|consent|accept)(?:s|ed|ing|ance|ment)? (?:to|with|of) (?:the|our|this|these|be|receive)\b|\bdo you (?:agree|consent|accept|acknowledge|authori[sz]e|certify)\b|\bterms (?:and|&) conditions\b|\bterms of (?:use|service|employment)\b|\bprivacy (?:policy|notice|statement)\b|\be-?signature\b|\bsignature\b|\bsign(?:ed)? (?:here|below)\b|\barbitration\b|\bnon-?disclosure\b|\bnon-?compete\b|\bbackground (?:check|screen\w*|investigation)\b|\bdrug (?:test|screen)\w*\b|\bpolygraph\b|\b(?:receive|send me|opt.?in to) (?:text|sms|marketing|email|updates|communications)\b/i;
+const _APPLICANT_ONLY_RE = /\b(?:convict\w*|felon\w*|misdemeanou?rs?|criminal|arrest\w*|pending charges|probation|parole|date of birth|birth ?date|dob|how old|years? of age|age|over (?:the age of )?(?:16|18|21)|at least (?:16|18|21)|(?:16|18|21) (?:years|or older)|social security|ssn|national (?:id|insurance)\w*|passport|tax (?:id|number)|bank|routing number|pregnan\w*|religio\w*|medical|health condition|accommodations?|marital|citizen\w*|nationality|clearance|related to|relative|family member|conflict of interest)\b/i;
+
+/** May a model be asked this question at all? (The server refuses the same.) */
+function aiMayAnswer(question) {
+  const q = String(question || '').replace(/\s+/g, ' ').trim();
+  if (q.length < 8 || q.length > 300 || q.split(' ').length < 2) return false;
+  if (looksLikeFieldIdentifier(q) || _ANTI_BOT_RE.test(q)) return false;
+  if (isDemographicQuestion(q) || isHowHeardQuestion(q)) return false;
+  if (/sponsor|authoriz|visa|work permit|right to work|eligible to work/i.test(q)) return false;
+  return !_AGREEMENT_RE.test(q) && !_APPLICANT_ONLY_RE.test(q);
+}
+
+let _aiAsked = new Set();     // questions already sent from this page: asked once
+let _aiAnswers = [];          // {key, question, saveKey, answer, basis, target, read, confirmed}
+
+function _sameAnswer(a, b) {
+  const n = (t) => deaccent(String(t == null ? '' : t)).toLowerCase().replace(/[\s ]+/g, ' ')
+    .replace(/[\s.*:!]+$/g, '').trim();
+  return !!n(a) && n(a) === n(b);
+}
+
+/** AI answers the person has not confirmed and has not changed. */
+function pendingAiAnswers() {
+  return _aiAnswers.filter((a) => {
+    if (a.confirmed) return false;
+    try { return document.contains(a.target) && _sameAnswer(a.read(), a.answer); } catch (_) { return false; }
+  });
+}
+
+function markAiAnswered(target, state) {
+  if (!target || !target.style) return;
+  try {
+    target.dataset.spotapplyAi = state || 'pending';
+    target.style.transition = 'box-shadow 0.3s ease';
+    target.style.boxShadow = state === 'confirmed' ? '0 0 0 2px rgba(16,185,129,0.5)' : '0 0 0 2px rgba(0,119,194,0.75)';
+  } catch (_) {}
+}
+
+/** Open a pick-one dropdown just to READ what it offers, then close it. */
+async function readChoiceOptions(control) {
+  const trigger = (control.querySelector &&
+    control.querySelector('input[role="combobox"], [role="combobox"], input')) || control;
+  const press = (t) => {
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  };
+  try { trigger.focus(); } catch (_) {}
+  press(control);
+  await delay(350);
+  let options = _choiceOptionsFor(control, trigger);
+  if (!options.length) {
+    try { trigger.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); } catch (_) {}
+    press(control);
+    await delay(350);
+    options = _choiceOptionsFor(control, trigger);
+  }
+  const texts = options.map((o) => String(o.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })); } catch (_) {}
+  if (_choiceOptionsFor(control, trigger).length) press(control);      // still open: press it shut
+  await delay(120);
+  return texts;
+}
+
+/** The open questions a model may be asked, each with how to write its answer. */
+async function collectOpenQuestions(pack) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  const add = (item) => {
+    if (!aiMayAnswer(item.question)) return;
+    item.key = location.pathname + '|' + item.kind + '|' + item.question.toLowerCase();
+    if (out.some((o) => o.key === item.key)) return;
+    item.id = 'q' + (out.length + 1);
+    out.push(item);
+  };
+  const userTouched = (el) => !!(el && el.dataset && el.dataset.spotapplyUserModified === 'true');
+  const ynGroups = yesNoButtonGroups(document).filter((g) => g.box.getClientRects().length);
+
+  // Yes/No button pairs (Ashby).
+  for (const g of ynGroups) {
+    if (yesNoChoice(g) || userTouched(g.box)) continue;
+    add({ kind: 'yesno', question: clean(g.question), options: ['Yes', 'No'], target: g.box,
+          saveKey: questionKey(g.question), read: () => yesNoChoice(g) || '',
+          apply: async (a) => {
+            const btn = a.option_index === 0 ? g.yes : g.no;
+            if (!btn || btn.disabled) return false;
+            btn.click();
+            g.box.dataset.spotapplyChoice = a.option_index === 0 ? 'yes' : 'no';
+            g.box.dataset.spotapplyFilled = 'true';
+            return true;
+          } });
+  }
+
+  // Radio groups.
+  const byGroup = new Map();
+  for (const r of queryAllDeep('input[type="radio"]')) {
+    if (ynGroups.some((g) => (g.entry || g.box).contains(r))) continue;
+    const key = r.name || (r.closest('fieldset, [role="radiogroup"]') || {}).id || '';
+    if (!key) continue;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(r);
+  }
+  const caption = (r) => {
+    const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+    return clean((lbl && lbl.textContent) || r.value || '');
+  };
+  for (const [, group] of byGroup) {
+    if (group.length < 2 || group.length > 12) continue;
+    if (group.some((r) => r.checked || r.disabled || userTouched(r) || isAntiBotField(r))) continue;
+    const question = clean(radioGroupQuestion(group[0]));
+    const options = group.map(caption);
+    if (options.some((o) => !o)) continue;
+    add({ kind: 'radio', question, options, target: group[0].closest('fieldset, [role="radiogroup"], ul, div') || group[0],
+          saveKey: questionKey(question), read: () => { const c = group.find((r) => r.checked); return c ? caption(c) : ''; },
+          apply: async (a) => {
+            const t = group[a.option_index];
+            if (!t) return false;
+            t.click();
+            if (!t.checked) { t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); }
+            if (t.checked) t.dataset.spotapplyFilled = 'true';
+            return !!t.checked;
+          } });
+  }
+
+  // Pick-one dropdowns: their options are read by opening them once.
+  const seen = new Set();
+  let opened = 0;
+  for (const raw of queryAllDeep('[class*="select__control"], input[id^="react-select-"]')) {
+    const control = choiceDropdownControl(raw) || raw;
+    if (seen.has(control) || opened >= 12) continue;
+    seen.add(control);
+    if (!control.offsetParent && !(control.getClientRects && control.getClientRects().length)) continue;
+    const input = (control.querySelector && control.querySelector('input')) || raw;
+    if (isAntiBotField(input) || choiceDropdownPicked(control) || userTouched(input) || userTouched(control)) continue;
+    const question = clean(labelText(input));
+    if (!aiMayAnswer(question) || eeoKindOf(control)) continue;
+    if (_aiAsked.has(location.pathname + '|dropdown|' + question.toLowerCase())) continue;
+    opened++;
+    let options = [];
+    try { options = await readChoiceOptions(control); } catch (_) {}
+    if (options.length < 2 || options.length > 30) continue;      // a search box, or a country-sized list
+    add({ kind: 'dropdown', question, options, target: control, saveKey: questionKey(question),
+          read: () => choiceDropdownPicked(control),
+          apply: (a) => pickCustomOption(control, (texts) => savedOptionIndex(texts, a.answer)) });
+  }
+
+  // Native <select>s.
+  for (const el of queryAllDeep('select')) {
+    if (!el.offsetParent || !canFillField(el) || _selectHasChoice(el) || userTouched(el) || eeoKindOf(el)) continue;
+    const question = clean(labelText(el));
+    const opts = Array.from(el.options).filter((o) => o.value !== '' && !_hhIsPlaceholder(o.text));
+    if (opts.length < 2 || opts.length > 30) continue;
+    add({ kind: 'select', question, options: opts.map((o) => clean(o.text)), target: el,
+          saveKey: getFieldSignature(el),
+          read: () => { const o = el.options[el.selectedIndex]; return o && o.value !== '' ? clean(o.text) : ''; },
+          apply: async (a) => {
+            const o = opts[a.option_index];
+            if (!o) return false;
+            el.value = o.value;
+            el.dataset.spotapplyFilled = 'true';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return el.value === o.value;
+          } });
+  }
+
+  // Required one-line text questions ("What is your desired compensation?").
+  // A plain field ("Street address") is not a question: it is empty because
+  // the profile has no value for it, and a model has none either.
+  for (const el of queryAllDeep('input[type="text"], input:not([type]), input[type="number"]')) {
+    if (!el.offsetParent || !canFillField(el) || String(el.value || '').trim() || userTouched(el)) continue;
+    if (isAutocompleteInput(el) || isChoiceDropdownInput(el) || !isFieldRequired(el)) continue;
+    const question = clean(labelText(el));
+    if (!/\?/.test(question) && !/^(what|which|where|when|who|how|please|list|describe|if)\b/i.test(question)) continue;
+    if (/first.?name|last.?name|full.?name|e-?mail|phone|mobile|address|street|zip|postal|postcode|linkedin|github|website|\burl\b|password|\bdate\b|\bmm\b|yyyy/i.test(question)) continue;
+    add({ kind: 'text', question, options: [], target: el, saveKey: getFieldSignature(el),
+          read: () => String(el.value || '').trim(),
+          apply: async (a) => fillInput(el, a.answer) });
+  }
+  return out;
+}
+
+/**
+ * Ask the server about every question still open, once, and write the answers
+ * it could support from the person's own facts. Returns how many it wrote.
+ */
+async function answerOpenQuestionsWithAI(pack) {
+  const cfg = pack && pack.ai_form_answers;
+  if (!cfg || cfg.enabled !== true || !packBase(pack) || !pack.auth_token || !pack.app_id) return 0;
+  const limit = Math.max(1, Math.min(60, Number(cfg.max_questions) || 30));
+  const batch = (await collectOpenQuestions(pack)).filter((it) => !_aiAsked.has(it.key)).slice(0, limit);
+  if (!batch.length) return 0;
+  batch.forEach((it) => _aiAsked.add(it.key));
+  const res = await apiFetch(`${packBase(pack)}/api/answer-form-questions`, 'POST', pack.auth_token, {
+    app_id: pack.app_id,
+    questions: batch.map((it) => ({ id: it.id, kind: it.kind, question: it.question, options: it.options })),
+  });
+  const answers = res && res.ok && res.data && res.data.answers;
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return 0;
+  let written = 0;
+  for (const it of batch) {
+    const a = answers[it.id];
+    if (!a || typeof a.answer !== 'string' || !a.answer.trim() || looksLikeMetaReply(a.answer)) continue;
+    // An option answer must be one of the options WE read off the page.
+    if (it.options.length) {
+      const idx = savedOptionIndex(it.options, a.answer);
+      if (idx < 0) continue;
+      a.option_index = idx;
+    }
+    let ok = false;
+    try { ok = !!(await it.apply(a)); } catch (e) { console.debug('[SpotApply] AI answer not written:', e.message); }
+    if (!ok) continue;
+    written++;
+    _aiAnswers.push({ key: it.key, question: it.question, saveKey: it.saveKey, answer: a.answer,
+                      basis: String(a.basis || '').slice(0, 200), target: it.target, read: it.read, confirmed: false });
+    markAiAnswered(it.target, 'pending');
+    console.log('[SpotApply] AI answered from your profile:', a.answer.slice(0, 30), '—', it.question.slice(0, 70));
+  }
+  if (written) console.log(`[SpotApply] AI answered ${written} question(s): check them once`);
+  return written;
+}
+
+/**
+ * The person looked: each AI answer still standing becomes THEIR saved answer
+ * (AnswerMemory), which fills this question without a model from now on.
+ */
+function confirmAiAnswers(pack, how) {
+  const pending = pendingAiAnswers();
+  for (const a of pending) {
+    a.confirmed = true;
+    markAiAnswered(a.target, 'confirmed');
+    if (packBase(pack) && pack.auth_token && a.saveKey) {
+      apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token,
+               { question: a.saveKey, answer: a.answer, app_id: pack.app_id || null });
+    }
+  }
+  if (pending.length) console.log(`[SpotApply] ${pending.length} AI answer(s) confirmed (${how}) and saved as yours`);
+  return pending.length;
+}
+
+/**
+ * The person pressed Submit themselves: what they chose on a radio question
+ * or a pick-one dropdown is their answer to it, remembered for the next form
+ * (only typed text was learned before, so these were asked again every time).
+ * Never an answer a profile rule wrote, and never one of the guarded questions.
+ */
+function learnChoicesOnSubmit(pack) {
+  if (!packBase(pack) || !pack.auth_token) return 0;
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const ours = (el) => !!(el && el.dataset && el.dataset.spotapplyFilled === 'true');
+  const learned = [];
+  const byGroup = new Map();
+  for (const r of queryAllDeep('input[type="radio"]')) {
+    const key = r.name || (r.closest('fieldset, [role="radiogroup"]') || {}).id || '';
+    if (!key) continue;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(r);
+  }
+  for (const [, group] of byGroup) {
+    const picked = group.find((r) => r.checked);
+    if (!picked || ours(picked)) continue;
+    const lbl = (picked.id && document.querySelector(`label[for="${CSS.escape(picked.id)}"]`)) || picked.closest('label');
+    learned.push([questionKey(radioGroupQuestion(group[0])), clean((lbl && lbl.textContent) || picked.value || '')]);
+  }
+  const seen = new Set();
+  for (const raw of queryAllDeep('[class*="select__control"], input[id^="react-select-"]')) {
+    const control = choiceDropdownControl(raw) || raw;
+    if (seen.has(control)) continue;
+    seen.add(control);
+    const input = (control.querySelector && control.querySelector('input')) || raw;
+    const picked = choiceDropdownPicked(control);
+    if (!picked || eeoKindOf(control)) continue;
+    // Still showing what WE picked = ours (a rule's answer, or an AI answer
+    // confirmAiAnswers has just saved); anything else is the person's choice.
+    if ((ours(control) || ours(input)) && control.dataset.spotapplyPicked === picked) continue;
+    learned.push([questionKey(labelText(input)), picked]);
+  }
+  let saved = 0;
+  for (const [question, answer] of learned) {
+    if (!answer || answer.length > 160 || !aiMayAnswer(question)) continue;
+    apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token,
+             { question, answer, app_id: pack.app_id || null });
+    saved++;
+  }
+  if (saved) console.log(`[SpotApply] Remembered ${saved} answer(s) you chose on this form`);
+  return saved;
 }
 
 // ── Essay prompts vs field labels ────────────────────────────────────────────
@@ -2328,10 +2661,22 @@ document.addEventListener('click', (e) => {
       const hasFields = form
         ? form.querySelectorAll('input, textarea, select').length > 1
         : document.querySelectorAll('input[type="file"], textarea').length > 0;
-      if (hasFields) noteSubmitAttempt('click');
+      if (hasFields) { rememberOnOwnSubmit(); noteSubmitAttempt('click'); }
     }
   }
 }, { capture: true, passive: true });
+
+/** The person submitted the form themselves: an AI answer they left standing
+ * is confirmed, and what they chose is remembered. Once per page. */
+let _rememberedOnSubmit = null;
+function rememberOnOwnSubmit() {
+  const pack = _copilotPack;
+  // Our own one-click press is not the person's review of anything.
+  if (!pack || _autoSubmitPressing || _rememberedOnSubmit === location.href) return;
+  _rememberedOnSubmit = location.href;
+  try { confirmAiAnswers(pack, 'submitted by you'); } catch (_) {}
+  try { learnChoicesOnSubmit(pack); } catch (_) {}
+}
 
 // The form's own submit event: fires only once browser validation passed.
 // Same gates: an ungated listener reported ANY form anywhere (an ATS login
@@ -2341,6 +2686,7 @@ document.addEventListener('submit', (e) => {
   const form = e.target;
   if (!form || isLoginForm(form)) return;
   if (!formLooksLikeApplication(form)) return;
+  rememberOnOwnSubmit();
   noteSubmitAttempt('submit');
 }, { capture: true, passive: true });
 
@@ -5679,6 +6025,7 @@ const AUTO_SUBMIT_BLOCK_TEXT = {
   login_wall: 'the site asks you to sign in',
   captcha: 'the site shows a CAPTCHA',
   fields_need_you: 'some fields still need your answer',
+  ai_review: 'AI answered some questions from your profile, and they are yours to check once',
   no_submit_button: 'no Submit button was found on this page',
   submit_disabled: 'the Submit button is disabled',
   validation: 'the site rejected a field',
@@ -5686,6 +6033,7 @@ const AUTO_SUBMIT_BLOCK_TEXT = {
   already_attempted: 'it was already submitted from this tab',
 };
 const _autoSubmitDone = new Set();
+let _autoSubmitPressing = false;
 
 /** A challenge the one-click gate must stop at. isCaptcha() is page-level and
  * answers false whenever an application form is present, so it cannot see a
@@ -5781,6 +6129,13 @@ function autoSubmitBlocker(pack, audit, opts) {
       !fileInputs.some((fi) => (fi.files && fi.files.length) || fi.dataset.spotapplyUpload === 'accepted')) {
     return { reason: 'fields_need_you', detail: 'resume not attached' };
   }
+  // An AI answer is the person's to check ONCE before it is sent under their
+  // name; after that it is their saved answer and no longer holds anything.
+  // The server alone can lift this (pack.ai_form_answers.auto_submit).
+  const aiPending = pendingAiAnswers().length;
+  if (aiPending && !(pack.ai_form_answers && pack.ai_form_answers.auto_submit === true)) {
+    return { reason: 'ai_review', detail: aiPending + ' AI answer' + (aiPending === 1 ? '' : 's') + ' to check' };
+  }
   const btn = findSubmitControl();
   if (!btn) return { reason: 'no_submit_button' };
   if (btn.disabled) return { reason: 'submit_disabled' };
@@ -5797,6 +6152,13 @@ async function maybeAutoSubmit(pack, audit) {
       reportTelemetry(pack, 'auto_submit_attempted', { host: location.hostname });
     } else {
       reportTelemetry(pack, 'auto_submit_blocked', Object.assign({ reason }, extra || {}));
+      if (reason === 'ai_review') {
+        // The panel that lists each AI answer with the line it rests on, and
+        // the button that accepts them, IS the message here.
+        try { showStepOverlay(audit || auditPageFields(pack, false), pack); } catch (_) {}
+        console.log('[SpotApply] One-click submit held back:', reason);
+        return out;
+      }
       const why = AUTO_SUBMIT_BLOCK_TEXT[reason] || reason;
       const list = (audit && audit.problems || []).slice(0, 4).map((p) => '<li>' + escapeHtml(p) + '</li>').join('');
       showOverlay('✋ <b>Filled, but not submitted:</b> ' + escapeHtml(why) + '.<br>' +
@@ -5825,7 +6187,8 @@ async function maybeAutoSubmit(pack, audit) {
               '<small>SpotApply marks it Submitted only when the site confirms.</small>', [], false);
   noteSubmitAttempt('one_click');          // SUBMIT_ATTEMPTED + the confirmation watch
   try { btn.scrollIntoView({ block: 'center' }); } catch (_) {}
-  btn.click();
+  _autoSubmitPressing = true;              // this press is ours, not the person's review
+  try { btn.click(); } finally { setTimeout(() => { _autoSubmitPressing = false; }, 1500); }
   return done(true, 'clicked');
 }
 
@@ -6078,6 +6441,15 @@ async function fillCurrentPage(pack) {
   // Step 4: Fill essay questions via AI
   await fillEssayQuestions(document, pack);
 
+  // Step 4b: what is STILL open after every rule and every saved answer is
+  // asked of the server once: an answer only with evidence from the profile,
+  // marked for the person to check.
+  try {
+    await answerOpenQuestionsWithAI(pack);
+  } catch (e) {
+    console.warn('[SpotApply] AI answers error:', e.message);
+  }
+
   // Step 5: Audit all form fields — classify as filled / unfilled / unknown
   return auditPageFields(pack, platformFilled);
 }
@@ -6263,6 +6635,9 @@ function auditPageFields(pack, platformFilled) {
     highlightField(g.box, hhRequired ? 'red' : 'yellow');
   }
 
+  // An AI answer keeps its own mark until the person confirms or changes it.
+  for (const a of pendingAiAnswers()) markAiAnswered(a.target, 'pending');
+
   // The résumé's own outcome survives every recount until it changes.
   if (_resumeStatus && ['error', 'failed'].includes(_resumeStatus.state) &&
       !problems.some((p) => /resume/i.test(p))) {
@@ -6391,7 +6766,26 @@ function showStepOverlay(result, pack) {
     ? `<div style="font-size:11px;color:#21455C;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
     : instructions;
 
-  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}`, [], true);
+  // AI answers waiting for the person's one look: the question, the answer and
+  // the line of their profile it rests on.
+  const ai = pendingAiAnswers();
+  const aiHtml = ai.length
+    ? `<div style="font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,119,194,0.25)">` +
+      `<b style="color:#0077C2">AI answered ${ai.length} from your profile. Check ${ai.length === 1 ? 'it' : 'them'}:</b>` +
+      ai.slice(0, 6).map((a) => `<div style="margin-top:4px"><span style="color:#21455C">${esc((a.question.charAt(0).toUpperCase() + a.question.slice(1)).slice(0, 80))}</span><br>` +
+        `<b>${esc(a.answer.slice(0, 60))}</b>${a.basis ? ` <span style="color:#5B7186">(${esc(a.basis.slice(0, 70))})</span>` : ''}</div>`).join('') +
+      (ai.length > 6 ? `<div style="margin-top:4px;color:#5B7186">and ${ai.length - 6} more, outlined in blue</div>` : '') +
+      `<button id="hp-ai-confirm" type="button" style="margin-top:8px;background:#0077C2;color:#fff;border:0;border-radius:8px;` +
+      `padding:6px 10px;font:600 12px system-ui,sans-serif;cursor:pointer">These are right, remember them</button>` +
+      `<div style="margin-top:4px;color:#5B7186">Change any that is wrong first. Nothing is submitted for you until you have looked.</div></div>`
+    : '';
+
+  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}${aiHtml}`, [], true);
+  if (ai.length) {
+    const host = document.getElementById('hp-copilot-overlay');
+    const btn = host && (host.shadowRoot || host).querySelector('#hp-ai-confirm');
+    if (btn) btn.addEventListener('click', () => { confirmAiAnswers(pack, 'checked by you'); refreshStepOverlay(pack); });
+  }
 }
 
 /** Does this page lead to another step (Next / Continue), or is it the whole form? */
@@ -7050,6 +7444,7 @@ function submitReadiness() {
         verdict: block.reason || 'ready',
         detail: block.detail || '',
         requiredOpen: audit.needRequired,
+        aiToCheck: pendingAiAnswers().length,
         // The questions behind that number: their kind and label, never a value.
         requiredOpenFields: (audit.needRequiredEls || []).slice(0, 12).map((el) => {
           const kind = (el.tagName === 'INPUT' ? (el.type || 'text') : el.tagName.toLowerCase());

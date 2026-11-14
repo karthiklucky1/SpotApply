@@ -55,6 +55,14 @@ CURRENT_PACK: dict = {}
 # answers by the caller's own label, so this does too.
 RECALL: dict = {}
 
+# What /api/answer-form-questions gives back: {substring of the question (lower
+# case): answer}. The real route answers only with evidence from the profile;
+# the stub stands in for "the profile settles this one". AI_REQUESTS keeps the
+# questions each call carried, SAVED every /api/save-answer body.
+AI_ANSWERS: dict = {}
+AI_REQUESTS: list = []
+SAVED: list = []
+
 # How many resume requests the stub answers "still being written" (409) — the
 # server's answer while Auto-Fill's own tailor runs (live test 2026-11-03).
 RESUME_GENERATING = {"left": 0}
@@ -162,6 +170,26 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
         REQUESTS.append(("POST", path))
+        if "/api/answer-form-questions" in self.path:
+            try:
+                asked = (json.loads(body.decode("utf-8") or "{}").get("questions")) or []
+            except Exception:
+                asked = []
+            AI_REQUESTS.append(asked)
+            out = {}
+            for q in asked:
+                for needle, answer in AI_ANSWERS.items():
+                    if needle in str(q.get("question", "")).lower():
+                        out[q.get("id")] = {"answer": answer, "option_index": None,
+                                            "basis": "Home location: San Francisco, CA"}
+            return self._json({"answers": out, "skipped": {}})
+        if "/api/save-answer" in self.path:
+            try:
+                saved = json.loads(body.decode("utf-8") or "{}")
+                SAVED.append((saved.get("question"), saved.get("answer")))
+            except Exception:
+                pass
+            return self._json({"ok": True})
         if "recall-answers" in self.path:
             try:
                 labels = (json.loads(body.decode("utf-8") or "{}").get("labels")) or []

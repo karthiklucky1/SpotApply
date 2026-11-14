@@ -28,6 +28,7 @@ smartrecruiters-job.html, join-job.html). The helpers and the stub API are test_
 """
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import threading
@@ -245,6 +246,157 @@ def main():
             page.close()
         finally:
             fh.RECALL.clear()
+
+        # ── AI: the questions nothing else answers ──────────────────────────
+        # Founder, 2026-11-14: what is still open after the rules and the saved
+        # answers is asked of /api/answer-form-questions once. An answer is a
+        # suggestion: marked, listed with its reason, and held from any
+        # automatic submit until the person has looked once; then it is saved
+        # as theirs. (The stub plays the server's "the profile settles it".)
+        print("\nAI answers for the questions nothing else answers")
+        ai_on = {"enabled": True, "max_questions": 30, "auto_submit": False}
+        ai_url = f"{BASE}/greenhouse-react.html?ai=1&clearance=1"
+        ai_pack = dict(fh.base_pack(ai_url), ai_form_answers=ai_on, auto_submit=True, auto_submit_reason="ok",
+                       auto_submit_hosts=["127.0.0.1"])
+        asked_all = lambda: [str(q.get("question", "")).lower() for call in fh.AI_REQUESTS for q in call]
+        try:
+            fh.RECALL.clear()
+            fh.RECALL.update({"current clearance level": "None"})       # saved: not the AI's to answer
+            fh.AI_ANSWERS.clear()
+            fh.AI_ANSWERS.update({"worked at harnessco": "No", "programming language": "Python",
+                                  "refer you": "No", "legally authorized": "Yes", "clearance": "Secret"})
+            del fh.AI_REQUESTS[:]
+            del fh.SAVED[:]
+            oc_from = len(fh.REQUESTS)
+            page, logs, reply = fh.drive_fill_reply(ctx, ai_url, ai_pack, timeout_ms=90000)
+            auto = reply.get("auto_submit") or {}
+            asked = asked_all()
+            check("AI1 the employer's own questions are asked of the server, once",
+                  any("worked at harnessco" in q for q in asked) and any("programming language" in q for q in asked)
+                  and len(fh.AI_REQUESTS) == 1, json.dumps(asked))
+            check("AI1b ...work authorization, sponsorship and clearance are never sent to a model",
+                  not any(re.search(r"authoriz|sponsor|clearance", q) for q in asked), json.dumps(asked))
+            check("AI2 the dropdown answer is picked and the text answer written",
+                  page.evaluate(PICKED, "slot-worked") == "No" and
+                  page.eval_on_selector("#question_pay", "el => el.value") == "Python",
+                  repr((page.evaluate(PICKED, "slot-worked"), page.eval_on_selector("#question_pay", "el => el.value"))))
+            check("AI2b ...each marked as an AI answer still to be checked",
+                  page.evaluate("() => document.querySelector('#slot-worked .select__control').dataset.spotapplyAi") == "pending"
+                  and page.eval_on_selector("#question_pay", "el => el.dataset.spotapplyAi") == "pending")
+            check("AI3 a form holding an unchecked AI answer is NOT submitted for the person",
+                  auto.get("attempted") is False and auto.get("reason") == "ai_review" and not submits(oc_from)
+                  and "greenhouse-react.html" in page.url, json.dumps(auto))
+            check("AI3b ...and nothing has been saved as their answer yet", not fh.SAVED, str(fh.SAVED))
+            page.wait_for_timeout(4500)          # the panel re-renders with the AI list
+            panel = page.evaluate("""() => {
+                const host = document.getElementById('hp-copilot-overlay');
+                const root = host && (host.shadowRoot || host);
+                const card = root && root.querySelector('.card');
+                return card ? card.textContent.replace(/\\s+/g, ' ') : '';
+            }""")
+            check("AI4 the panel lists each AI answer with the profile line it rests on",
+                  "AI answered 3 from your profile" in panel and "have you worked at harnessco before?" in panel.lower()
+                  and "Home location: San Francisco, CA" in panel and "These are right" in panel, panel[-420:])
+            clicked = page.evaluate("""() => {
+                const host = document.getElementById('hp-copilot-overlay');
+                const btn = host && (host.shadowRoot || host).querySelector('#hp-ai-confirm');
+                if (!btn) return false;
+                btn.click();
+                return true;
+            }""")
+            page.wait_for_timeout(1200)
+            saved = dict((str(q).lower(), a) for q, a in fh.SAVED)
+            check("AI5 \"These are right\" saves each one as the person's own answer",
+                  clicked and any("worked at harnessco" in q and a == "No" for q, a in saved.items())
+                  and any("programming language" in q and a == "Python" for q, a in saved.items()), str(fh.SAVED))
+            gate = (diagnostic(ctx, "greenhouse-react.html").get("submitReadiness") or {}).get("gate") or {}
+            check("AI5b ...after which nothing holds the form", gate.get("verdict") == "ready" and gate.get("aiToCheck") == 0,
+                  json.dumps(gate))
+            page.close()
+
+            # The server may lift the hold (AI_FORM_ANSWERS_AUTO_SUBMIT): then the
+            # form goes, and an answer nobody looked at is still not "theirs".
+            del fh.AI_REQUESTS[:]
+            del fh.SAVED[:]
+            oc_from = len(fh.REQUESTS)
+            lifted = dict(ai_pack, ai_form_answers=dict(ai_on, auto_submit=True))
+            page, logs, reply = fh.drive_fill_reply(ctx, ai_url, lifted, timeout_ms=90000)
+            auto = reply.get("auto_submit") or {}
+            try:
+                page.wait_for_url("**/thanks.html**", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3000)
+            check("AI6 with the server's switch on, the form is submitted",
+                  auto.get("attempted") is True and "thanks.html" in page.url and len(submits(oc_from)) == 1,
+                  json.dumps(auto) + " " + page.url)
+            check("AI6b ...and an AI answer nobody checked is not saved as the person's",
+                  not any("worked at harnessco" in str(q).lower() for q, _ in fh.SAVED), str(fh.SAVED))
+            page.close()
+
+            # An answer that is none of the page's own options is not written.
+            fh.AI_ANSWERS.clear()
+            fh.AI_ANSWERS.update({"worked at harnessco": "Maybe"})
+            del fh.AI_REQUESTS[:]
+            page, logs, reply = fh.drive_fill_reply(ctx, ai_url, dict(ai_pack, auto_submit=False), timeout_ms=90000)
+            check("AI7 an answer that is not one of the form's options is never written",
+                  page.evaluate(PICKED, "slot-worked") == "" and
+                  not page.evaluate("() => window.__typed").get("question_worked"),
+                  repr(page.evaluate(PICKED, "slot-worked")))
+            page.close()
+
+            # Without the server's say-so (an older server, or the switch off)
+            # the extension asks nothing.
+            del fh.AI_REQUESTS[:]
+            page, logs, reply = fh.drive_fill_reply(ctx, ai_url, fh.base_pack(ai_url), timeout_ms=90000)
+            check("AI8 no fill-pack permission, no question is sent anywhere",
+                  not fh.AI_REQUESTS and page.evaluate(PICKED, "slot-worked") == "", str(fh.AI_REQUESTS))
+            page.close()
+
+            # Radios, and the person's own Submit: an AI answer they left
+            # standing is confirmed by it, and what they chose is remembered.
+            fh.RECALL.clear()
+            fh.AI_ANSWERS.clear()
+            fh.AI_ANSWERS.update({"local to austin": "No"})
+            del fh.AI_REQUESTS[:]
+            del fh.SAVED[:]
+            lever_ai = f"{BASE}/lever-radios.html?local=1"
+            page, logs, reply = fh.drive_fill_reply(ctx, lever_ai, dict(fh.base_pack(lever_ai), ai_form_answers=ai_on),
+                                                    timeout_ms=90000)
+            check("AI9 a radio question is answered by checking the one option that says it",
+                  page.evaluate(RADIO, "cards[a1][field3]") == "No.", repr(page.evaluate(RADIO, "cards[a1][field3]")))
+            page.click("#btn-submit")            # the person reviews and submits
+            try:
+                page.wait_for_url("**/thanks.html**", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2500)
+            check("AI10 submitting the form themselves confirms the AI answer they left standing",
+                  any("local to austin" in str(q).lower() and a == "No" for q, a in fh.SAVED), str(fh.SAVED))
+            check("AI10b ...the profile's own work-authorization answers are never saved as answers",
+                  not any(re.search(r"authoriz|sponsor", str(q).lower()) for q, _ in fh.SAVED), str(fh.SAVED))
+            page.close()
+
+            # The person's OWN choice on a radio question is remembered too.
+            fh.AI_ANSWERS.clear()
+            del fh.SAVED[:]
+            page, logs, reply = fh.drive_fill_reply(ctx, lever_ai, dict(fh.base_pack(lever_ai), ai_form_answers=ai_on),
+                                                    timeout_ms=90000)
+            page.check("input[name='cards[a1][field3]'][value='Yes.']")
+            page.click("#btn-submit")
+            try:
+                page.wait_for_url("**/thanks.html**", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2500)
+            check("AI11 what the person chose themselves is remembered for the next form",
+                  any("local to austin" in str(q).lower() and a == "Yes." for q, a in fh.SAVED), str(fh.SAVED))
+            page.close()
+        finally:
+            fh.RECALL.clear()
+            fh.AI_ANSWERS.clear()
+            del fh.AI_REQUESTS[:]
+            del fh.SAVED[:]
 
         # ── LV: Lever radio cards ───────────────────────────────────────────
         print("\nLever radio cards (the question sits two levels above the radios)")
