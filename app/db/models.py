@@ -387,6 +387,12 @@ class UserProfile(SQLModel, table=True):
     # experience_json: [{"title","company","location","start","end","current","summary"}, ...]
     education_json: Optional[str] = None
     experience_json: Optional[str] = None
+    # Auto-fill data (2026-11-14): the answers application forms ask for that
+    # no resume holds (address, name parts, availability, screening answers,
+    # languages) plus the profile page's certifications and projects. ONE JSON
+    # object, shaped and validated by app/autofill/autofill_fields.py — never
+    # written without `autofill_fields.merge`. NULL = nothing saved.
+    autofill_json: Optional[str] = None
     # EEOC (decline to answer by default — safest)
     gender: str = "Decline to self-identify"
     ethnicity: str = "Decline to self-identify"

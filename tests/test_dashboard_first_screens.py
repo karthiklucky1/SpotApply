@@ -245,3 +245,28 @@ def test_the_first_hour_panel_and_extension_banner_are_pipeline_only():
     assert 'id="welcome-panel"' in wrap and 'id="ext-install-banner"' in wrap
     body = _function("switchViewTab")
     assert "pipeline-only-banners" in body and "tab === 'kanban' ? '' : 'none'" in body
+
+
+# ── the page never scrolls sideways on a phone ───────────────────────────────
+# Measured 2026-11-14 at 390px: the document was 24px wider than the screen on
+# every view, because the top bar's search could not shrink below its <input>'s
+# intrinsic width and pushed the profile button past the right edge. At 320px
+# it was 94px: the same bar, and 9px of it from the footer's six links (one
+# unwrappable row). After the fix: 0px at 320, 360, 390, 414, 768, 1024 and
+# 1440, board and profile alike.
+
+def test_the_top_bar_fits_a_phone():
+    assert re.search(r"\.hdr-search \{ flex: 1 1 auto; min-width: 0;", HTML), \
+        "the search must be allowed to shrink"
+    # Where the menu button shows, the bar starts to its right, not under it.
+    assert re.search(r"@media \(max-width: 768px\) \{\s*#app-topbar \{ gap: 10px; padding-left: 46px; \}", HTML)
+    assert re.search(r"#mobile-menu-btn \{\s*display: none;\s*position: fixed; top: 14px; left: 14px; z-index: 60;\s*width: 40px;", HTML), \
+        "the 46px above is this button's 14px + 40px, less the page gutter"
+
+
+def test_the_footer_links_wrap_on_a_narrow_screen():
+    footer = HTML[HTML.index('<footer class="app-footer">'):]
+    footer = footer[:footer.index("</footer>")]
+    links = footer[footer.index("openSettings('about')") - 160:footer.index("openSettings('about')")]
+    assert "flex-wrap" in links and "justify-center" in links
+

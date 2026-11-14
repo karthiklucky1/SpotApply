@@ -2139,6 +2139,10 @@ def _early_stats(session, owner, reads=None) -> dict:
     return {"measured": measured, "early": early, "window_hours": earliness.window_hours()}
 # The ONE link to the extension's Chrome Web Store listing, for every page.
 templates.env.globals["chrome_web_store_url"] = settings.chrome_web_store_url
+# The profile page's "Auto-fill data" editor is drawn from the same catalog
+# that validates what is saved (app/autofill/autofill_fields.py). No user data.
+from app.autofill.autofill_fields import catalog_for_ui as _autofill_catalog_for_ui
+templates.env.globals["autofill_catalog"] = _autofill_catalog_for_ui()
 
 
 def _renewal_terms() -> str:
@@ -6266,9 +6270,16 @@ def _skill_evidence_for_pack(uid: str | None, key_skills: str) -> dict:
 
 
 def _residence_country(profile) -> str:
-    """Title-cased country the profile's location states, or ''."""
+    """Title-cased country the profile states the user lives in, or ''.
+
+    The Country in their saved address when they gave one (auto-fill data):
+    that is the user saying where they live. Otherwise only what their
+    location line itself states. Never the country they want jobs in."""
     if not profile:
         return ""
+    stated = (_autofill_data(profile).get("country") or "").strip()
+    if stated:
+        return stated
     from app.common.geo import stated_country
     c = stated_country(getattr(profile, "location", "") or "")
     return " ".join(w.capitalize() for w in c.split()) if c else ""
@@ -8205,7 +8216,9 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
     """Return remembered answers for any of the given field labels.
 
     Lets the extension pre-fill fields on a NEW application using answers the
-    user typed by hand on PREVIOUS applications. Pure cache lookup — free.
+    user typed by hand on PREVIOUS applications, and the auto-fill data they
+    saved in their profile (app/autofill/autofill_fields.py). Lookups only —
+    free, and never a model's answer.
     """
     from app.autofill import field_guards as _fg
     from app.db.models import AnswerMemory
@@ -8232,6 +8245,31 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
             # ("I'd be happy to help, but…") is withheld, never a real answer.
             if orig and mem.answer and not _fg.is_model_only_reply(mem.answer):
                 answers[orig] = mem.answer
+        # The caller's own profile row, resolved as the fill pack resolves it
+        # (a tenant by user_id; "local" = the one local row).
+        from app.autofill import autofill_fields as _af
+        from app.db.models import UserProfile as _UP
+        _pq = select(_UP.autofill_json)
+        if uid != "local":
+            _pq = _pq.where(_UP.user_id == uid)
+        elif settings.use_supabase:
+            _pq = None          # fail closed: never an unscoped read in multi-tenant mode
+        saved = _af.load(session.exec(_pq).first()) if _pq is not None else {}
+    # The answers the user saved as auto-fill data in their profile: offered
+    # for the form field that asks for exactly that, and ahead of an answer
+    # remembered from another form (the profile is what they say is true now).
+    # Never a work-authorization, self-identification or how-did-you-hear
+    # question, and never an answer the extension's fuzzy matcher would copy
+    # into a neighbouring field (autofill_fields.drop_borrowable).
+    if saved:
+        from_profile = {}
+        for l in labels:
+            a = _af.answer_for_label(l, saved)
+            if a:
+                from_profile[l] = a
+        from_profile = _af.drop_borrowable(
+            from_profile, labels, other_answered=[l for l in answers if l not in from_profile])
+        answers.update(from_profile)
     return {"answers": answers}
 
 
@@ -11625,6 +11663,7 @@ _USERPROFILE_COLUMNS = [
     ("graduation_year", "INTEGER", "INTEGER"),
     ("education_json", "TEXT", "TEXT"),
     ("experience_json", "TEXT", "TEXT"),
+    ("autofill_json", "TEXT", "TEXT"),
     ("gender", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
     ("ethnicity", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
     ("veteran_status", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
@@ -11728,6 +11767,13 @@ def _repair_userprofile_schema() -> None:
                         f'ALTER TABLE userprofile ADD COLUMN {col} {sq}'))
 
 
+def _autofill_data(profile) -> dict:
+    """The user's saved auto-fill answers ({} when none), as the catalog reads
+    them today (app/autofill/autofill_fields.load)."""
+    from app.autofill import autofill_fields as _af
+    return _af.load(getattr(profile, "autofill_json", None)) if profile else {}
+
+
 def _profile_history_list(profile, attr: str) -> list:
     """Parse a JSON-array profile column (education_json / experience_json)."""
     import json as _json
@@ -11786,6 +11832,9 @@ def get_profile(request: Request) -> dict:
             if (profile.degree or profile.university) else []
         ),
         "experience": _profile_history_list(profile, "experience_json"),
+        # The saved auto-fill answers + certifications/projects (one JSON
+        # object, app/autofill/autofill_fields.py). Always an object.
+        "autofill": _autofill_data(profile),
         "gender": _eeo_answer(profile.gender),
         "ethnicity": _eeo_answer(profile.ethnicity),
         "veteran_status": _eeo_answer(profile.veteran_status),
@@ -11850,6 +11899,9 @@ class ProfileUpdate(BaseModel):
     # Structured histories — lists of dicts, stored as JSON text on the model.
     education: Optional[list] = None
     experience: Optional[list] = None
+    # Auto-fill answers: {key: value}. Only keys the catalog knows are stored
+    # (autofill_fields.clean); keys not sent are kept, "" clears one.
+    autofill: Optional[dict] = None
     gender: Optional[str] = None
     ethnicity: Optional[str] = None
     veteran_status: Optional[str] = None
@@ -12091,6 +12143,11 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
             if exp is not None:
                 exp = [e for e in exp if isinstance(e, dict) and any(str(v or "").strip() for v in e.values())]
                 db_profile.experience_json = _json.dumps(exp[:15])
+            af = payload.pop("autofill", None)
+            if af is not None:
+                from app.autofill import autofill_fields as _af
+                db_profile.autofill_json = _af.dumps(
+                    _af.merge(getattr(db_profile, "autofill_json", None), af))
             _before = {f: getattr(db_profile, f, None) for f in _LOCATION_PREF_FIELDS}
             _before_type = {f: getattr(db_profile, f, None) for f in _JOB_TYPE_PREF_FIELDS}
             if "work_modes" in payload:

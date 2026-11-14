@@ -58,7 +58,7 @@
     <div class="max-w-2xl mx-auto">
         <div class="mb-10">
             <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">Privacy Policy</h1>
-            <p class="text-sm" style="color:var(--muted);">Last updated: October 2026</p>
+            <p class="text-sm" style="color:var(--muted);">Last updated: November 2026</p>
         </div>
 
         <div class="prose-dark space-y-2">
@@ -91,6 +91,24 @@
                 <li><strong>Product analytics:</strong> whether you reached steps such as signing up or uploading a resume, recorded under a one-way coded identifier instead of your name or email. A few operational records (for example that a document was downloaded, that your profile was completed, or why a job was or was not placed on your board) are stored with your account ID so we can investigate problems. None of them contains resume text, job text or work-authorisation data, and we use them only in aggregate or to fix your account.</li>
                 <li><strong>Job emails (only when you click Sync Job Emails):</strong> on Gmail or Outlook in your browser, the SpotApply extension shows a "Sync Job Emails" button. Nothing is read until you click it. When you do, it reads the messages listed in your inbox — sender, subject, date and the short preview text — and sends job-related ones to SpotApply. We use them to detect employer replies, rejections and interview invitations and to add applications you made outside SpotApply; a message we cannot match to an application is saved as a new application record with that preview. We never connect to your mailbox account and never read full messages.</li>
                 <li><strong>Your LinkedIn profile (only if you import it):</strong> on a LinkedIn profile page the extension shows an Import button, meant for your own profile. When you click it, the extension reads the profile text already shown in that tab and sends it to SpotApply, where we add the work history, education and skills to your profile. You can paste the text or upload LinkedIn's PDF export instead. The extension never logs in to LinkedIn, never opens or visits profiles itself and reads nothing until you click Import.</li>
+                <!-- Added November 2026 with the profile's "Auto-fill data" editor
+                     (UserProfile.autofill_json, app/autofill/autofill_fields.py).
+                     Lists what that catalog can hold and nothing it cannot. -->
+                <li><strong>Application-form answers (only what you enter):</strong>
+                    the "Auto-fill data" you can save in your profile so application forms can be
+                    filled for you: other names you use and how your name is pronounced, a second phone
+                    number, your time zone and how you prefer to be contacted, an X/Twitter link,
+                    your home address, the languages you speak, your country of
+                    citizenship and any security clearance, when you can start and the hours you
+                    can work, pay, travel and relocation preferences, your certifications and
+                    projects, and your answers to common screening questions (for example whether
+                    you are 18 or older, are bound by a non-compete agreement, have a felony
+                    conviction or have declared bankruptcy). Every one of these is optional and
+                    empty until you fill it in. We use them only to answer the same question on
+                    application forms you fill with SpotApply and to show your profile to you:
+                    never for matching or scoring, and never on your public profile. You can clear
+                    any of them at any time. We do not store passwords for job sites, and we do
+                    not sign or accept agreements for you.</li>
                 <li><strong>Voluntary self-identification (only if you enter it):</strong> gender, race/ethnicity, veteran status and disability status, which some employers ask about. Each field defaults to "Decline to self-identify". We use what you save only to answer the same voluntary questions on application forms you fill with SpotApply, never for matching or scoring, and you can clear it at any time.</li>
                 <li><strong>Public profile (only if you turn it on):</strong> your profile is private by default. If you switch on "Public profile", a shareable page and our recruiter search show your name, title, city, skills, availability, work authorisation, whether you need sponsorship, salary range and LinkedIn/GitHub links — never your email or phone. Switch it off and the page and search listing disappear.</li>
                 <li><strong>Reviews:</strong> if you write a review, we store it. It is shown publicly, with your first name only, if you tick the box that allows it.</li>
