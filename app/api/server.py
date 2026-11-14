@@ -2711,43 +2711,20 @@ def extract_profile_from_resume(request: Request, background_tasks: BackgroundTa
     # profile when the provider is down or credits run out (Jul 2026 outage).
     from app.config import settings as _settings
 
-    # Education (university/degree/grad year) usually sits near the END of a resume,
-    # so a naive head-only truncation drops it. Send the head plus the tail when the
-    # resume is long so the model always sees the Education section.
-    _MAX = 16000
-    if len(resume_text) <= _MAX:
-        resume_for_prompt = resume_text
-    else:
-        head = resume_text[:11000]
-        tail = resume_text[-5000:]
-        resume_for_prompt = head + "\n\n...[middle truncated]...\n\n" + tail
-
-    prompt = f"""Extract the following fields from this resume. Return ONLY a JSON object with these exact keys (use null for missing fields):
-first_name, last_name, email, phone, location, current_title, years_experience (integer),
-linkedin_url, github_url, portfolio_url, degree, university, graduation_year (integer),
-key_skills (comma-separated string), professional_summary (2-3 sentence summary of their background),
-suggested_target_roles (an array of 4-6 specific job titles this candidate is genuinely
-well-qualified for and should apply to right now, ordered best-fit first. Use real,
-searchable titles like "Senior Backend Engineer" or "Data Scientist" — base them on the
-candidate's actual experience, seniority and skills, not generic guesses),
-education (an array — one object per school, most recent first, with keys:
-  degree (e.g. "Master of Engineering"), field (the major/subject, e.g. "Computer Science" —
-  do NOT repeat the degree name here), university, start_year (integer or null),
-  end_year (integer or null), gpa (string or "")),
-experience (an array — one object per job, most recent first, with keys:
-  title, company, location, start (e.g. "Jun 2024"), end (e.g. "Mar 2026" or "Present"),
-  summary (1-2 sentences of what they did, from the resume bullets)).
-
-IMPORTANT: Read the ENTIRE resume, including the Education section (often at the end).
-- "university" = the school/college/institution name from Education (e.g. "University of Cincinnati"). Do not leave it null if any school is listed.
-- "degree" = the highest/most-recent degree (e.g. "Master of Science in Computer Science").
-- "graduation_year" = the most recent graduation year as a 4-digit integer.
-- List EVERY school and EVERY job found in the resume, not just the latest one.
-
-Resume:
-{resume_for_prompt}
-
-Return only valid JSON, no markdown, no explanation."""
+    # The read itself is defined in ONE place: the prompt, the reply ceiling and
+    # the shape (app/intelligence/resume_profile_extract.py). It copies what the
+    # resume says: every skill, every job with every bullet, every school,
+    # project, certification and language. It used to ask for "1-2 sentences"
+    # per job, never asked for projects or certifications, capped the reply at
+    # 2,500 tokens (a long resume's JSON was cut, failed to parse and fell back
+    # to the free parser's 40 skills) and cut the resume itself at 16,000
+    # characters: "my resume has a lot of data but only half is extracted".
+    from app.intelligence import resume_profile_extract as _rpe
+    prompt = _rpe.build_prompt(resume_text)
+    _resume_cut = _rpe.resume_for_prompt(resume_text)[1]
+    if _resume_cut:
+        log.warning("Resume for %s is %d characters: the middle was left out of the read",
+                    uid, len(resume_text))
 
     import json as _json
     extracted = None
@@ -2755,23 +2732,34 @@ Return only valid JSON, no markdown, no explanation."""
     if _settings.anthropic_api_key:
         try:
             from app.common.llm import shared_anthropic as _shared_anthropic
-            client = _shared_anthropic(max_retries=1)
+            client = _shared_anthropic(timeout=_rpe.REQUEST_TIMEOUT_S, max_retries=1)
             msg = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=2500,
+                max_tokens=_rpe.MAX_OUTPUT_TOKENS,
                 messages=[{"role": "user", "content": prompt}]
             )
-            raw = msg.content[0].text.strip()
-            # Strip markdown fences if present
-            raw = _re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = _re.sub(r"\s*```$", "", raw)
-            extracted = _json.loads(raw)
+            raw = "".join(getattr(b, "text", "") or "" for b in (msg.content or [])
+                          if getattr(b, "type", "text") == "text")
+            if getattr(msg, "stop_reason", "") == "max_tokens":
+                # Never silent: a cut reply is an incomplete read.
+                log.warning("Resume extraction reply for %s hit the %d-token ceiling and is incomplete",
+                            uid, _rpe.MAX_OUTPUT_TOKENS)
+            extracted = _rpe.parse_reply(raw)
+            if extracted is None:
+                log.warning("Resume extraction reply for %s was not a complete JSON object "
+                            "(stop_reason=%s, %d chars) — falling back to free parser",
+                            uid, getattr(msg, "stop_reason", "?"), len(raw))
         except Exception as llm_exc:
             log.warning("Resume extraction via Claude failed (%s) — falling back to free parser", llm_exc)
     if not isinstance(extracted, dict):
         from app.intelligence.resume_basic_extract import basic_extract_profile
         extracted = basic_extract_profile(resume_text)
         method = "basic"
+    # One shape whichever reader ran, and the Skills section read line by line
+    # on top: a skill the resume lists is never lost to a shortened list.
+    extracted = _rpe.normalise(extracted)
+    extracted["key_skills"] = _rpe.merge_skills(
+        extracted.get("key_skills"), _rpe.skills_backstop(resume_text))
 
     # Save to profile — reuse same single-session logic. Map the sentinel
     # "local" user to None so single-user (SQLite) and SaaS (Supabase) modes
@@ -2820,6 +2808,14 @@ Return only valid JSON, no markdown, no explanation."""
         if isinstance(exp, list) and exp:
             db_profile.experience_json = _json.dumps(
                 [e for e in exp if isinstance(e, dict)][:15])
+        # Projects, certifications and languages are the resume's own lists
+        # (replaced like jobs and schools); a single answer the user already
+        # saved in Auto-fill data is never overwritten by the resume.
+        from app.autofill import autofill_fields as _af
+        _af_stored = getattr(db_profile, "autofill_json", None)
+        _af_update = _rpe.autofill_update(extracted, _af.load(_af_stored))
+        if _af_update:
+            db_profile.autofill_json = _af.dumps(_af.merge(_af_stored, _af_update))
         db_profile.updated_at = _datetime.datetime.utcnow()
         session.add(db_profile)
         session.commit()
@@ -2960,6 +2956,10 @@ Return only valid JSON, no markdown, no explanation."""
             log.warning("Failed to run resume suggestions: %s", ae)
 
     return {"success": True, "method": method,
+            # How much was read, so the page can say it ("42 skills, 3 jobs
+            # with 14 bullets, 2 projects") and a thin read is visible.
+            "read": _rpe.counts(extracted),
+            "resume_truncated": _resume_cut,
             "extracted": {k: extracted.get(k) for k in field_map},
             "seeded_roles": seeded_roles,
             # What the dashboard needs to remind the user after a new resume:

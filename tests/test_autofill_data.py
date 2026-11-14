@@ -157,15 +157,20 @@ def test_text_is_bounded():
     assert len(af.clean({"proud_project": "y" * 5000})["proud_project"]) == 1200
 
 
-def test_lists_keep_complete_entries_only_and_are_capped():
+def test_lists_keep_named_entries_only_and_are_capped():
     got = af.clean({"languages": [
         {"language": "English", "proficiency": "Fluent", "reading": "fluent", "x": 1},
         {"proficiency": "Basic"},                      # no language: not an entry
-        {"language": "Hindi"},                         # no proficiency: not an entry
+        {"language": "Hindi"},                         # no level stated: still a language
         "nonsense",
     ] + [{"language": f"L{i}", "proficiency": "Basic"} for i in range(20)]})
     assert got["languages"][0] == {"language": "English", "proficiency": "Fluent", "reading": "Fluent"}
+    # A resume often lists languages without saying how well they are spoken.
+    assert got["languages"][1] == {"language": "Hindi"}
     assert len(got["languages"]) == af.LISTS["languages"].max_items
+    # A project needs its title, a certification its name.
+    assert af.clean({"projects": [{"description": "no title"}], "certifications": [{"issuer": "X"}]}) == \
+        {"projects": [], "certifications": []}
     assert af.clean({"languages": "English"}) == {}
 
 

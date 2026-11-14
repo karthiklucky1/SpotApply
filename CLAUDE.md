@@ -1088,6 +1088,24 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   work-authorization answer. Privacy policy declares it (November 2026).
   Guards: `test_autofill_data`, `test_profile_page`.
 
+- **The resume read copies, it never summarises** (2026-11-14, founder: "only half
+  is extracted"; `app/intelligence/resume_profile_extract.py` is the ONE definition
+  of `POST /api/resume/extract-profile`'s read). Four cuts made the half: a prompt
+  asking "1-2 sentences" per job and never asking for projects / certifications /
+  languages; `key_skills` with nothing saying ALL; a 2,500-token reply ceiling (a
+  long resume's JSON was cut, failed to parse, and fell back to the free parser's
+  40 skills and ONE bullet per job); the resume cut at 16,000 characters. Now:
+  every skill, every job with every bullet (`experience[].summary`, one per line),
+  every school, project, certification and language; `MAX_OUTPUT_TOKENS` 16,000,
+  `REQUEST_TIMEOUT_S` 120, the resume whole up to 120,000 characters (a cut is
+  logged and returned as `resume_truncated`). The Skills section is ALSO read
+  deterministically and merged in (`skills_backstop`), so a shortened model list
+  loses nothing. The free reader (`resume_basic_extract`) reads the same things; a
+  heading line is no longer an item. Projects / certifications / languages go to
+  `autofill_json` and are replaced like jobs; a single answer the user saved
+  (city, ZIP, highest education...) is never overwritten. The page says what was
+  read and refuses the read over unsaved edits. Guard: `test_resume_profile_read`.
+
 - **Earliness is ONE reference clock, and a receipt never flatters** (2026-10-11,
   `app/strategy/earliness.py`, docs/EARLINESS_RECEIPT.md): `reference(job)` = the
   EARLIER of a trusted publish date (greenhouse/lever/ashby/smartrecruiters/workable)

@@ -8008,7 +8008,7 @@
         }
         function _ppArea(kind, i, key, label, val, ph) {
             return `<div class="pp-field pp-span-3"><span class="pp-label">${_ppE(label)}</span>
-                <textarea class="pp-input" rows="4" maxlength="1200" aria-label="${_ppE(label)}" placeholder="${_ppE(ph || '')}" oninput="ppListInput('${kind}',${i},'${key}',this)">${_ppE(val || '')}</textarea><p class="pp-hint"></p></div>`;
+                <textarea class="pp-input" rows="5" maxlength="4000" aria-label="${_ppE(label)}" placeholder="${_ppE(ph || '')}" oninput="ppListInput('${kind}',${i},'${key}',this)">${_ppE(val || '')}</textarea><p class="pp-hint"></p></div>`;
         }
         function ppRenderList(kind) {
             const L = _ppLists[kind];
@@ -8085,13 +8085,33 @@
             _syncHistoryState();
             ppRenderOverview();
         }
+        // What the read found, in words: "59 skills, 3 jobs, 2 projects".
+        function _ppReadSummary(read) {
+            const r = read || {};
+            return [[r.skills, 'skill'], [r.jobs, 'job'], [r.schools, 'school'], [r.projects, 'project'],
+                    [r.certifications, 'certification'], [r.languages, 'language']]
+                .filter(x => x[0] > 0).map(x => x[0] + ' ' + x[1] + (x[0] === 1 ? '' : 's')).join(', ');
+        }
         async function fillHistoryFromResume(btn) {
+            // The read replaces jobs, schools, skills and projects and reloads
+            // the page: edits not yet saved would be lost without a word.
+            if (_serializeProfileForm(_ppForm()) !== _profileSnapshot) {
+                showToast('Save or discard your unsaved changes first.', 'error');
+                return;
+            }
             const orig = btn.textContent;
             btn.disabled = true; btn.textContent = 'Reading resume…';
             try {
                 const res = await fetch('/api/resume/extract-profile', { method: 'POST', headers: authHeaders() });
                 if (res.ok) {
-                    showToast('✓ Education & experience filled from your resume', 'success');
+                    const d = await res.json().catch(() => ({}));
+                    const found = _ppReadSummary(d.read);
+                    showToast(found ? '✓ Read from your resume: ' + found + '.'
+                                    : 'Your resume was read, but no profile details were found in it.', found ? 'success' : 'error');
+                    if (d.method === 'basic')
+                        showToast('The AI reader was unavailable, so a simpler reader was used. Press "Fill from resume" again later for a fuller read.', 'info');
+                    if (d.resume_truncated)
+                        showToast('Your resume is very long: the middle of it was left out of the read.', 'info');
                     _ppForceReload = true;
                     await openProfileModal();   // reload everything + reset snapshot
                 } else {
