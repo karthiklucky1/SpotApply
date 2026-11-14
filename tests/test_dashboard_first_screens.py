@@ -251,8 +251,9 @@ def test_the_first_hour_panel_and_extension_banner_are_pipeline_only():
 # Measured 2026-11-14 at 390px: the document was 24px wider than the screen on
 # every view, because the top bar's search could not shrink below its <input>'s
 # intrinsic width and pushed the profile button past the right edge. At 320px
-# the footer's six links (one unwrappable row) added 9px more. After the fix:
-# 0px at 320, 360, 390, 414, 768, 1024 and 1440, board and profile alike.
+# it was 94px: the same bar, and 9px of it from the footer's six links (one
+# unwrappable row). After the fix: 0px at 320, 360, 390, 414, 768, 1024 and
+# 1440, board and profile alike.
 
 def test_the_top_bar_fits_a_phone():
     assert re.search(r"\.hdr-search \{ flex: 1 1 auto; min-width: 0;", HTML), \
