@@ -1499,15 +1499,41 @@ def test_an_accepted_upload_counts_after_the_site_empties_the_box():
     counting the moment the person removes the file."""
     shown = _function(CONTENT, "uploadStillShown")
     assert "_hasUploadedMarker(fi)" in shown and "_resumeStatus.filename" in shown
+    assert "_resumeStatus.state !== 'accepted'" in shown, "only a resume the site accepted proves anything"
     assert "_fileFieldScope(fi)" in shown, "the name must sit in THIS field, not anywhere on the page"
     audit = _function(CONTENT, "auditPageFields")
-    assert "(ours === 'accepted' && uploadStillShown(el))" in audit
+    assert "if (uploadStillShown(el)) {" in audit
     # an upload the site never acknowledged, or a wrong format, is still a problem
     assert audit.index("ours === 'unconfirmed'") < audit.index("uploadStillShown(el)")
     assert audit.index("ours === 'wrong_format'") < audit.index("uploadStillShown(el)")
     # the diagnostic names the questions behind its number, never a value
     ready = _function(CONTENT, "submitReadiness")
     assert "requiredOpenFields" in ready and ".value" not in ready[ready.index("requiredOpenFields"):]
+
+
+def test_a_form_in_an_unselected_tab_is_opened_before_it_is_filled():
+    """Recruitee keeps the application in a tab that is not selected. The form
+    was "filled" where nobody could see it: the resume went into a box the
+    site never registered and every other field stayed blank. Now the page's
+    own control opens it first — and a tab is PRESSED (Radix tabs act on
+    mousedown; a bare click() does nothing, verified on a live page)."""
+    hidden = _function(CONTENT, "applicationFormHidden")
+    assert "formLooksLikeApplication(f) && !isLoginForm(f)" in hidden and "getClientRects" in hidden
+    fill = _function(CONTENT, "fillForm")
+    gate = "applicationFormHidden() && pageHasApplyControl() && findAndClickApply(pack, { quiet: true })"
+    assert gate in fill
+    assert fill.index("if (!hasApplicationForm()) {") < fill.index(gate) < fill.rindex("runCopilotStep()")
+    find = _function(CONTENT, "findAndClickApply")
+    assert "if (quiet) return false;" in find
+    assert find.index("if (quiet) return false;") < find.index("queueSignal(pack, 'parked', 'no_form')"), \
+        "nothing is parked and no overlay shown when the caller has another path"
+    assert "getAttribute('role') === 'tab') _pressElement(candidates[0]);" in find
+    assert "[role='tab']" in find and "[role='tab']" in _function(CONTENT, "pageHasApplyControl")
+    tab = _function(CONTENT, "isApplicationTab")
+    assert "getAttribute('role') !== 'tab'" in tab, "the bare noun counts only as a TAB's whole label"
+    # While the form is not on screen the resume waits for the pass that sees it.
+    step = _function(CONTENT, "runCopilotStep")
+    assert step.index("if (applicationFormHidden()) {") < step.index("attachResume(document, pack)")
 
 
 def test_a_radio_groups_question_is_found_above_the_group():

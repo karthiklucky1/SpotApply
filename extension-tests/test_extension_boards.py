@@ -233,6 +233,16 @@ def main():
               json.dumps(auto) + " " + page.url)
         page.close()
 
+        # Ashby's own resume autofill puts the file in the Resume field: the
+        # field's input never holds it, and it is still attached.
+        parsed_url = f"{BASE}/ashby-upload.html?parsed=1"
+        page, logs, reply = fh.drive_fill_reply(ctx, parsed_url, dict(pack, apply_url=parsed_url), timeout_ms=60000)
+        gate = (diagnostic(ctx, "ashby-upload.html").get("submitReadiness") or {}).get("gate") or {}
+        check("AU5 a resume the board's own autofill placed in the field counts as attached",
+              gate.get("verdict") == "ready" and gate.get("requiredOpen") == 0 and
+              "Alexandra_Nguyen_Resume" in page.inner_text("#resume-shown"), json.dumps(gate))
+        page.close()
+
         # ── TT / SR / JN: the control that opens the application ────────────
         print("\nOpening the application (Teamtailor, SmartRecruiters, JOIN)")
         url = f"{BASE}/teamtailor-job.html"

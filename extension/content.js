@@ -4647,19 +4647,20 @@ function _hasUploadedMarker(fi) {
   ));
 }
 
-/** Is a file the site ACCEPTED from us still shown in this field? Ashby and
- *  Greenhouse read the file and then empty (or replace) the input, so an
- *  attached resume leaves `files` empty: the proof is the site's own display —
- *  a Remove/Replace control or the file's name beside the field. Once the
- *  person removes the file that display is gone and the field is empty again. */
+/** Does the SITE show a file in this upload field? Ashby and Greenhouse read
+ *  the file and then empty (or replace) the input — and Ashby's own "autofill
+ *  from resume" puts the resume in the Resume field without the input ever
+ *  holding it — so an attached resume leaves `files` empty. The proof is the
+ *  site's own display, inside THIS field: a remove control, or the name of
+ *  the resume the site accepted from us. Once the person removes the file
+ *  that display is gone and the field is empty again. */
 function uploadStillShown(fi) {
   if (!fi) return false;
   if (fi.files && fi.files.length) return true;
   if (_hasUploadedMarker(fi)) return true;
-  const name = _resumeStatus && _resumeStatus.filename;
-  if (!name) return false;
+  if (!_resumeStatus || _resumeStatus.state !== 'accepted' || !_resumeStatus.filename) return false;
   const scope = _fileFieldScope(fi);
-  return !!(scope && String(scope.textContent || '').includes(name));
+  return !!(scope && String(scope.textContent || '').includes(_resumeStatus.filename));
 }
 
 /** Everything a file input is named by — label, name, id, aria, automation id. */
@@ -5320,6 +5321,13 @@ async function fillForm(fillPack) {
     findAndClickApply(pack);
     return { ok: true, state: 'opening_form', reason: 'Looking for the application form on this page.' };
   }
+  // The form is in the page but not on screen (a tab that is not selected):
+  // open it with the page's own control, the way a person does, and fill once
+  // it shows. With no such control the old path stands — fill what can be
+  // seen and pick the rest up when the person reveals it.
+  if (applicationFormHidden() && pageHasApplyControl() && findAndClickApply(pack, { quiet: true })) {
+    return { ok: true, state: 'opening_form', reason: 'Opening the application form on this page.' };
+  }
   const result = await runCopilotStep();
   if (result && refreshNote) result.note = refreshNote;
   return result || { ok: true, state: 'waiting' };
@@ -5354,6 +5362,19 @@ function hasApplicationForm() {
   return visibleText.length >= 3;
 }
 
+/** The application form is IN the page but not on screen: Recruitee (and any
+ *  "Job details / Application" split) keeps it in a tab that is not selected.
+ *  Filling it there attached the resume to a box nobody could see, which the
+ *  site never registered, and left every other field blank until the person
+ *  found the tab themselves (live test 2026-11-14). */
+function applicationFormHidden() {
+  const rendered = (el) => !!(el && el.getClientRects && el.getClientRects().length);
+  const forms = queryAllDeep('form').filter((f) => formLooksLikeApplication(f) && !isLoginForm(f));
+  if (forms.length) return !forms.some(rendered);
+  const fields = queryAllDeep("input:not([type='hidden']), textarea, select").filter((el) => !isAntiBotField(el));
+  return fields.length > 0 && !fields.some((el) => el.offsetParent !== null);
+}
+
 // The words a job page's "open the application" control uses. English first;
 // then the same button on boards that are not in English (JOIN, Recruitee,
 // Personio and Teamtailor postings come in German, Dutch, French, Spanish,
@@ -5374,6 +5395,13 @@ function isApplyWording(text) {
   if (!t || t.length > 150) return false;
   if (/with\s+(linkedin|indeed)\b/i.test(t)) return false;
   return _APPLY_WORDS_RE.test(t);
+}
+/** A page TAB that is the application itself ("Application" beside "Job
+ *  details"). Only as a tab's whole label: the bare noun on a link or a
+ *  heading opens nothing. */
+function isApplicationTab(el, text) {
+  if (!el || !el.getAttribute || el.getAttribute('role') !== 'tab') return false;
+  return /^(application|application form|apply)$/i.test(String(text || '').replace(/\s+/g, ' ').trim());
 }
 
 // ── Step runner ───────────────────────────────────────────────────────────────
@@ -5442,7 +5470,12 @@ async function runCopilotStep() {
     // ACTUALLY succeeded, so a failed/blocked attach retries on the next pass
     // instead of falsely logging "already attached".
     const pageKey = location.href;
-    if (_resumeAttachedOnPage !== pageKey) {
+    if (applicationFormHidden()) {
+      // A file pushed into a form that is not on screen is one the site never
+      // registers ("attach it again" on a box nobody can see). It goes in on
+      // the pass that runs once the form shows.
+      console.log('[SpotApply] The application form is not on screen yet — the resume waits until it is');
+    } else if (_resumeAttachedOnPage !== pageKey) {
       try {
         const attached = await attachResume(document, pack);
         if (attached) _resumeAttachedOnPage = pageKey;
@@ -6008,10 +6041,11 @@ function auditPageFields(pack, platformFilled) {
       const ours = el.dataset.spotapplyUpload;
       if (ours === 'unconfirmed') { flag(el, 'the upload was not confirmed by the site — attach it again'); continue; }
       if (ours === 'wrong_format') { flag(el, 'this field does not accept that file format'); continue; }
-      // Accepted by the site and still shown there counts, even though the
-      // site emptied the input after reading the file (live test 2026-11-14:
-      // every Ashby form read "resume missing" with the resume attached).
-      if ((el.files && el.files.length) || (ours === 'accepted' && uploadStillShown(el))) {
+      // A file the site shows in this field counts, even though the input is
+      // empty: the site read it and emptied the box, or its own resume
+      // autofill put it there (live test 2026-11-14: every Ashby form read
+      // "resume missing" with the resume attached).
+      if (uploadStillShown(el)) {
         filled++; highlightField(el, 'green');
       } else if (isFieldRequired(el)) {
         needUser++; needRequired++; needUserEls.push(el); needRequiredEls.push(el); highlightField(el, 'red');
@@ -6412,12 +6446,12 @@ function isLoginWall() {
 
 /** A visible Apply control: the page is a job posting, not a sign-in wall. */
 function pageHasApplyControl() {
-  return queryAllDeep("a, button, [role='button'], input[type='button'], input[type='submit']")
+  return queryAllDeep("a, button, [role='button'], [role='tab'], input[type='button'], input[type='submit']")
     .some((el) => {
       if (el.offsetParent === null) return false;
       const t = String(el.textContent || el.value || el.getAttribute('aria-label') || '')
         .replace(/\s+/g, ' ').trim();
-      return t.length <= 60 && isApplyWording(t);
+      return t.length <= 60 && (isApplyWording(t) || isApplicationTab(el, t));
     });
 }
 
@@ -6580,9 +6614,12 @@ function watchForFormAppearance() {
 // ── Apply button finder ───────────────────────────────────────────────────────
 // Used when the extension is on a job description page, not a form yet.
 
-function findAndClickApply(pack) {
+function findAndClickApply(pack, opts) {
+  // `quiet`: the caller has somewhere else to go when nothing is found (a form
+  // that is in the page but hidden) — no "click it yourself" overlay, no park.
+  const quiet = !!(opts && opts.quiet);
   const clickables = Array.from(
-    document.querySelectorAll("a, button, [role='button'], input[type='button'], input[type='submit']")
+    document.querySelectorAll("a, button, [role='button'], [role='tab'], input[type='button'], input[type='submit']")
   ).filter(el => el.offsetParent !== null);
 
   const labelOf = (el) => ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
@@ -6627,6 +6664,8 @@ function findAndClickApply(pack) {
       if (/terms|conditions|privacy|policy|cookie|consent|agree|by\s+applying|learn\s+more/i.test(cleanLabel)) return false;
       // Look for action verbs / apply signals (in the page's own language)
       if (isApplyWording(cleanLabel)) return true;
+      // ...or the tab that IS the application ("Job details | Application").
+      if (isApplicationTab(el, (el.textContent || '').trim())) return true;
     }
 
     if (/\/apply\b|applynow|apply-now/i.test(href)) return true;
@@ -6635,12 +6674,16 @@ function findAndClickApply(pack) {
   const candidates = clickables.filter(isApply);
 
   if (candidates.length > 0) {
-    candidates[0].click();
+    // A tab is switched by PRESSING it: Radix tabs (Recruitee) act on
+    // mousedown and ignore a bare click() — verified on a live page.
+    if (candidates[0].getAttribute('role') === 'tab') _pressElement(candidates[0]);
+    else candidates[0].click();
     console.log('[SpotApply] Clicked Apply button:', labelOf(candidates[0]));
     showOverlay('🖱️ Clicked <strong>Apply</strong>. Waiting for the form to load…', [], false);
     watchForFormAppearance();
     return true;
   }
+  if (quiet) return false;
   // No apply button found — guide the user
   queueSignal(pack, 'parked', 'no_form');
   showOverlay(

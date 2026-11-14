@@ -4,9 +4,14 @@
   <!-- Mirrors the real hardrockdigital.recruitee.com form: a tabbed page where
        the application panel is hidden until the "Application" tab is clicked,
        and a single "Full name" field rather than first/last. -->
-  <nav>
-    <button id="tab-details" onclick="showTab('details')">Job details</button>
-    <button id="tab-application" onclick="showTab('application')">Application</button>
+  <!-- The tabs are real tabs (role="tab"), as on the live page. With ?plain=1
+       they carry labels that say nothing about applying, so the extension
+       has no control to open the panel with and must wait for the person.
+       Like the live page's tabs (Radix), they switch on MOUSEDOWN: a bare
+       script click() does nothing. -->
+  <nav role="tablist">
+    <button id="tab-details" role="tab" onmousedown="showTab('details')">Job details</button>
+    <button id="tab-application" role="tab" onmousedown="showTab('application')">Application</button>
   </nav>
 
   <section id="panel-details">
@@ -34,6 +39,12 @@
   </section>
 
   <script>
+    if (/[?&]plain=1/.test(location.search)) {
+      document.getElementById('tab-details').textContent = 'Overview';
+      document.getElementById('tab-application').textContent = 'Your details';
+    }
+    window.__tabClicks = 0;
+    document.getElementById('tab-application').addEventListener('mousedown', function () { window.__tabClicks++; });
     function showTab(which) {
       document.getElementById('panel-details').style.display = which === 'details' ? '' : 'none';
       document.getElementById('panel-application').style.display = which === 'application' ? '' : 'none';

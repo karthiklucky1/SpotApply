@@ -9,12 +9,13 @@ folder recursively, so anything inside it ships to every user.
 
 ```bash
 pip install playwright && playwright install chromium   # once
-python3 extension-tests/test_extension_live.py          # 13 checks — plumbing
-python3 extension-tests/test_extension_forms.py         # 51 checks — real fills
-python3 extension-tests/test_extension_payload.py       # 12 checks — payload + EEO
-python3 extension-tests/test_extension_security.py      #  7 checks — gates
-python3 extension-tests/test_extension_queue.py         # 24 checks — the apply queue
-python3 extension-tests/test_extension_boards.py        # 36 checks — real board shapes
+python3 extension-tests/test_extension_live.py          #  13 checks — plumbing
+python3 extension-tests/test_extension_forms.py         # 153 checks — real fills
+python3 extension-tests/test_extension_payload.py       #  12 checks — payload + EEO
+python3 extension-tests/test_extension_security.py      #  11 checks — gates
+python3 extension-tests/test_extension_audit.py         #  45 checks — the 2026-09-30 audit
+python3 extension-tests/test_extension_queue.py         #  24 checks — the apply queue
+python3 extension-tests/test_extension_boards.py        #  37 checks — real board shapes
 ```
 
 **test_extension_boards.py** — the shapes found on 22 REAL postings (2026-11-14;
@@ -62,7 +63,7 @@ with a stub backend serving the résumé so the attach path runs for real:
 | Lever | single "Full name" field, bare `name=` attributes |
 | Workday | `data-automation-id` only, no usable labels, country dropdown |
 | React | controlled inputs that revert any value written without a native setter |
-| Recruitee | tabbed form whose application panel is hidden when auto-fill fires |
+| Recruitee | tabbed form whose application panel is hidden when auto-fill fires: the "Application" tab is PRESSED open (it ignores a bare click) and the form filled; with no such control the fill and the resume wait until the person reveals it |
 | Ashby | essay prompt containing "company"; an autofill-from-résumé parser trap |
 | Screening | 6 Yes/No radios, an intl-tel widget that mangles the number, a lone dropzone |
 | How did you hear | select, Ashby-style option list, radios + "please specify", combobox, text: the profile's saved answer only, all left for the user when none is saved |

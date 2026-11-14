@@ -1063,6 +1063,21 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   extension gets "update" and the approved jobs wait. Guards: `test_apply_queue`,
   the queue block of `test_extension_rules`, `extension-tests/test_extension_queue.py`.
 
+- **Real boards are not the fixtures** (2026-11-14, `docs/AUTO_APPLY_RESEARCH.md` §9:
+  22 real postings, 13 boards, nothing submitted). A pick-one dropdown's visible
+  input only SEARCHES (Greenhouse's new boards): `fillInput` refuses it and
+  `answerChoiceDropdowns` presses control → option, by the screening rules; no rule
+  types at a Yes/No label (`looksLikeYesNoQuestion`). `radioGroupQuestion` climbs
+  to a question above its radios (Lever). An email box is not a form while the page
+  offers an Apply control (Teamtailor's staff sign-in); a form in an unselected tab
+  is opened first, tabs PRESSED not `click()`ed (Recruitee); `isApplyWording` is the
+  one apply-button vocabulary. **The submit gate is `autoSubmitBlocker`** (read-only;
+  `maybeAutoSubmit` obeys it, the diagnostic quotes it): only REQUIRED-and-open
+  fields (`audit.needRequired`) or a rejected value hold a submit, and a resume the
+  site shows in its field counts though the input is empty (`uploadStillShown`).
+  1 of 16 real forms read "ready" — the rest wait on that employer's own questions.
+  Guard: `extension-tests/test_extension_boards.py`.
+
 - **Earliness is ONE reference clock, and a receipt never flatters** (2026-10-11,
   `app/strategy/earliness.py`, docs/EARLINESS_RECEIPT.md): `reference(job)` = the
   EARLIER of a trusted publish date (greenhouse/lever/ashby/smartrecruiters/workable)
