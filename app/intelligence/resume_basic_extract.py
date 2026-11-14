@@ -41,21 +41,42 @@ _BULLET_PREFIX_RE = re.compile(r"^\s*[-*•·▪]\s*")
 _LOCATION_RE = re.compile(r"\b([A-Z][a-zA-Z.\- ]{2,25},\s*(?:[A-Z]{2}|[A-Z][a-zA-Z]{3,15}))\b")
 
 
+# Sections the X-Ray does not grade but the profile has a place for. A line
+# that is ONLY the heading: "Languages: Python, Go" inside Skills is a skill
+# category, not the spoken-languages section.
+_EXTRA_HEADERS = {
+    "certifications": re.compile(
+        r"^\s*#*\s*(licen[cs]es?\s*(and|&)\s*)?certifications?(\s*(and|&)\s*licen[cs]es?)?\s*:?\s*$", re.I | re.M),
+    "languages": re.compile(r"^\s*#*\s*(spoken\s+)?languages\s*:?\s*$", re.I | re.M),
+}
+
+
 def _split_sections(text: str) -> dict:
     """Map section name → body text, using the X-Ray's header patterns.
     Body runs from the end of a header line to the start of the next header."""
-    marks: List[Tuple[int, str]] = []
-    for name, rx in _SECTION_HEADERS.items():
+    marks: List[Tuple[int, int, str]] = []
+    for name, rx in list(_SECTION_HEADERS.items()) + list(_EXTRA_HEADERS.items()):
         m = rx.search(text)
         if m:
-            marks.append((m.start(), name))
+            marks.append((m.start(), m.end(), name))
     marks.sort()
     sections: dict = {}
-    for i, (start, name) in enumerate(marks):
+    for i, (_start, hdr_end, name) in enumerate(marks):
         end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
-        body = text[start:end]
-        body = body.split("\n", 1)[1] if "\n" in body else ""  # drop the header line
-        sections[name] = body.strip()
+        # The body starts after the heading LINE. The patterns begin with \s*,
+        # so a match can start on the blank line above the heading: cutting at
+        # the match's first newline left the heading itself in the body, and it
+        # came out as an item ("SKILLS" as a skill, "PROJECTS" as a project).
+        line_end = text.find("\n", hdr_end)
+        if line_end < 0 or line_end > end:
+            line_end = end
+        rest = text[hdr_end:line_end].strip()
+        # "Skills: Python, Go" on the heading line itself is content.
+        inline = rest[1:].strip() if rest.startswith(":") else ""
+        body = text[line_end:end]
+        sections[name] = ((inline + "\n") if inline else "") + body.strip()
+    for name in sections:
+        sections[name] = sections[name].strip()
     return sections
 
 
@@ -92,24 +113,37 @@ def _clean_skill_line(line: str) -> str:
     return line.strip()
 
 
-def _extract_skills(section: str) -> Optional[str]:
-    if not section:
-        return None
+# A slash is not a separator ("CI/CD", "AI/ML", "TCP/IP" are one skill each);
+# brackets are ("AWS (SageMaker, EC2)" is three).
+_SKILL_SPLIT_RE = re.compile(r"[,;|•·()\[\]]+")
+_MAX_SKILLS = 200
+
+
+def skill_items(section: str) -> List[str]:
+    """Every item written in a Skills section, in order, duplicates dropped.
+
+    It used to stop at 40 items and 500 characters, so a resume with a long
+    Skills section kept about half of it."""
     tokens: List[str] = []
     seen = set()
-    for line in section.splitlines():
+    for line in (section or "").splitlines():
         cleaned = _clean_skill_line(line)
         if not cleaned:
             continue
-        for tok in re.split(r"[,|/•·]+", cleaned):
-            tok = tok.strip(" .;")
-            if tok and len(tok) < 40 and tok.lower() not in seen:
+        for tok in _SKILL_SPLIT_RE.split(cleaned):
+            tok = tok.strip(" .;:-\t")
+            # More than four words reads as a sentence, not a skill.
+            if (tok and len(tok) <= 40 and len(tok.split()) <= 4
+                    and not tok.lower().startswith("and ") and tok.lower() not in seen):
                 seen.add(tok.lower())
                 tokens.append(tok)
-        if len(tokens) >= 40:
+        if len(tokens) >= _MAX_SKILLS:
             break
-    joined = ", ".join(tokens)
-    return joined[:500] or None
+    return tokens[:_MAX_SKILLS]
+
+
+def _extract_skills(section: str) -> Optional[str]:
+    return ", ".join(skill_items(section)) or None
 
 
 def _extract_education(section: str) -> List[dict]:
@@ -137,7 +171,8 @@ def _extract_education(section: str) -> List[dict]:
                            "end_year": None, "gpa": ""}
                 entries.append(current)
             if not current["degree"]:
-                current["degree"] = _YEAR_RE.sub("", line).strip(" ,|–—-")
+                degree = re.split(r"[,;|(–—-]?\s*\b(?:c?gpa|grade)\b", line, maxsplit=1, flags=re.I)[0]
+                current["degree"] = _YEAR_RE.sub("", degree).strip(" ,|–—-(")
         if current is not None:
             years = [int(y.group(0)) for y in _YEAR_RE.finditer(line)]
             if years:
@@ -174,23 +209,79 @@ def _extract_experience(section: str) -> List[dict]:
             if sep in header:
                 title, company = header.split(sep, 1)[0], header.split(sep, 1)[1]
                 break
-        summary = ""
-        for j in range(i + 1, min(i + 4, len(lines))):
+        # Every bullet under this job, up to the next job's date line. It used
+        # to keep the FIRST bullet only, cut at 300 characters.
+        bullets: List[str] = []
+        for j in range(i + 1, len(lines)):
             nxt = lines[j].strip()
+            if _RANGE_RE.search(nxt):
+                break
             if _BULLET_PREFIX_RE.match(lines[j]):
-                summary = _BULLET_PREFIX_RE.sub("", nxt)
-                break
-            if _RANGE_RE.search(nxt) or _SCHOOL_RE.search(nxt):
-                break
+                bullets.append(_BULLET_PREFIX_RE.sub("", nxt))
+            elif bullets and nxt and j + 1 < len(lines) and _RANGE_RE.search(lines[j + 1]):
+                break                      # the next job's title line
+        summary = "\n".join(b for b in bullets if b)
         entries.append({
             "title": title.strip()[:120],
             "company": company.strip(" ,|–—-")[:120],
             "location": "",
             "start": m.group(1).strip(),
             "end": m.group(2).strip(),
-            "summary": summary[:300],
+            "summary": summary[:4000],
         })
     return entries[:15]
+
+
+def _extract_projects(section: str) -> List[dict]:
+    """A line that is not a bullet starts a project; the bullets under it are
+    its description."""
+    projects: List[dict] = []
+    for raw in (section or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _BULLET_PREFIX_RE.match(raw):
+            if projects:
+                projects[-1]["bullets"].append(_BULLET_PREFIX_RE.sub("", line))
+            continue
+        title = re.sub(r"^#+\s*", "", line)
+        title = _RANGE_RE.sub("", title).strip(" ,|–—-\t")
+        if title:
+            projects.append({"title": title[:120], "bullets": []})
+    return [{"title": p["title"], "description": "\n".join(p["bullets"])[:4000]} for p in projects[:10]]
+
+
+def _extract_certifications(section: str) -> List[dict]:
+    """One certification per line: "Name, Issuer (2024)" / "Name - Issuer, 2024"."""
+    certs: List[dict] = []
+    for raw in (section or "").splitlines():
+        line = _BULLET_PREFIX_RE.sub("", raw).strip()
+        line = re.sub(r"^#+\s*", "", line)
+        if not line:
+            continue
+        year = _YEAR_RE.search(line)
+        text = _YEAR_RE.sub("", line).replace("()", "").strip(" ,|–—-\t")
+        name, issuer = text, ""
+        for sep in (", ", " | ", " — ", " – ", " - "):
+            if sep in text:
+                name, issuer = text.rsplit(sep, 1)
+                break
+        if name.strip():
+            certs.append({"name": name.strip()[:100], "issuer": issuer.strip(" ,|–—-")[:80],
+                          "year": year.group(0) if year else ""})
+    return certs[:15]
+
+
+def _extract_languages(section: str) -> List[dict]:
+    """ "English (Native), Hindi (Fluent)" / "English - Native" -> entries."""
+    langs: List[dict] = []
+    for raw in (section or "").splitlines():
+        line = _BULLET_PREFIX_RE.sub("", raw).strip()
+        for part in re.split(r"[,;|•·]+", line):
+            m = re.match(r"\s*([A-Za-z][A-Za-z ]{1,30}?)\s*(?:[(:–—-]\s*([^)]{2,40})\)?)?\s*$", part)
+            if m and m.group(1).strip():
+                langs.append({"language": m.group(1).strip(), "proficiency": (m.group(2) or "").strip()})
+    return langs[:8]
 
 
 def _years_experience(experience: List[dict]) -> Optional[int]:
@@ -251,7 +342,7 @@ def basic_extract_profile(resume_text: str) -> dict:
                 break
 
     summary_text = sections.get("summary", "")
-    professional_summary = re.sub(r"\s+", " ", summary_text).strip()[:400] or None
+    professional_summary = re.sub(r"\s+", " ", summary_text).strip()[:1500] or None
 
     top_edu = education[0] if education else {}
     grad_year = top_edu.get("end_year")
@@ -275,6 +366,9 @@ def basic_extract_profile(resume_text: str) -> dict:
         "suggested_target_roles": [],  # role seeding falls back to title/skills upstream
         "education": education,
         "experience": experience,
+        "projects": _extract_projects(sections.get("projects", "")),
+        "certifications": _extract_certifications(sections.get("certifications", "")),
+        "languages": _extract_languages(sections.get("languages", "")),
     }
 
 

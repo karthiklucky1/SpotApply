@@ -578,6 +578,7 @@ def _extract_history_from_resume(application: Application, profile: UserProfile,
         except Exception:
             return {"work_experience": [], "education": []}
 
+    from app.intelligence.resume_profile_extract import resume_for_prompt
     prompt = f"""Extract the candidate's work experience history and education history from their resume text.
 Return ONLY a JSON object with two keys:
 1. "work_experience": a list of objects, each containing:
@@ -586,7 +587,7 @@ Return ONLY a JSON object with two keys:
    - "location": string (or null/empty)
    - "start_date": string (e.g. "June 2021" or "06/2021" or "2021-06")
    - "end_date": string (e.g. "Present" or "December 2023" or "2023-12")
-   - "description": string (bullet points or paragraph description of role)
+   - "description": string (EVERY bullet point written under that role, word for word, one per line)
 2. "education": a list of objects, each containing:
    - "school": string
    - "degree": string (e.g. "B.S." or "Bachelor of Science" or "M.S.")
@@ -595,7 +596,7 @@ Return ONLY a JSON object with two keys:
    - "end_date": string (graduation date, e.g. "May 2021" or "2021-05")
 
 Resume text:
-{resume_text[:12000]}
+{resume_for_prompt(resume_text)[0]}
 
 Return only valid JSON. No explanations, no markdown formatting."""
 
@@ -604,7 +605,9 @@ Return only valid JSON. No explanations, no markdown formatting."""
         client = shared_anthropic()
         resp = client.messages.create(
             model=settings.cover_letter_model,
-            max_tokens=1500,
+            # 1,500 cut a long work history mid-object: the JSON failed to
+            # parse and the free parser's shorter read was used instead.
+            max_tokens=8000,
             system="You are a precise data extraction bot. You output only valid JSON.",
             messages=[{"role": "user", "content": prompt}],
         )

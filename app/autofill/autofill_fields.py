@@ -373,7 +373,7 @@ PROFILE_LISTS: tuple = (
     )),
     ListSpec("projects", "Projects", add_label="Add project", max_items=10, item_fields=(
         Field("title", "Project title", max_len=120, required=True),
-        Field("description", "Description", TEXTAREA, max_len=1200),
+        Field("description", "Description", TEXTAREA, max_len=4000),
     )),
 )
 
@@ -449,9 +449,10 @@ def _clean_list(spec: ListSpec, v: Any) -> Optional[list]:
             c = _clean_scalar(f, item.get(f.key))
             if c:
                 row[f.key] = c
-        # An entry needs its required fields; a row of nothing but a
-        # proficiency (no language) is not an entry.
-        if row and all(row.get(f.key) for f in spec.item_fields if f.required):
+        # An entry needs its name (the first field): a row of nothing but a
+        # proficiency is not an entry, but "Hindi" with no level stated is one
+        # (a resume often lists languages without saying how well).
+        if row and row.get(spec.item_fields[0].key):
             out.append(row)
         if len(out) >= spec.max_items:
             break
