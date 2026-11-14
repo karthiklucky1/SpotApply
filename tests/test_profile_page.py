@@ -123,16 +123,36 @@ def test_the_sections_come_in_the_order_asked_for():
     assert at == sorted(at), dict(zip(order, at))
 
 
-def test_the_hero_has_its_four_tiles_and_link_buttons():
+def test_the_summary_card_has_a_cover_with_its_four_counts_and_link_buttons():
+    """The layout the owner picked (2026-11-14, "apply 1"): a cover in the
+    brand gradient carries Skills / Roles / Certs / Education, the photo
+    overlaps its lower edge, and the name, contact line and About read from the
+    left. Each count is a button that jumps to its section."""
     hero = PAGE[PAGE.index('class="pp-card pp-hero"'):PAGE.index('id="pp-sec-exp"')]
-    for tile in ("Skills", "Roles", "Certs", "Education"):
-        assert f"<small>{tile}</small>" in hero
+    cover = hero[hero.index('<div class="pp-cover">'):hero.index('<div class="pp-hero-body">')]
+    for tile, target in (("Skills", "pp-sec-skill"), ("Roles", "pp-sec-exp"),
+                         ("Certs", "pp-sec-cert"), ("Education", "pp-sec-edu")):
+        assert re.search(r'<button type="button" class="pp-stat" onclick="ppJumpTo\(\'%s\'\)"[^>]*>'
+                         r'<b id="pp-stat-[a-z]+">0</b><small>%s</small></button>' % (target, tile), cover), tile
+        assert f'id="{target}"' in PAGE, f"{tile} jumps to a section that does not exist"
+    assert "scrollIntoView" in _function("ppJumpTo")
+    body = hero[hero.index('<div class="pp-hero-body">'):]
+    assert body.index('class="pp-avatar"') < body.index('class="pp-hero-actions"') < body.index('id="pp-name"') \
+        < body.index('id="pp-meta"') < body.index('id="pp-about"') < body.index('id="pp-degree-chip"')
     for link in ("pp-link-linkedin", "pp-link-github", "pp-link-website"):
-        assert f'id="{link}" target="_blank" rel="noopener noreferrer"' in hero
-    assert ">About<" in hero and "Edit profile" in hero
+        assert f'id="{link}" target="_blank" rel="noopener noreferrer"' in body
+    assert ">About<" in body and "Edit profile" in body
     # A link the user typed is only ever opened as an http(s) address.
     href = _function("_ppHref")
     assert "p.protocol === 'https:' || p.protocol === 'http:'" in href
+    # The cover is the dashboard band's gradient, from the theme tokens: it
+    # follows the accent a user picks and never carries a literal brand colour.
+    assert (".pp-cover { display: flex; justify-content: flex-end; align-items: flex-start; min-height: 124px; "
+            "padding: 28px 32px;") in STYLE
+    assert "background: linear-gradient(120deg, var(--sage-700) 0%, var(--sage-600) 55%, var(--sage-lite) 100%); }" in STYLE
+    # On a phone the counts centre in the cover and the buttons take their own row.
+    phone = STYLE[STYLE.index("@media (max-width: 680px)"):]
+    assert ".pp-cover { justify-content: center;" in phone and ".pp-hero-actions { width: 100%;" in phone
 
 
 def test_columns_line_up_and_collapse_on_small_screens():
