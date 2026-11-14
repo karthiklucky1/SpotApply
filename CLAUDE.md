@@ -1063,6 +1063,31 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   extension gets "update" and the approved jobs wait. Guards: `test_apply_queue`,
   the queue block of `test_extension_rules`, `extension-tests/test_extension_queue.py`.
 
+- **My profile is a PAGE, and auto-fill data is ONE catalog** (2026-11-14, founder:
+  "not popup", "remove trust profile", "collect all data to help autofill").
+  `openProfileModal()` (name kept: settings rows, tour and setup call it) shows
+  `#view-content-profile`, a direct child of the main column; `body.pp-open` hides the
+  band, tabs and views with ONE `!important` rule (lane scripts keep toggling
+  `style.display` underneath), `switchViewTab` calls `_ppLeave()` first, hash
+  `#profile` / `#profile/autofill` (Back steps editor → profile → board). Unsaved
+  edits survive leaving; the save bar is the only way they are sent. The Trust
+  Profile PANEL is gone from the profile (scores, `/u/<handle>` and the header tick
+  remain; the public link sits beside the Public profile setting).
+  `app/autofill/autofill_fields.py` is the one catalog for the "Auto-fill data"
+  editor (Jinja global `autofill_catalog`), for what `PUT /api/profile` stores
+  (`UserProfile.autofill_json` via `merge`: keys not sent are kept, "" clears) and
+  for which saved answer a form field asks for (`answer_for_label`). Those answers
+  reach forms through `/api/recall-answers`, so today's Store extension fills them
+  into empty text boxes and dropdowns with NO release (radio/button questions need
+  one). The matcher reads only the visible label, refuses work-authorization /
+  self-identification / how-heard / anti-bot fields (`field_guards`), refuses an
+  ambiguous label, and `drop_borrowable` withholds an answer the extension's 0.8
+  fuzzy match would copy into a neighbour ("Address line 1" → "line 2").
+  NOT collected, on purpose: a job-site password, agreements/signatures/consents,
+  self-identification beyond the four EEO columns, references, a second
+  work-authorization answer. Privacy policy declares it (November 2026).
+  Guards: `test_autofill_data`, `test_profile_page`.
+
 - **Earliness is ONE reference clock, and a receipt never flatters** (2026-10-11,
   `app/strategy/earliness.py`, docs/EARLINESS_RECEIPT.md): `reference(job)` = the
   EARLIER of a trusted publish date (greenhouse/lever/ashby/smartrecruiters/workable)

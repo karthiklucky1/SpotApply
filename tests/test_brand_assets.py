@@ -171,10 +171,27 @@ def test_the_privacy_policy_declares_the_work_authorization_data_we_store():
 
 def test_the_privacy_date_moved_with_the_revision():
     """October 2026: the extension's LinkedIn import (the user's own profile,
-    on click) was declared, for the Chrome Web Store listing."""
+    on click) was declared, for the Chrome Web Store listing. November 2026:
+    the profile's auto-fill data (address, availability, screening answers...)
+    was declared when the product began storing it. The date may say November
+    2026 only while BOTH sections exist."""
     html = (ROOT / "app" / "templates" / "privacy.html").read_text()
-    assert "Last updated: October 2026" in html
+    assert "Last updated: November 2026" in html
     assert "Your LinkedIn profile (only if you import it)" in html
+    assert "Application-form answers (only what you enter)" in html
+
+
+def test_the_privacy_policy_declares_the_auto_fill_data_we_store():
+    """Every kind of answer the auto-fill catalog can hold is named, and the
+    two things it must never hold are ruled out in so many words."""
+    html = " ".join((ROOT / "app" / "templates" / "privacy.html").read_text().split())
+    for claim in ("home address", "languages you speak", "country of citizenship",
+                  "security clearance", "screening questions", "felony conviction",
+                  "declared bankruptcy", "certifications and projects",
+                  "never for matching or scoring", "never on your public profile",
+                  "We do not store passwords for job sites",
+                  "we do not sign or accept agreements for you"):
+        assert claim in html, claim
 
 
 def test_the_terms_date_moved_only_with_a_real_revision():
