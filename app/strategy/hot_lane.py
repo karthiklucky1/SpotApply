@@ -474,9 +474,19 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
     Computed here, inside the same transaction that increments the counter, so
     the delay always matches the failure count it is derived from.
     """
+    from app.discovery import site_health
     from app.discovery.pipeline import (
         BOARD_DEACTIVATE_AFTER_FAILURES, THROTTLED_BOARD_BACKOFF_HOURS, _is_throttled,
     )
+    # The site's own record, written before the board's: whether THIS failure
+    # is about the board is decided against how the whole system is answering.
+    site_answered = ok or site_health.answered(error)
+    site_health.record(ats, site_answered)
+    # A failure the site did not answer, while nearly every board of that
+    # system is failing too, is the system's failure (blocked, down, changed).
+    # Spared exactly like a throttle: backed off, never a strike.
+    spared = (not ok) and (_is_throttled(error) or (
+        not site_answered and site_health.mass_failing(ats)))
     try:
         with get_session() as session:
             row = session.exec(
@@ -493,7 +503,7 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 row.new_jobs_last_poll = new_jobs
                 if new_jobs > 0:
                     row.last_new_job_at = datetime.utcnow()
-            elif _is_throttled(error):
+            elif spared:
                 # A rate limit says "slow down", not "this company is gone".
                 # failure_count is deliberately NOT incremented: Workday and
                 # join.com both throttle under the pulse cadence, and letting
@@ -505,7 +515,8 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 row.last_error = (error or "")[:300]
                 row.next_poll_at = datetime.utcnow() + timedelta(
                     hours=THROTTLED_BOARD_BACKOFF_HOURS)
-                log.info("Board %s/%s throttled — backing off %dh, not retiring",
+                log.info("Board %s/%s not counted (throttled, refused, unreadable "
+                         "or site-wide failure) — backing off %dh, not retiring",
                          ats, slug, THROTTLED_BOARD_BACKOFF_HOURS)
             else:
                 row.failure_count = (row.failure_count or 0) + 1

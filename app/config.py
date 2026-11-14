@@ -795,6 +795,32 @@ class Settings(BaseSettings):
     # INCLUDING productive ones, which is a live-board cadence change smuggled
     # in behind a dead-board setting. Two meanings, two knobs.
     pulse_failure_backoff_cap_hours: int = 24
+    # PULSE_ATS_MIN_INTERVAL_MINUTES — a per-SITE floor under the cadence above,
+    # "ats=minutes" pairs. The fast lane's 5 minutes is a statement about how
+    # fresh we want a board; it says nothing about how often ONE site will
+    # tolerate being asked. Each of these three serves every board from one
+    # host (or one vendor edge), so the fast tier's requests all land on it:
+    # Rippling returns the WHOLE board on every poll (150-215 KB) and began
+    # refusing production's address on 2026-11-14 (403 on every board, while
+    # the identical request succeeded from another network); join.com
+    # rate-limits by address (~2 req/s) and had 19,617 boards in a 429 backoff;
+    # BambooHR costs one detail request per posting on every poll. Followed
+    # (watchlist) boards obey the floor too — the site does not know why we are
+    # asking. Empty string = no floors. Raising a number is always safe; a
+    # lower one is only as safe as that site's tolerance.
+    pulse_ats_min_interval_minutes: str = "rippling=30,join=120,bamboohr=60"
+    # ── Site health (app/discovery/site_health.py) ───────────────────────────
+    # When nearly every board of ONE job system fails inside the window, the
+    # failure is the system's — blocked, down, or changed — and it is not
+    # counted toward any board's retirement (the board is backed off and
+    # re-polled, like a 429). 960 Rippling boards holding 15,293 open jobs were
+    # retired as "unreachable x5" on 2026-11-14 because a site-wide 403 was
+    # scored five times per board. SITE_HEALTH_ENABLED=0 restores per-board
+    # counting only.
+    site_health_enabled: bool = True          # SITE_HEALTH_ENABLED
+    site_health_window_minutes: int = 15      # SITE_HEALTH_WINDOW_MINUTES — how far back "right now" reaches
+    site_health_min_failures: int = 20        # SITE_HEALTH_MIN_FAILURES — a real sample, so three dead boards never read as an outage
+    site_health_failure_share: float = 0.8    # SITE_HEALTH_FAILURE_SHARE — share of that system's fetches in the window that must have failed
     pulse_active_days: int = 7             # "recently posted" = new job within N days
     pulse_tick_seconds: int = 60           # scheduler tick
     pulse_tick_max_seconds: int = 150      # HARD wall-clock cap per tick. The tick stops taking new work past this and reschedules the rest — so it always releases the lock promptly (a tick that ran serial LLM scoring for 20+ min once froze the whole lane). Keep < tick_seconds*3.
@@ -933,7 +959,7 @@ class Settings(BaseSettings):
     doctor_min_human_score: int = 55     # DOCTOR_MIN_HUMAN_SCORE — the anti-fingerprint floor. The audit measured tailored résumés scoring 24-44/100 on our OWN "reads human" check that shipped reported as PASS, because the fingerprint penalty was folded into the same number as ATS coverage and cleared 65 anyway. Now a separate gate: below this the draft is rebuilt with the tells named, and if the rebuild still fails, the résumé is delivered but NOT reported as passing (style is not a fabrication, so it never blocks at ERROR). 55 ≈ at most one minor tell.
     tailor_skip_coverage_pct: float = 0.0   # TAILOR_SKIP_COVERAGE_PCT — 0 (default since 2026-10-08): every tailor is a full rewrite + restructure for the job, the owner's first rule. Set it (e.g. 0.80) to skip the rewrite (L0) and ship the master when it already matches at least this share of the JD's extracted phrases. A full regeneration that cannot add anything honest is pure cost plus a fresh chance to fabricate: the audit measured one pairing at 72% master coverage where tailoring produced +0 phrases for $0.066 and a grounding failure. 0 disables the skip.
     grounding_verify_batch_max: int = 12 # GROUNDING_VERIFY_BATCH_MAX — max changed spans packed into ONE verifier request. Verification used to be one call per bullet, each re-sending the entire master résumé (1,423 input tokens for a 5-token answer); that was 64% of a tailor's bill. Spans are batched with only their own matched source evidence attached.
-    join_page_size: int = 0              # JOIN_PAGE_SIZE — page size for join.com's public jobs API. 0 = discover it: the scraper walks a descending ladder on a 422 and memoizes the first size the API accepts (app/discovery/join.py). Production measured EVERY non-throttled join request returning 422 at pageSize=100, which is why every one of ~23.5K join boards reported "0 jobs". Set this once the probe has logged the real limit, then the probe never runs.
+    join_page_size: int = 0              # JOIN_PAGE_SIZE — NO LONGER READ (2026-11-14). It sized pages for join.com's REST jobs API (5 a page), which join.com removed; the adapter now lists through the site's GraphQL query at 100 a page (app/discovery/join.py). The field stays only so an environment that still sets JOIN_PAGE_SIZE keeps booting.
 
     grounding_cache_enabled: bool = True # GROUNDING_CACHE_ENABLED — reuse a verdict when (source evidence, generated text, verifier version) are all identical. There is deliberately NO TTL: the key already covers everything that can change the answer, so an expiry would only re-buy the same verdict.
 

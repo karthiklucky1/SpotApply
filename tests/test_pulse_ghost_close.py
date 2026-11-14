@@ -1164,33 +1164,43 @@ def test_workday_unknown_total_with_a_full_page_is_partial(monkeypatch):
     assert s.listing_complete is False and s.fetch_complete is False
 
 
-def test_join_without_a_page_count_trusts_only_a_short_page(monkeypatch):
+def test_join_is_whole_only_when_the_walk_ends_and_the_count_matches(monkeypatch):
+    """JOIN states how many pages and postings a board has (`pageInfo`). The
+    list is the whole board only when every page was walked AND we hold as
+    many postings as it counted — a page left unwalked, or entries the index
+    returned as null, are postings this list cannot speak for."""
     from app.discovery import join
-    join._reset_learned_shape()
-    monkeypatch.setattr(join, "_configured_page_size", lambda: 5)
-    full = {"items": [{"id": str(i), "name": f"Engineer {i}"} for i in range(5)],
-            "pagination": {"weird": 1}}
+    join._reset_company_ids()
+    answer = {"items": [{"id": i, "title": f"Engineer {i}"} for i in range(5)],
+              "pageInfo": {"pageCount": 2, "rowCount": 8}}
 
     class _Client:
         def __init__(self, *a, **k): pass
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
-        def get(self, url, params=None):
-            if "/companies/" in url and "/jobs" not in url:
-                return _resp(text='"id":"77","domain":"x"')
-            return _resp(full)
+        def get(self, url, **kw):
+            return _resp(text='"id":"77","domain":"x"')
+
+        def post(self, url, json=None, **kw):
+            if json["variables"]["input"]["paginationPage"]["page"] > 1:
+                return _resp({}, status=503)            # page 2 never arrives
+            return _resp({"data": {"publicJobs": answer}})
 
     monkeypatch.setattr(join, "_COMPANY_RE", __import__("re").compile(r'"id":"(\d+)","domain":"([^"]+)"'))
     monkeypatch.setattr(join.httpx, "Client", _Client)
     s = join.JoinScraper("x")
+    assert len(s.fetch()) == 5
+    assert s.fetch_complete is False, "page 2 was never read"
+    answer["pageInfo"] = {"pageCount": 1, "rowCount": 6}
+    s = join.JoinScraper("x")
     s.fetch()
-    assert s.fetch_complete is False
-    full["items"] = full["items"][:3]
+    assert s.fetch_complete is False, "the board counts 6 postings and we hold 5"
+    answer["pageInfo"] = {"pageCount": 1, "rowCount": 5}
     s = join.JoinScraper("x")
     s.fetch()
     assert s.fetch_complete is True
-    join._reset_learned_shape()
+    join._reset_company_ids()
 
 
 def test_record_board_states_is_one_upsert():

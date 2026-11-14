@@ -1,27 +1,39 @@
-"""join.com public jobs API (EU-heavy SMB ATS). Two-step:
+"""join.com public job boards (EU-heavy SMB ATS). Two steps:
 
-    GET https://join.com/companies/{slug}                    → resolve company id
-    GET https://join.com/api/public/companies/{id}/jobs      → paginated jobs JSON
+    GET  https://join.com/companies/{slug}        → resolve the company id
+    POST https://join.com/candidate-api/graphql   → publicJobs(companyId), the
+                                                     query join.com's own
+                                                     company page runs
 
 Public, unauthenticated. join.com is the largest single ATS in the open dataset
 (~23.5K companies) and is European-heavy — key coverage for a worldwide launch.
 
-ERROR SEMANTICS ARE THE POINT HERE. This scraper used to answer every question
-with an empty list: a 429, a 422, a 5xx, a connection timeout and a board that
-genuinely has no openings were all `return []`. The pulse lane
-(strategy/pulse_lane.py) then recorded a SUCCESSFUL poll of an empty board, and
-the registry validator counted the same silence as a failed validation — seven
-of which retire the board for thirty days. So being throttled looked exactly
-like being dead, and enough throttling killed healthy boards.
+WHY THE LISTING IS A GRAPHQL QUERY (2026-11-14). This adapter read
+``GET /api/public/companies/{id}/jobs``. That endpoint accepted five jobs a
+page, rate-limited by address at about two requests a second, and was then
+REMOVED: by 2026-11-13 it answered ``404 Cannot GET``. The old code read a 404
+on the jobs URL as "conclusive: nothing more to read", so every board that got
+past the throttle was recorded as a successful poll of an empty board — 19,766
+active boards showing 4 with jobs, 19,617 of them with "returned 429" as the
+last thing the registry heard. The query below is one request for up to 100
+postings (verified against the live site), so a board costs one POST once its
+company id is known, not a page walk.
 
-Now the three cases are distinct:
+ERROR SEMANTICS ARE THE POINT HERE. Four outcomes, never folded together:
 
-  * a genuinely empty or absent board  → `[]`, a real answer
-  * a throttle / transport / 5xx       → raises, so the lane records a failure
-                                          and backs the board off instead of
+  * a genuinely empty or absent board  → ``[]``, a real answer
+  * a throttle / transport / 5xx       → raises ``JoinTransientError``, so the
+                                          lane backs the board off instead of
                                           writing "zero jobs" over its state
-  * a partial page walk                → `fetch_complete = False`, so postings
+  * the site refusing us (401/403)     → raises ``BoardBlockedError``
+  * an answer we cannot read — the     → raises ``BoardUnreadableError``. The
+    endpoint gone, GraphQL ``errors``,    endpoint has no company in its path,
+    a changed envelope                    so a 404 there is about the ENDPOINT
+  * a partial page walk                → ``fetch_complete = False``, so postings
                                           we never saw are not ghost-closed
+
+The last three are spared from board retirement (``pipeline._is_throttled``):
+none of them is a statement about the employer.
 """
 from __future__ import annotations
 
@@ -32,100 +44,65 @@ from datetime import datetime
 from typing import List, Optional
 
 import httpx
-from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.base import (
+    BoardBlockedError,
+    BoardUnreadableError,
+    GeoEvidence,
+    RawJob,
+    body_hint,
+)
 
 log = logging.getLogger(__name__)
 
 _BASE = "https://join.com"
-_API = "https://join.com/api/public"
+_GRAPHQL = f"{_BASE}/candidate-api/graphql"
 # The company object embedded in the Next.js page carries id + domain.
 _COMPANY_RE = re.compile(r'"company"\s*:\s*\{[^{}]*?"id"\s*:\s*(\d+)[^{}]*?"domain"\s*:\s*"([^"]+)"')
-# How deep to walk a board, expressed as JOBS rather than pages — because the
-# page size is discovered at runtime and a fixed page count silently changes
-# meaning with it. At the old pageSize=100 a 5-page cap meant 500 jobs; at the
-# pageSize=5 join.com actually accepts, the same constant would mean 25, and a
-# board truncated at 25 looks exactly like a board with 25 openings.
-#
-# Raising the cap is close to free: the walk stops as soon as a page comes back
-# empty or the envelope says there are no more pages, so a board with three
-# openings still costs one request. Only genuinely large boards pay for the
-# extra depth, and those are the ones worth paying for.
-_MAX_JOBS_PER_BOARD = 100
-_ABS_MAX_PAGES = 20          # hard request ceiling per board, whatever the page size
 
+# One page holds 100 postings; a board is walked to this many and no further.
+# The walk stops as soon as the envelope says there are no more pages, so a
+# board with three openings costs one request — only genuinely large boards pay
+# for depth, and past the cap the result says it is a subset.
+_PAGE_SIZE = 100
+_MAX_JOBS_PER_BOARD = 300
+_MAX_PAGES = max(1, -(-_MAX_JOBS_PER_BOARD // _PAGE_SIZE))
 
-def _max_pages(page_size: int) -> int:
-    if page_size <= 0:
-        return 1
-    return max(1, min(_ABS_MAX_PAGES, -(-_MAX_JOBS_PER_BOARD // page_size)))
+# Only the fields this adapter reads: a GraphQL query fails WHOLE when one
+# selected field leaves the schema, so every extra field is a way to break.
+# `id` breaks title ties so offset pages keep a stable order.
+_JOBS_QUERY = (
+    "query PublicJobsList($input: PublicJobsQueryInput!) {"
+    " publicJobs(input: $input) {"
+    " items { id idParam title createdAt workplaceType city { cityName countryName } }"
+    " pageInfo { pageCount rowCount } } }"
+)
+_SORT = [{"name": "title", "direction": "ASC"}, {"name": "id", "direction": "ASC"}]
+# Localises category / country names in the answer.
+_HEADERS = {"content-language": "en-us"}
 
 # Statuses that say "not now", never "not here". A board answering with any of
 # these is not evidence about the board.
 _TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
-# ── The request shape join.com will actually accept ──────────────────────────
-# Production measurement (2026-09-02): EVERY join jobs-API request that was not
-# rate-limited came back 422. The 429s were masking a total failure — which is
-# why every join board had been reporting "0 jobs" rather than some of them.
-#
-# A 422 is the API rejecting a parameter VALUE, and the obvious suspect is
-# pageSize=100. But the right page size is a fact about join.com, not a thing to
-# guess: pick 5 because a note said so and you have replaced a broken constant
-# with an unverified one, and the failure mode (silently fewer jobs per board)
-# looks exactly like success.
-#
-# So the scraper discovers it instead. On a 422 it walks a descending ladder
-# until the API accepts one, MEMOIZES the winner process-wide, and logs it. The
-# probe therefore runs about once per process, not once per board, and the
-# answer ends up in the logs where it can be pinned via JOIN_PAGE_SIZE and this
-# code deleted.
-# 5 is FIRST because production answered the question: the probe walked the
-# ladder on 2026-09-02 and join.com accepted pageSize=5 and rejected everything
-# above it. Leading with the verified value costs one request instead of five;
-# the rest of the ladder stays as the fallback for the day join.com changes its
-# mind, so this is a known-good default rather than a hardcoded guess.
-_PAGE_SIZE_LADDER = (5, 25, 50, 100, 10, 1)
+_WORK_MODES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
 
-# Learned at runtime; None until the first successful request. A module global
-# on purpose — the discovery pool builds one JoinScraper per board, and paying
-# the probe 23,547 times would be its own outage.
-_LEARNED_PAGE_SIZE: Optional[int] = None
-_LEARNED_DROP_LOCALE: bool = False
+# slug → company id, process-wide. The id never changes, and resolving it is a
+# ~115 KB page per board: paying that on every poll doubled the requests we
+# sent join.com and was most of the bytes. Only POSITIVE answers are kept — a
+# slug with no company is asked again (it costs one request per zero-yield
+# cadence), because a company can appear.
+_COMPANY_IDS: dict[str, str] = {}
+_COMPANY_IDS_MAX = 60_000
 
 
-def _reset_learned_shape() -> None:
-    """Tests only — clear what a previous test taught the module."""
-    global _LEARNED_PAGE_SIZE, _LEARNED_DROP_LOCALE
-    _LEARNED_PAGE_SIZE, _LEARNED_DROP_LOCALE = None, False
+def _reset_company_ids() -> None:
+    """Tests only — forget what a previous test resolved."""
+    _COMPANY_IDS.clear()
 
 
-def _configured_page_size() -> Optional[int]:
-    """A pinned JOIN_PAGE_SIZE from settings, if the answer is already known."""
-    try:
-        from app.config import settings
-        value = int(getattr(settings, "join_page_size", 0) or 0)
-        return value if value > 0 else None
-    except Exception:
-        return None
-
-
-def _candidate_page_sizes() -> tuple[int, ...]:
-    """Page sizes to try, best-known first."""
-    pinned = _configured_page_size()
-    if pinned:
-        return (pinned,)
-    if _LEARNED_PAGE_SIZE:
-        return (_LEARNED_PAGE_SIZE,)
-    return _PAGE_SIZE_LADDER
-
-
-def _params(page: int, page_size: int, drop_locale: bool) -> dict:
-    p = {"page": page, "pageSize": page_size}
-    if not drop_locale:
-        p["locale"] = "en-us"
-    return p
+# The name the tests and older callers know.
+_reset_learned_shape = _reset_company_ids
 
 
 class JoinTransientError(RuntimeError):
@@ -139,21 +116,36 @@ class JoinTransientError(RuntimeError):
     """
 
 
-def _strip_html(html: str) -> str:
-    return BeautifulSoup(html or "", "html.parser").get_text(separator="\n").strip()
+def _text(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
 
-def _body_hint(response) -> str:
-    """A short slice of an error response, for the log line that explains it.
+def _read_listing(payload) -> tuple[list, int, int, Optional[int]]:
+    """``(items, raw item count, pageCount, rowCount)`` from a publicJobs answer.
 
-    "returned 422" tells you something broke; "returned 422: pageSize must be
-    between 1 and 25" tells you what to change. The whole reason join.com's
-    total failure went unnoticed is that nobody could see what it was saying.
+    ``items`` has null entries removed (join.com's search index returns them
+    when it is out of sync; its own frontend drops them too); the raw count
+    includes them. Anything that is not the envelope we read raises — an
+    answer we cannot read is never an empty board.
     """
-    try:
-        return " ".join((response.text or "")[:300].split())
-    except Exception:
-        return "<no body>"
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    listing = data.get("publicJobs") if isinstance(data, dict) else None
+    page_info = listing.get("pageInfo") if isinstance(listing, dict) else None
+    items = listing.get("items") if isinstance(listing, dict) else None
+    page_count = page_info.get("pageCount") if isinstance(page_info, dict) else None
+    row_count = page_info.get("rowCount") if isinstance(page_info, dict) else None
+    if errors or not isinstance(items, list) or not isinstance(page_count, int) \
+            or isinstance(page_count, bool):
+        try:
+            detail = json.dumps(errors or payload)[:240]
+        except (TypeError, ValueError):
+            detail = "<unprintable>"
+        raise BoardUnreadableError("join", f"publicJobs answer is not the shape we read: {detail}")
+    usable = [it for it in items if isinstance(it, dict) and it.get("id") is not None]
+    if not isinstance(row_count, int) or isinstance(row_count, bool):
+        row_count = None
+    return usable, len(items), page_count, row_count
 
 
 class JoinScraper:
@@ -176,12 +168,18 @@ class JoinScraper:
         company whose domain matches the slug we asked for). Anything that means
         "ask again later" raises.
         """
+        key = self.board_slug.lower()
+        known = _COMPANY_IDS.get(key)
+        if known:
+            return known
         try:
             r = client.get(f"{_BASE}/companies/{self.board_slug}")
         except httpx.HTTPError as e:
             raise JoinTransientError(f"join company page unreachable: {e}") from e
         if r.status_code == 404:
             return None                       # conclusive: no such company
+        if r.status_code in (401, 403):
+            raise BoardBlockedError("join", r.status_code, "company page")
         if r.status_code in _TRANSIENT_STATUS:
             raise JoinTransientError(f"join company page returned {r.status_code}")
         if r.status_code != 200:
@@ -195,202 +193,162 @@ class JoinScraper:
         # jobs under the wrong company name. The guard is only a guard if
         # nothing routes around it.
         for cid, domain in _COMPANY_RE.findall(r.text):
-            if domain.lower() == self.board_slug.lower():
+            if domain.lower() == key:
+                if len(_COMPANY_IDS) < _COMPANY_IDS_MAX:
+                    _COMPANY_IDS[key] = cid
                 return cid
         return None
 
-    def _get_page(self, client: httpx.Client, company_id: str, page: int):
-        """One jobs-API page, discovering a request shape the API will accept.
+    def _post_page(self, client: httpx.Client, company_id: str, page: int):
+        return client.post(
+            _GRAPHQL,
+            json={"query": _JOBS_QUERY, "variables": {"input": {
+                "companyId": int(company_id),
+                "paginationPage": {"page": page, "pageSize": _PAGE_SIZE},
+                "sort": _SORT,
+            }}},
+            headers=_HEADERS,
+        )
 
-        Normal case, and the case that runs 23,547 times: one request using the
-        pinned or already-learned shape. The ladder only unrolls when the API
-        answers 422 AND nothing has been learned yet, which is once per process.
-
-        Deliberately does NOT probe on 429 — being throttled says nothing about
-        our parameters, and hammering a rate-limited API with six variants to
-        find out is how a throttle becomes a ban.
-        """
-        global _LEARNED_PAGE_SIZE, _LEARNED_DROP_LOCALE
-        url = f"{_API}/companies/{company_id}/jobs"
-
-        last = None
-        for page_size in _candidate_page_sizes():
-            for drop_locale in ((_LEARNED_DROP_LOCALE,) if _LEARNED_PAGE_SIZE
-                                else (False, True)):
-                r = client.get(url, params=_params(page, page_size, drop_locale))
-                if r.status_code != 422:
-                    if r.status_code == 200 and (
-                            _LEARNED_PAGE_SIZE != page_size
-                            or _LEARNED_DROP_LOCALE != drop_locale):
-                        _LEARNED_PAGE_SIZE = page_size
-                        _LEARNED_DROP_LOCALE = drop_locale
-                        log.warning(
-                            "Join: jobs API accepts pageSize=%d locale=%s — "
-                            "learned from a 422 probe and reused process-wide. "
-                            "Pin it with JOIN_PAGE_SIZE=%d to skip the probe.",
-                            page_size, "omitted" if drop_locale else "en-us",
-                            page_size)
-                    return r
-                last = r
-                if _configured_page_size() or _LEARNED_PAGE_SIZE:
-                    # A known-good shape just 422'd. That is a contract CHANGE,
-                    # not something to re-probe per board — surface it.
-                    return r
-        log.warning("Join[%s]: every request shape returned 422 (%s)",
-                    self.board_slug, _body_hint(last) if last is not None else "")
-        return last
+    def _job(self, it: dict) -> Optional[RawJob]:
+        ext_id = str(it.get("id")).strip()
+        title = _text(it.get("title")) or _text(it.get("name"))
+        if not ext_id or not title:
+            return None
+        city = it.get("city") if isinstance(it.get("city"), dict) else {}
+        country = _text(city.get("countryName"))
+        location = ", ".join(p for p in (_text(city.get("cityName")), country) if p)
+        # `workplaceType` is join.com's work mode (REMOTE / HYBRID / ONSITE).
+        work_mode = _WORK_MODES.get(_text(it.get("workplaceType")).lower(), "")
+        remote = work_mode == "remote" or "remote" in location.lower()
+        geo = GeoEvidence(
+            sites=[location] if location else [], sites_field="city.cityName+countryName",
+            country=country, country_field="city.countryName" if country else "",
+            work_mode=work_mode, work_mode_field="workplaceType" if work_mode else "",
+        ) if (location or country or work_mode) else None
+        posted_dt = None
+        created = it.get("createdAt") or it.get("publishedAt")
+        if created:
+            try:
+                posted_dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        # The page a person opens is addressed by `idParam` ("<number>-<title
+        # slug>"); the numeric `id` is the API's key and stays the external id,
+        # which is what every row stored since the REST days is keyed by.
+        page_key = _text(it.get("idParam")) or ext_id
+        return RawJob(
+            source="join",
+            external_id=ext_id,
+            company=self.board_slug.replace("-", " ").title(),
+            title=title,
+            location=location,
+            remote=remote,
+            url=_text(it.get("url")) or f"{_BASE}/companies/{self.board_slug}/jobs/{page_key}",
+            description="",
+            posted_at=posted_dt,
+            origin="join",
+            geo=geo,
+        )
 
     def fetch(self) -> List[RawJob]:
         jobs: List[RawJob] = []
         seen: set[str] = set()
+        self.signature_entries = []
+        self.fetch_complete = True
+        partial = False
+        row_count: Optional[int] = None
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             company_id = self._resolve_company_id(client)
             if not company_id:
                 return []
             page = 1
-            # Depth is decided by the page size actually in use, so a smaller
-            # page size buys more pages rather than a shallower board.
-            max_pages = _max_pages(_candidate_page_sizes()[0])
-            while page <= max_pages:
+            while True:
+                first = page == 1
                 try:
-                    r = self._get_page(client, company_id, page)
+                    r = self._post_page(client, company_id, page)
                 except httpx.HTTPError as e:
-                    if page == 1:
+                    if first:
                         raise JoinTransientError(f"join jobs API unreachable: {e}") from e
                     # Later pages: we already hold real postings for this board.
                     # Keep them, but say the walk was cut short.
-                    self.fetch_complete = False
+                    partial = True
                     log.info("Join[%s]: page %d unreachable (%s) — partial result",
                              self.board_slug, page, e)
                     break
 
-                if r.status_code in _TRANSIENT_STATUS:
-                    if page == 1:
-                        raise JoinTransientError(
-                            f"join jobs API returned {r.status_code}")
-                    self.fetch_complete = False
-                    log.info("Join[%s]: page %d returned %d — partial result",
-                             self.board_slug, page, r.status_code)
-                    break
-                if r.status_code == 404:
-                    break                     # conclusive: nothing more to read
                 if r.status_code != 200:
-                    # A contract error the shape probe could not talk the API out
-                    # of. On page 1 this is not evidence the board is empty, so it
-                    # must not be reported as such; later pages keep what we have.
-                    # The BODY goes in the message: join.com names the offending
-                    # field, and that one line is worth more than any amount of
-                    # guessing about which parameter it dislikes.
-                    if page == 1:
-                        raise JoinTransientError(
-                            f"join jobs API returned {r.status_code}: {_body_hint(r)}")
-                    self.fetch_complete = False
-                    break
+                    if not first:
+                        partial = True
+                        log.info("Join[%s]: page %d returned %d — partial result",
+                                 self.board_slug, page, r.status_code)
+                        break
+                    if r.status_code in (401, 403):
+                        raise BoardBlockedError("join", r.status_code, "jobs query")
+                    if r.status_code == 404:
+                        # No company in this URL: a 404 is the ENDPOINT, never
+                        # "this company has no jobs". Reading it as empty is
+                        # how the REST endpoint's removal went unnoticed.
+                        raise BoardUnreadableError(
+                            "join", "jobs query endpoint not found (moved or removed)")
+                    if r.status_code in _TRANSIENT_STATUS:
+                        raise JoinTransientError(f"join jobs API returned {r.status_code}")
+                    # A contract error. The BODY goes in the message: join.com
+                    # names the offending field, and that one line is worth more
+                    # than any amount of guessing about what it dislikes.
+                    raise JoinTransientError(
+                        f"join jobs API returned {r.status_code}: {body_hint(r.text, 300)}")
 
                 try:
-                    payload = r.json()
+                    items, raw_len, page_count, row_count = _read_listing(r.json())
                 except (json.JSONDecodeError, ValueError) as e:
-                    if page == 1:
-                        raise JoinTransientError(f"join jobs API sent unparseable JSON: {e}") from e
-                    self.fetch_complete = False
+                    if first:
+                        raise BoardUnreadableError(
+                            "join", f"jobs query sent unparseable JSON: {e}") from e
+                    partial = True
+                    break
+                except BoardUnreadableError:
+                    if first:
+                        raise
+                    partial = True
                     break
 
-                items = payload.get("items", []) if isinstance(payload, dict) else []
-                if not items:
-                    break                     # conclusive: the board ends here
-                for j in items:
-                    ext_id = str(j.get("id") or j.get("idParam") or "").strip()
-                    if not ext_id:
+                for it in items:
+                    job = self._job(it)
+                    if job is None:
                         continue
                     # join.com repeats a posting across pages when the board
                     # changes mid-walk, and a repeated external_id is a second
                     # upsert of the same row on every poll.
-                    if ext_id in seen:
+                    if job.external_id in seen:
                         continue
-                    seen.add(ext_id)
-                    title = (j.get("name") or j.get("title") or "").strip()
-                    self.signature_entries.append((ext_id, title))
-                    loc = j.get("location") or {}
-                    country = ""
-                    if isinstance(loc, dict):
-                        country = (loc.get("countryCode") or loc.get("countryName")
-                                   or loc.get("country") or "").strip()
-                        location = ", ".join(p for p in (
-                            (loc.get("cityName") or loc.get("city") or "").strip(),
-                            (loc.get("countryName") or loc.get("country") or "").strip(),
-                        ) if p)
-                    else:
-                        location = str(loc or "")
-                    # `jobLocationType` is join.com's work mode; it used to be
-                    # compared to "remote" and otherwise thrown away.
-                    jlt = str(j.get("jobLocationType") or "").lower()
-                    work_mode = ("remote" if jlt == "remote" else "hybrid" if "hybrid" in jlt or "partial" in jlt
-                                 else "onsite" if jlt in ("onsite", "on_site", "on-site", "office") else "")
-                    remote = work_mode == "remote" or "remote" in location.lower()
-                    geo = GeoEvidence(
-                        sites=[location] if location else [], sites_field="location.cityName+countryName",
-                        country=country, country_field="location.countryCode" if country else "",
-                        work_mode=work_mode, work_mode_field="jobLocationType" if work_mode else "",
-                    ) if (location or country or work_mode) else None
-                    posted_dt = None
-                    published = j.get("publishedAt") or j.get("createdAt")
-                    if published:
-                        try:
-                            posted_dt = datetime.fromisoformat(str(published).replace("Z", "+00:00"))
-                        except ValueError:
-                            pass
-                    jobs.append(
-                        RawJob(
-                            source="join",
-                            external_id=ext_id,
-                            company=self.board_slug.replace("-", " ").title(),
-                            title=title,
-                            location=location,
-                            remote=remote,
-                            url=j.get("url") or f"{_BASE}/companies/{self.board_slug}/jobs/{ext_id}",
-                            description=_strip_html(j.get("description") or ""),
-                            posted_at=posted_dt,
-                            origin="join",
-                            geo=geo,
-                        )
-                    )
-                # The envelope's page-count field: read whichever spelling is
-                # present rather than betting on one. `totalPages` was the
-                # original guess and `pageCount` the claimed correction; nobody
-                # could check, and getting it wrong is silent — the walk simply
-                # stops after page 1 on every board and looks like a small board.
-                # Accepting both costs nothing and cannot be wrong.
-                pagination = payload.get("pagination") or {}
-                total_pages = page
-                for key in ("pageCount", "totalPages", "totalPageCount", "pages"):
-                    if key in pagination:
-                        try:
-                            total_pages = int(pagination[key])
-                        except (TypeError, ValueError):
-                            total_pages = page
-                        break
-                else:
-                    # No page count to stop on, so the walk ends here. Only a
-                    # SHORT page proves the board ends here too: a full one can
-                    # have more behind it, and calling that list the whole
-                    # board would let board-absence close what is on page 2.
-                    if len(items) >= _candidate_page_sizes()[0]:
-                        self.fetch_complete = False
-                    if page == 1 and pagination:
-                        log.info("Join[%s]: pagination envelope keys=%s — no known "
-                                 "page-count field", self.board_slug,
-                                 sorted(pagination)[:8])
-                if page >= total_pages:
+                    seen.add(job.external_id)
+                    self.signature_entries.append((job.external_id, job.title))
+                    jobs.append(job)
+
+                if page >= page_count:
                     break
-                if page >= max_pages:
+                if raw_len == 0:
+                    # The envelope says more pages remain and this one is
+                    # empty: stopping here is a subset, not the board.
+                    partial = True
+                    break
+                if page >= _MAX_PAGES:
                     # More pages exist than we walk. Not an error — but the
                     # result IS a subset, and saying so is what stops the
-                    # postings on page 6 from being ghost-closed.
-                    self.fetch_complete = False
+                    # postings past the cap from being ghost-closed.
+                    partial = True
                     log.info("Join[%s]: %d pages available, walked %d — partial result",
-                             self.board_slug, total_pages, max_pages)
+                             self.board_slug, page_count, _MAX_PAGES)
                     break
                 page += 1
+
+        if row_count and not jobs and not partial:
+            raise BoardUnreadableError(
+                "join", f"publicJobs reported {row_count} postings and returned none we could read")
+        # Whole only when the walk finished AND we hold as many postings as the
+        # envelope counted (null index entries make the two differ).
+        self.fetch_complete = not partial and (row_count is None or len(jobs) >= row_count)
         log.info("Join[%s]: %d jobs (complete=%s)",
                  self.board_slug, len(jobs), self.fetch_complete)
         return jobs

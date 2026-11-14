@@ -227,6 +227,27 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   deferred, upsert p90 38s, deferrals 1-4K → 20-41K/day) was ~230 wasted fetches
   per tick feeding back into a Disk-IO-exhausted database. `board_cap` is in
   every tick event; `PULSE_ADAPTIVE_ENABLED=0` restores constant selection.
+- **A failed fetch is not always about the BOARD** (2026-11-14, `discovery/base.py`
+  + `discovery/site_health.py`): 86% of the 29,790 "no jobs" boards sat on three
+  adapters that had stopped reading their site. BambooHR's widget became JSON (the
+  HTML parser read 0 jobs, successfully, on 5,557 boards for five weeks; the detail
+  moved under `result.jobOpening`, so no row had a description); join.com REMOVED its
+  REST listing (the 404 was read as "board ends here") — it now lists through the
+  site's GraphQL `publicJobs` query, 100 a page, company id memoised; Rippling's one
+  API host answered 403 to production's address and each refusal was a strike — 960
+  boards / 15,293 open jobs retired "unreachable x5" in a day. Rules: an answer an
+  adapter cannot READ raises `BoardUnreadableError`, never `[]`; a REFUSAL raises
+  `BoardBlockedError`; both are spared by `pipeline._is_throttled` (backed off 6 h,
+  no strike, `job_count` untouched). A swallowed error sets `last_error` (an empty
+  list with a reason is not an empty board). `site_health` records how each SYSTEM is
+  answering: when ≥`SITE_HEALTH_FAILURE_SHARE` (80%) of ≥`SITE_HEALTH_MIN_FAILURES`
+  (20) fetches of one system failed in `SITE_HEALTH_WINDOW_MINUTES` (15), the failure
+  is the system's and no board takes a strike — a 404 is an ANSWER (junk slugs still
+  retire), and one dead board among healthy ones still retires.
+  `PULSE_ATS_MIN_INTERVAL_MINUTES` ("rippling=30,join=120,bamboohr=60") is a per-SITE
+  floor under `_cadence`: the 5-minute fast tier says how fresh we want a board, not
+  how often one host will answer. Rippling and JOIN listings carry NO description
+  (rows scored blind) — open. Guards: `test_board_outages`, `test_join_contract`.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score
   IS NULL` queue across ALL users with a fixed pool of `scoring_workers` (GPT

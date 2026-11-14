@@ -174,6 +174,16 @@ def _reset_process_globals():
         _gv.reset_state()
     except ImportError:
         pass
+    try:
+        # How each job system has been answering (site_health) and the join.com
+        # company ids already resolved are process-wide on purpose. Left over,
+        # one file's simulated outage would spare the next file's failing board
+        # from retirement, and a memoised id would skip a fake company page.
+        from app.discovery import join as _join, site_health as _sh
+        _sh.reset()
+        _join._reset_company_ids()
+    except ImportError:
+        pass
 
 
 def pytest_configure(config):

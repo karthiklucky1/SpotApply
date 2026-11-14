@@ -135,6 +135,62 @@ def fetch_error(scraper) -> str:
     return (getattr(scraper, "last_error", "") or "").strip()
 
 
+# ── failures that say nothing about the BOARD ────────────────────────────────
+# A board is retired after a handful of failed fetches (pipeline.
+# BOARD_DEACTIVATE_AFTER_FAILURES), so what counts as a failed fetch OF THE
+# BOARD matters. Two kinds of failure are about the SITE or about US, and the
+# 2026-11-14 audit found both being read as facts about employers:
+#
+#   * the site REFUSED to answer. Rippling's API began answering 403 to
+#     production's address (the same request succeeded from another network),
+#     every refusal counted as a strike, and 960 boards holding 15,293 open
+#     jobs were retired as "unreachable x5" in one day.
+#   * the site answered in a SHAPE the adapter could not read. BambooHR's
+#     widget turned from HTML into JSON in October; the HTML parser found no
+#     <li> in it and reported "0 jobs", successfully, for 5,557 boards for
+#     five weeks. join.com removed its REST listing; the 404 was read as "the
+#     board ends here".
+#
+# Adapters raise these instead. The message carries a marker the failure
+# recorders look for (`pipeline._is_throttled`), because errors cross the
+# thread pool as strings: such a board is backed off and re-polled, its
+# failure count untouched, and its `job_count` is never overwritten with zero.
+BLOCKED_MARKER = "site refused the request"
+UNREADABLE_MARKER = "unreadable response"
+
+
+class BoardBlockedError(RuntimeError):
+    """The site would not answer this request (edge block, rate limit).
+
+    Not evidence about the board: the employer may be hiring exactly as before.
+    """
+
+    def __init__(self, source: str, status: int | str, detail: str = ""):
+        tail = f": {detail}" if detail else ""
+        super().__init__(f"{source}: {BLOCKED_MARKER} ({status}){tail}")
+
+
+class BoardUnreadableError(RuntimeError):
+    """The site answered, but not in a shape this adapter reads.
+
+    Our bug or their change — never "this employer has no openings". Raising
+    is what stops a format change from being recorded as thousands of empty
+    boards.
+    """
+
+    def __init__(self, source: str, detail: str = ""):
+        tail = f": {detail}" if detail else ""
+        super().__init__(f"{source}: {UNREADABLE_MARKER}{tail}")
+
+
+def body_hint(text: str, limit: int = 160) -> str:
+    """A short, single-line slice of a response body for an error message."""
+    try:
+        return " ".join((text or "")[:limit].split())
+    except Exception:
+        return ""
+
+
 # ── completeness: "this list is the WHOLE board" ─────────────────────────────
 # An adapter sets ``fetch_complete = True`` only once it has proof the list it
 # returns covers every posting the board lists: the request succeeded, the
