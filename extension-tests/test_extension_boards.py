@@ -17,9 +17,12 @@ made, no CAPTCHA touched) showed what the synthetic forms had not:
   The submit check counted optional empty boxes and read a picked dropdown as
       empty, so no real form would ever have been submitted.
 
+  Ashby        the site reads the resume and EMPTIES the upload box; the
+      attached resume was read as a required field still missing.
+
 The fixtures in www/ mirror those shapes (greenhouse-react.html,
-lever-radios.html, teamtailor-job.html, smartrecruiters-job.html,
-join-job.html). The helpers and the stub API are test_extension_forms.py's.
+lever-radios.html, ashby-upload.html, teamtailor-job.html,
+smartrecruiters-job.html, join-job.html). The helpers and the stub API are test_extension_forms.py's.
 """
 import importlib.util
 import json
@@ -194,6 +197,40 @@ def main():
         check("LV5 on OPT both sponsorship wordings say Yes",
               page.evaluate(RADIO, "cards[a1][field1]") == "Yes." and page.evaluate(RADIO, "cards[a1][field2]") == "Yes.",
               repr((page.evaluate(RADIO, "cards[a1][field1]"), page.evaluate(RADIO, "cards[a1][field2]"))))
+        page.close()
+
+        # ── AU: an upload box the site empties after taking the file ────────
+        print("\nAshby upload box (the site reads the file, then empties the input)")
+        url = f"{BASE}/ashby-upload.html"
+        pack = fh.base_pack(url)
+        page, logs, reply = fh.drive_fill_reply(ctx, url, pack)
+        gate = (diagnostic(ctx, "ashby-upload.html").get("submitReadiness") or {}).get("gate") or {}
+        check("AU1 the site emptied the input and shows the file's name",
+              page.eval_on_selector("#_systemfield_resume", "el => el.files.length") == 0 and
+              "Alexandra_Nguyen_Resume" in page.inner_text("#resume-shown"), page.inner_text("#resume-shown"))
+        check("AU2 ...and the resume counts as attached: nothing required is open",
+              gate.get("verdict") == "ready" and gate.get("requiredOpen") == 0, json.dumps(gate))
+        # The person removes the file: the field is required and empty again.
+        page.click("#resume-clear")
+        page.wait_for_timeout(300)
+        gate = (diagnostic(ctx, "ashby-upload.html").get("submitReadiness") or {}).get("gate") or {}
+        check("AU3 once the person removes the file the field is open again",
+              gate.get("verdict") == "fields_need_you" and gate.get("requiredOpen") == 1 and
+              any("file" in f for f in gate.get("requiredOpenFields") or []), json.dumps(gate))
+        page.close()
+
+        oc_from = len(fh.REQUESTS)
+        approved = dict(pack, auto_submit=True, auto_submit_reason="ok", auto_submit_hosts=["127.0.0.1"])
+        page, logs, reply = fh.drive_fill_reply(ctx, url, approved, timeout_ms=60000)
+        auto = reply.get("auto_submit") or {}
+        try:
+            page.wait_for_url("**/thanks.html**", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(4000)
+        check("AU4 the approved form is submitted and confirmed",
+              auto.get("attempted") is True and "thanks.html" in page.url and len(submits(oc_from)) == 1,
+              json.dumps(auto) + " " + page.url)
         page.close()
 
         # ── TT / SR / JN: the control that opens the application ────────────

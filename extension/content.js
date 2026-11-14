@@ -4647,6 +4647,21 @@ function _hasUploadedMarker(fi) {
   ));
 }
 
+/** Is a file the site ACCEPTED from us still shown in this field? Ashby and
+ *  Greenhouse read the file and then empty (or replace) the input, so an
+ *  attached resume leaves `files` empty: the proof is the site's own display —
+ *  a Remove/Replace control or the file's name beside the field. Once the
+ *  person removes the file that display is gone and the field is empty again. */
+function uploadStillShown(fi) {
+  if (!fi) return false;
+  if (fi.files && fi.files.length) return true;
+  if (_hasUploadedMarker(fi)) return true;
+  const name = _resumeStatus && _resumeStatus.filename;
+  if (!name) return false;
+  const scope = _fileFieldScope(fi);
+  return !!(scope && String(scope.textContent || '').includes(name));
+}
+
 /** Everything a file input is named by — label, name, id, aria, automation id. */
 function _resumeCtx(fi) {
   return (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
@@ -5965,6 +5980,8 @@ function auditPageFields(pack, platformFilled) {
   // have been submitted; nor would any real form, they all have optional boxes.
   let filled = 0, needUser = 0, needRequired = 0, skipped = 0, failed = 0;
   const needUserEls = [];
+  // Which fields the required count is made of (the diagnostic names them).
+  const needRequiredEls = [];
   const problems = [];
   // Why a question was left for the user, when we know (shown in the widget).
   const notes = [];
@@ -5991,9 +6008,13 @@ function auditPageFields(pack, platformFilled) {
       const ours = el.dataset.spotapplyUpload;
       if (ours === 'unconfirmed') { flag(el, 'the upload was not confirmed by the site — attach it again'); continue; }
       if (ours === 'wrong_format') { flag(el, 'this field does not accept that file format'); continue; }
-      if (el.files && el.files.length) { filled++; highlightField(el, 'green'); }
-      else if (isFieldRequired(el)) {
-        needUser++; needRequired++; needUserEls.push(el); highlightField(el, 'red');
+      // Accepted by the site and still shown there counts, even though the
+      // site emptied the input after reading the file (live test 2026-11-14:
+      // every Ashby form read "resume missing" with the resume attached).
+      if ((el.files && el.files.length) || (ours === 'accepted' && uploadStillShown(el))) {
+        filled++; highlightField(el, 'green');
+      } else if (isFieldRequired(el)) {
+        needUser++; needRequired++; needUserEls.push(el); needRequiredEls.push(el); highlightField(el, 'red');
       } else { skipped++; }
       continue;
     }
@@ -6008,7 +6029,7 @@ function auditPageFields(pack, platformFilled) {
         : [el];
       if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
       if (isFieldRequired(el)) {
-        needUser++; needRequired++; needUserEls.push(el); highlightField(el, 'red');
+        needUser++; needRequired++; needUserEls.push(el); needRequiredEls.push(el); highlightField(el, 'red');
         noteWorkAuth(radioGroupQuestion(el));
       } else { skipped++; }
       continue;
@@ -6018,7 +6039,7 @@ function auditPageFields(pack, platformFilled) {
       // a name ("I agree…", "I confirm…") both have to be ticked.
       if (el.checked) { skipped++; continue; }
       if (el.required || el.getAttribute('aria-required') === 'true') {
-        needUser++; needRequired++; needUserEls.push(el); highlightField(el, 'red');
+        needUser++; needRequired++; needUserEls.push(el); needRequiredEls.push(el); highlightField(el, 'red');
       } else { skipped++; }
       continue;
     }
@@ -6053,7 +6074,7 @@ function auditPageFields(pack, platformFilled) {
       needUser++;
       needUserEls.push(el);
       const isReq = isFieldRequired(el);
-      if (isReq) needRequired++;
+      if (isReq) { needRequired++; needRequiredEls.push(el); }
       highlightField(el, isReq ? 'red' : 'yellow');
       if (isReq) noteWorkAuth(labelText(el));
       // Observe unfilled fields for cross-form learning
@@ -6064,7 +6085,7 @@ function auditPageFields(pack, platformFilled) {
   for (const g of ynGroups) {
     if (yesNoChoice(g)) { filled++; highlightField(g.box, 'green'); continue; }
     if (yesNoRequired(g)) {
-      needUser++; needRequired++; needUserEls.push(g.box); highlightField(g.box, 'red');
+      needUser++; needRequired++; needUserEls.push(g.box); needRequiredEls.push(g.box); highlightField(g.box, 'red');
       noteWorkAuth(g.question);
     } else { skipped++; }
   }
@@ -6076,7 +6097,7 @@ function auditPageFields(pack, platformFilled) {
     if (g.options.some(_choiceOn)) { filled++; highlightField(g.box, 'green'); continue; }
     needUser++; needUserEls.push(g.box);
     const hhRequired = !!(g.label && labelMarksRequired(g.label));
-    if (hhRequired) needRequired++;
+    if (hhRequired) { needRequired++; needRequiredEls.push(g.box); }
     highlightField(g.box, hhRequired ? 'red' : 'yellow');
   }
 
@@ -6087,7 +6108,7 @@ function auditPageFields(pack, platformFilled) {
     problems.push('Resume: ' + (_resumeStatus.message || 'could not be attached — attach it yourself'));
   }
 
-  return { filled, needUser, needRequired, needUserEls, platformFilled, failed, problems, notes };
+  return { filled, needUser, needRequired, needUserEls, needRequiredEls, platformFilled, failed, problems, notes };
 }
 
 function isFieldRequired(el) {
@@ -6858,6 +6879,13 @@ function submitReadiness() {
         verdict: block.reason || 'ready',
         detail: block.detail || '',
         requiredOpen: audit.needRequired,
+        // The questions behind that number: their kind and label, never a value.
+        requiredOpenFields: (audit.needRequiredEls || []).slice(0, 12).map((el) => {
+          const kind = (el.tagName === 'INPUT' ? (el.type || 'text') : el.tagName.toLowerCase());
+          const name = String(labelText(el) || el.getAttribute('aria-label') || el.name || el.id || '')
+            .replace(/\s+/g, ' ').trim().slice(0, 70);
+          return kind + ': ' + name;
+        }),
         optionalOpen: Math.max(0, audit.needUser - audit.needRequired),
         filled: audit.filled,
         resume: _resumeStatus ? _resumeStatus.state : 'none',

@@ -1492,6 +1492,24 @@ def test_the_field_audit_counts_required_apart_and_reads_what_a_dropdown_shows()
     assert ".click(" not in ready and "noteSubmitAttempt" not in ready and "maybeAutoSubmit" not in ready
 
 
+def test_an_accepted_upload_counts_after_the_site_empties_the_box():
+    """Ashby and Greenhouse read the chosen file and then empty (or replace)
+    the input. The resume is attached and `files` is empty: every real Ashby
+    form read "resume missing". Proof is the site's own display — and it stops
+    counting the moment the person removes the file."""
+    shown = _function(CONTENT, "uploadStillShown")
+    assert "_hasUploadedMarker(fi)" in shown and "_resumeStatus.filename" in shown
+    assert "_fileFieldScope(fi)" in shown, "the name must sit in THIS field, not anywhere on the page"
+    audit = _function(CONTENT, "auditPageFields")
+    assert "(ours === 'accepted' && uploadStillShown(el))" in audit
+    # an upload the site never acknowledged, or a wrong format, is still a problem
+    assert audit.index("ours === 'unconfirmed'") < audit.index("uploadStillShown(el)")
+    assert audit.index("ours === 'wrong_format'") < audit.index("uploadStillShown(el)")
+    # the diagnostic names the questions behind its number, never a value
+    ready = _function(CONTENT, "submitReadiness")
+    assert "requiredOpenFields" in ready and ".value" not in ready[ready.index("requiredOpenFields"):]
+
+
 def test_a_radio_groups_question_is_found_above_the_group():
     """Lever's cards keep the question two levels above the radios, in a
     sibling of the box that holds them; the radios' own labels say "Yes."."""
