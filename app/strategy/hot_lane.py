@@ -476,17 +476,16 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
     """
     from app.discovery import site_health
     from app.discovery.pipeline import (
-        BOARD_DEACTIVATE_AFTER_FAILURES, THROTTLED_BOARD_BACKOFF_HOURS, _is_throttled,
+        BOARD_DEACTIVATE_AFTER_FAILURES, THROTTLED_BOARD_BACKOFF_HOURS,
+        _not_about_the_board,
     )
     # The site's own record, written before the board's: whether THIS failure
     # is about the board is decided against how the whole system is answering.
-    site_answered = ok or site_health.answered(error)
-    site_health.record(ats, site_answered)
-    # A failure the site did not answer, while nearly every board of that
-    # system is failing too, is the system's failure (blocked, down, changed).
-    # Spared exactly like a throttle: backed off, never a strike.
-    spared = (not ok) and (_is_throttled(error) or (
-        not site_answered and site_health.mass_failing(ats)))
+    site_health.record(ats, ok or site_health.answered(error))
+    # A throttle, a refusal or unreadable answer the rest of the site shares,
+    # or a failure while nearly every board of that system is failing too, is
+    # not the board's. Spared exactly like a 429: backed off, never a strike.
+    spared = (not ok) and _not_about_the_board(ats, error)
     try:
         with get_session() as session:
             row = session.exec(

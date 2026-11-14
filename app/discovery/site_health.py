@@ -108,6 +108,33 @@ def mass_failing(ats, now: Optional[float] = None) -> bool:
     return failures >= min_failures and total > 0 and (failures / total) >= share
 
 
+def answering(ats, now: Optional[float] = None) -> bool:
+    """True when this system is demonstrably answering for most boards.
+
+    The other half of the question. An adapter's "the site refused us" or "I
+    could not read that" is believed by default — but when a real sample of the
+    SAME system's boards are answering normally, a board that alone is refused
+    or unreadable is that board's problem (a private board, a tenant with a
+    custom page, a stale id), and sparing it forever would keep a dead slug in
+    rotation. Needs the same sample size as ``mass_failing``; with too little
+    evidence this is False, so the doubt favours the board.
+    """
+    if not bool(getattr(settings, "site_health_enabled", True)):
+        return False
+    key = _key(ats)
+    if not key:
+        return False
+    failures, total = _counts(key, time.monotonic() if now is None else now)
+    min_sample = int(getattr(settings, "site_health_min_failures", 20) or 20)
+    return total >= min_sample and (failures / total) <= 0.5
+
+
+def site_level(error: Optional[str]) -> bool:
+    """True for the two errors an adapter raises about the SITE, not the board."""
+    low = (error or "").lower()
+    return BLOCKED_MARKER in low or UNREADABLE_MARKER in low
+
+
 def snapshot(now: Optional[float] = None) -> dict:
     """Per-system counts for logs and the admin health page. Names only."""
     t = time.monotonic() if now is None else now

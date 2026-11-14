@@ -45,6 +45,7 @@ from bs4 import BeautifulSoup
 
 from app.discovery.base import (
     EVIDENCE_TEAM_OR_DEPARTMENT,
+    BoardBlockedError,
     BoardUnreadableError,
     GeoEvidence,
     RawJob,
@@ -58,6 +59,12 @@ log = logging.getLogger(__name__)
 _WIDGET = "https://{slug}.bamboohr.com/jobs/embed2.php"
 _DETAIL = "https://{slug}.bamboohr.com/careers/{id}/detail"
 _MAX_JOBS = 60  # cap per board so enrichment cost stays bounded
+# A 429 on a job detail stops the poll at once. A 403 can be one private
+# posting, so it takes a few in a row before it reads as the site refusing us;
+# the same count of unanswered requests (5xx, timeouts) stops the detail
+# requests for this poll without failing the board.
+_DETAIL_REFUSALS_BEFORE_STOP = 3
+_DETAIL_FAILURES_BEFORE_STOP = 3
 
 # An HTML body with no job rows is an empty widget only when it is the widget.
 # The empty widget is a few hundred bytes; a sign-in page, a maintenance page or
@@ -220,6 +227,14 @@ class BambooHRScraper:
         # signature (which carries the detail's location evidence) is what
         # makes the next good poll read as "changed" and write the text.
         jobs: List[RawJob] = []
+        # One detail request per posting, on every poll, is this adapter's
+        # whole cost — and the reason it must notice being refused. The loop
+        # used to skip a non-200 and carry on, so a throttled board still sent
+        # all sixty requests, was recorded as a clean poll, and sent them again
+        # next time: asking harder is how a rate limit becomes a block.
+        refused = 0          # consecutive 403s
+        failed = 0           # consecutive detail requests that did not answer
+        details_off = False  # stop asking for this poll; keep the listing rows
         with httpx.Client(timeout=20.0, follow_redirects=True) as client:
             for it in items[:_MAX_JOBS]:
                 ext_id, title, location = it["id"], it["title"], it["location"]
@@ -229,10 +244,34 @@ class BambooHRScraper:
                 # ("Remote Sensing Engineer") used to make the posting remote.
                 description, posted_dt, salary = "", None, None
                 country, work_mode, work_mode_field = "", "", ""
+                opening: dict = {}
+                if not details_off:
+                    try:
+                        d = client.get(_DETAIL.format(slug=self.board_slug, id=ext_id))
+                        status = d.status_code
+                    except Exception:
+                        d, status = None, None
+                    if status == 429:
+                        raise BoardBlockedError("bamboohr", 429, "job detail")
+                    refused = refused + 1 if status == 403 else 0
+                    if refused >= _DETAIL_REFUSALS_BEFORE_STOP:
+                        raise BoardBlockedError("bamboohr", 403, "job detail")
+                    if status == 200:
+                        failed = 0
+                        try:
+                            opening = _opening(d.json())
+                        except Exception:
+                            opening = {}
+                    else:
+                        failed += 1
+                        if failed >= _DETAIL_FAILURES_BEFORE_STOP:
+                            # The detail endpoint is not answering. Stop asking
+                            # for this poll; the rows already listed are real.
+                            details_off = True
+                            log.info("BambooHR[%s]: job details not answering — "
+                                     "skipping the rest this poll", self.board_slug)
                 try:
-                    d = client.get(_DETAIL.format(slug=self.board_slug, id=ext_id))
-                    if d.status_code == 200:
-                        opening = _opening(d.json())
+                    if opening:
                         description = _strip_html(opening.get("description") or "")
                         posted_dt = _posted(opening.get("datePosted"))
                         department = department or _ws(opening.get("departmentLabel"))

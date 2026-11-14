@@ -186,6 +186,16 @@ def _ats_min_interval(ats) -> Optional[timedelta]:
     return timedelta(minutes=m) if m else None
 
 
+def _failure_backoff_minutes(ats, base: int) -> int:
+    """The first retry after a REAL failure: the lane's base, never sooner than
+    the site's floor. A join.com board that timed out was otherwise retried in
+    15, 30 and 60 minutes — under the two hours we promise that site."""
+    floor = _ats_min_interval(ats)
+    if floor is None or base <= 0:
+        return base
+    return max(base, int(floor.total_seconds() // 60))
+
+
 def _cadence(row: CompanyRegistry, terms: set[str], now: datetime) -> timedelta:
     """How long until this board's next poll: what its signals ask for, never
     shorter than what its SITE tolerates.
@@ -1233,7 +1243,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 # board through the normal failure path (and its backoff).
                 stats["fetch_failed"] += 1
                 _mark_polled(board.slug, board.ats, job_count=None, ok=False,
-                             error=str(e), failure_backoff_minutes=backoff,
+                             error=str(e),
+                             failure_backoff_minutes=_failure_backoff_minutes(board.ats, backoff),
                              failure_backoff_cap_hours=backoff_cap)
                 continue
             finally:
@@ -1246,7 +1257,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 else:
                     stats["fetch_failed"] += 1
                     _mark_polled(board.slug, board.ats, job_count=None, ok=False,
-                                 error=err, failure_backoff_minutes=backoff,
+                                 error=err,
+                                 failure_backoff_minutes=_failure_backoff_minutes(board.ats, backoff),
                                  failure_backoff_cap_hours=backoff_cap)
                 continue
 

@@ -397,6 +397,28 @@ def test_the_company_page_is_fetched_once_per_process(monkeypatch):
     assert len(pages) == 2, "a different board still resolves its own id"
 
 
+def test_an_unreadable_answer_forgets_the_remembered_id(monkeypatch):
+    """The answer may be about the ID (a company removed or re-keyed). With the
+    id remembered, the company page — whose 404 is the conclusive "no such
+    company" — would never be asked again."""
+    pages: list[str] = []
+    answers = [_Resp(200, payload=_listing([_job(1)])),
+               _Resp(200, payload={"errors": [{"message": "Company not found"}]})]
+
+    def page(url):
+        pages.append(url)
+        return _company_page(url) if len(pages) == 1 else _Resp(404, "")
+
+    monkeypatch.setattr(join_mod.httpx, "Client", _client(
+        page, lambda p, inp: answers.pop(0)))
+    assert len(JoinScraper(_SLUG).fetch()) == 1
+    with pytest.raises(BoardUnreadableError):
+        JoinScraper(_SLUG).fetch()
+    assert len(pages) == 1, "the id was still remembered for the failing poll"
+    assert JoinScraper(_SLUG).fetch() == [], "the company page now says: no such company"
+    assert len(pages) == 2
+
+
 def test_a_missing_company_is_asked_again(monkeypatch):
     """Only POSITIVE answers are remembered: a company can appear."""
     pages: list[str] = []

@@ -237,9 +237,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   API host answered 403 to production's address and each refusal was a strike — 960
   boards / 15,293 open jobs retired "unreachable x5" in a day. Rules: an answer an
   adapter cannot READ raises `BoardUnreadableError`, never `[]`; a REFUSAL raises
-  `BoardBlockedError`; both are spared by `pipeline._is_throttled` (backed off 6 h,
-  no strike, `job_count` untouched). A swallowed error sets `last_error` (an empty
-  list with a reason is not an empty board). `site_health` records how each SYSTEM is
+  `BoardBlockedError`; both are spared (`pipeline._not_about_the_board`: backed off
+  6 h, no strike, `job_count` untouched) UNLESS that system is answering for most of
+  its other boards (`site_health.answering`) — then this board alone is broken and
+  takes the strike; a 429 is never a strike. A swallowed error sets `last_error` (an
+  empty list with a reason is not an empty board). BambooHR costs one detail request
+  per posting per poll: a 429 (or three 403s) on a detail stops the poll and backs
+  the board off, three unanswered details stop the detail requests for that poll. `site_health` records how each SYSTEM is
   answering: when ≥`SITE_HEALTH_FAILURE_SHARE` (80%) of ≥`SITE_HEALTH_MIN_FAILURES`
   (20) fetches of one system failed in `SITE_HEALTH_WINDOW_MINUTES` (15), the failure
   is the system's and no board takes a strike — a 404 is an ANSWER (junk slugs still

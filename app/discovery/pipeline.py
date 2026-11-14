@@ -1164,15 +1164,34 @@ def _is_throttled(error: str) -> bool:
 def _not_about_the_board(ats, error: str) -> bool:
     """True when a failed fetch must not count toward the board's retirement.
 
-    Either the error itself says so (``_is_throttled``), or the site did not
-    answer and nearly every board of that system is failing right now
-    (``site_health``) — a blocked address, an outage, a moved API. The caller
-    backs the board off and re-polls it; it is never trusted on the strength of
-    this, only not sentenced.
+    Three cases, in order:
+
+      * an adapter said the failure is the SITE's — it refused us
+        (``BoardBlockedError``) or answered in a shape we cannot read
+        (``BoardUnreadableError``). Believed, UNLESS that same system is
+        demonstrably answering for most of its boards right now
+        (``site_health.answering``): then this board alone is refused or
+        unreadable — a private board, a tenant's custom page, a stale id — and
+        sparing it forever would keep a dead slug in rotation. It takes the
+        strike and retires like any other broken board.
+      * the error is a throttle or a contract error (``_is_throttled``): never
+        about the board, whatever its neighbours are doing.
+      * the site did not answer and nearly every board of that system is
+        failing right now (``site_health.mass_failing``) — a blocked address,
+        an outage, a moved API.
+
+    The caller backs the board off and re-polls it; it is never trusted on the
+    strength of this, only not sentenced.
     """
+    from app.discovery import site_health
+    e = (error or "").lower()
+    # A refusal that is explicitly a rate limit is a throttle first: one board
+    # can be throttled while the rest of the site answers.
+    explicit_throttle = "429" in e or "too many requests" in e or "rate limit" in e
+    if site_health.site_level(error) and not explicit_throttle:
+        return not site_health.answering(ats)
     if _is_throttled(error):
         return True
-    from app.discovery import site_health
     return (not site_health.answered(error)) and site_health.mass_failing(ats)
 
 

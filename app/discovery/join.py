@@ -252,6 +252,17 @@ class JoinScraper:
         )
 
     def fetch(self) -> List[RawJob]:
+        try:
+            return self._fetch()
+        except BoardUnreadableError:
+            # An answer we could not read may be about the ID we remembered (a
+            # company that was removed or re-keyed). Forget it, so the next
+            # poll asks the company page again — whose 404 is the conclusive
+            # "no such company" a remembered id would otherwise never reach.
+            _COMPANY_IDS.pop(self.board_slug.lower(), None)
+            raise
+
+    def _fetch(self) -> List[RawJob]:
         jobs: List[RawJob] = []
         seen: set[str] = set()
         self.signature_entries = []

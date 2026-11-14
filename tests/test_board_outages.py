@@ -266,6 +266,60 @@ def test_a_failed_detail_keeps_the_listing_row(monkeypatch):
     assert jobs[0].description == "" and jobs[0].location == "Belize City"
 
 
+def _bamboo_counting(monkeypatch, statuses):
+    """A 30-posting board whose detail endpoint answers `statuses` in turn (the
+    last one repeats). Returns (scraper, list of detail calls)."""
+    board = {"departments": [{"id": 1, "label": "Ops", "positions": [
+        {"id": i, "name": f"Role {i}", "url": f"https://itel.bamboohr.com/careers/{i}",
+         "location": "Kingston"} for i in range(30)]}], "success": True}
+    calls: list[str] = []
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def get(self, url, **kw):
+            calls.append(url)
+            status = statuses[min(len(calls) - 1, len(statuses) - 1)]
+            if status == 200:
+                return _http(payload={"result": {"jobOpening": {"description": "<p>text</p>"}}})
+            return _http(status)
+
+    monkeypatch.setattr(bamboohr.httpx, "get", lambda *a, **k: _http(text=json.dumps(board)))
+    monkeypatch.setattr(bamboohr.httpx, "Client", _Client)
+    return bamboohr.BambooHRScraper("itel"), calls
+
+
+def test_a_throttled_detail_stops_the_poll_at_once(monkeypatch):
+    """The loop used to skip a non-200 and send the other fifty-nine requests
+    anyway, record a clean poll, and do it again next time. Asking harder is
+    how a rate limit becomes a block."""
+    s, calls = _bamboo_counting(monkeypatch, [200, 200, 429])
+    with pytest.raises(BoardBlockedError) as exc:
+        s.fetch()
+    assert len(calls) == 3, f"{len(calls)} detail requests sent to a site that said stop"
+    assert _is_throttled(str(exc.value)) is True
+
+
+def test_repeated_refusals_stop_the_poll_but_one_private_posting_does_not(monkeypatch):
+    s, calls = _bamboo_counting(monkeypatch, [403, 200])
+    assert len(s.fetch()) == 30 and len(calls) == 30, "one 403 is one posting"
+    s, calls = _bamboo_counting(monkeypatch, [200, 403])
+    with pytest.raises(BoardBlockedError):
+        s.fetch()
+    assert len(calls) == 1 + bamboohr._DETAIL_REFUSALS_BEFORE_STOP
+
+
+def test_an_unanswering_detail_endpoint_is_not_asked_thirty_times(monkeypatch):
+    """5xx is not a refusal, so the board is not failed — but the rows listed
+    are kept and the remaining detail requests are not sent."""
+    s, calls = _bamboo_counting(monkeypatch, [503])
+    jobs = s.fetch()
+    assert len(jobs) == 30 and all(j.description == "" for j in jobs)
+    assert len(calls) == bamboohr._DETAIL_FAILURES_BEFORE_STOP
+
+
 @pytest.mark.parametrize("status", [500, 503])
 def test_a_bamboohr_fault_is_not_an_empty_board(monkeypatch, status):
     s = _bamboo_scraper(monkeypatch, _http(status), _http(200, payload={}))
@@ -341,6 +395,47 @@ def test_a_refused_or_unreadable_board_is_never_retired(error):
     assert row.next_poll_at and row.next_poll_at > datetime.utcnow(), "it must be backed off"
     assert row.job_count == 12, "a refusal must not write 'no jobs' over the board"
     assert row.last_error and ("refused" in row.last_error or "unreadable" in row.last_error)
+
+
+@pytest.mark.parametrize("error", [
+    str(BoardBlockedError("rippling", 403)),
+    str(BoardUnreadableError("rippling", "board API did not send JSON")),
+])
+def test_a_board_refused_alone_while_the_site_answers_still_retires(error):
+    """The adapter's "this is the site" is believed — until the same system is
+    answering normally for everyone else. Then this board alone is refused or
+    unreadable (a private board, a custom page, a stale id), and sparing it
+    forever would keep a dead slug in rotation."""
+    (slug,) = _seed()
+    for _ in range(80):
+        site_health.record(JobSource.RIPPLING, True)
+    assert site_health.answering(JobSource.RIPPLING) is True
+    for _ in range(BOARD_DEACTIVATE_AFTER_FAILURES):
+        _fail(slug, JobSource.RIPPLING, error)
+    row = _rows()[slug]
+    assert row.is_active is False and row.inactive_reason.startswith("unreachable")
+
+
+def test_a_rate_limit_is_never_a_strike_whatever_the_neighbours_do():
+    """One board can be throttled while the rest of the site answers."""
+    (slug,) = _seed()
+    for _ in range(80):
+        site_health.record(JobSource.RIPPLING, True)
+    for _ in range(BOARD_DEACTIVATE_AFTER_FAILURES + 3):
+        _fail(slug, JobSource.RIPPLING, str(BoardBlockedError("rippling", 429)))
+    row = _rows()[slug]
+    assert row.is_active is True and (row.failure_count or 0) == 0
+
+
+def test_too_small_a_sample_favours_the_board():
+    """A handful of answers is not proof the site is fine."""
+    (slug,) = _seed()
+    for _ in range(5):
+        site_health.record(JobSource.RIPPLING, True)
+    assert site_health.answering(JobSource.RIPPLING) is False
+    for _ in range(BOARD_DEACTIVATE_AFTER_FAILURES):
+        _fail(slug, JobSource.RIPPLING, str(BoardBlockedError("rippling", 403)))
+    assert _rows()[slug].is_active is True
 
 
 def test_the_full_lane_recorders_spare_them_too():
@@ -492,6 +587,16 @@ def test_a_missing_or_malformed_floor_is_no_floor(monkeypatch, raw):
     b = _board(JobSource.RIPPLING, last_new_job_at=now, job_count=1)
     assert pulse_lane._cadence(b, set(), now) == \
         timedelta(minutes=settings.pulse_fast_interval_minutes)
+
+
+def test_a_failed_board_is_not_retried_sooner_than_the_floor():
+    """The failure backoff starts at 15 minutes; a site with a two-hour floor
+    was being retried in 15, 30 and 60."""
+    assert pulse_lane._failure_backoff_minutes(JobSource.JOIN, 15) == 120
+    assert pulse_lane._failure_backoff_minutes(JobSource.RIPPLING, 15) == 30
+    assert pulse_lane._failure_backoff_minutes(JobSource.GREENHOUSE, 15) == 15
+    assert pulse_lane._failure_backoff_minutes(JobSource.JOIN, 240) == 240
+    assert pulse_lane._failure_backoff_minutes(JobSource.JOIN, 0) == 0, "0 = backoff off"
 
 
 def test_the_floors_cover_the_three_sites_that_refused_us():
