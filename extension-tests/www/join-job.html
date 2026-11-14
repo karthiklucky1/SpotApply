@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="de"><head><title>Softwareentwickler (m/w/d) — HarnessCo (JOIN-style job page)</title></head>
+<body>
+  <!-- A JOIN posting in German (live test 2026-11-14, synthetic copy): the
+       apply control says "Jetzt bewerben". The form does not exist until it
+       is pressed (the page builds it then, as a single-page app does). -->
+  <main>
+    <h1>Softwareentwickler (m/w/d)</h1>
+    <p>Vollzeit · Berlin · Wir suchen Verstärkung für unser Team.</p>
+    <button type="button" id="join-apply">Jetzt bewerben</button>
+    <div id="join-form-slot"></div>
+  </main>
+  <script>
+    document.getElementById('join-apply').addEventListener('click', function () {
+      window.__applyPressed = (window.__applyPressed || 0) + 1;
+      this.style.display = 'none';
+      document.getElementById('join-form-slot').innerHTML =
+        '<form id="join-form" action="/thanks.html" method="get">' +
+        '<label for="firstName">Vorname *</label><input type="text" id="firstName" name="firstName" required>' +
+        '<label for="lastName">Nachname *</label><input type="text" id="lastName" name="lastName" required>' +
+        '<label for="email">E-Mail *</label><input type="email" id="email" name="email" required>' +
+        '<label for="cv">Lebenslauf *</label><input type="file" id="cv" name="cv"><span id="cv-name"></span>' +
+        '<button type="submit">Bewerbung absenden</button></form>';
+      document.getElementById('cv').addEventListener('change', function (e) {
+        document.getElementById('cv-name').textContent = e.target.files.length ? e.target.files[0].name : '';
+      });
+    });
+  </script>
+</body>
+</html>

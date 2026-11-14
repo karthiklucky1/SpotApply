@@ -511,6 +511,182 @@ async function selectEEOCustom(el, kind, value) {
   return true;
 }
 
+// ── Pick-one dropdowns (react-select and its kin) ────────────────────────────
+// Live test 2026-11-14, 22 real postings. Greenhouse's new boards draw EVERY
+// dropdown — the phone's country, work authorization, sponsorship, each of the
+// employer's own questions — as a react-select: an <input role="combobox">
+// inside `.select__control`, its options in a `.select__menu` that exists only
+// while it is open. The form takes an OPTION. Text typed into the search box
+// is not an answer and is thrown away. The rules that write text boxes did not
+// know that: "Yes" and "No" were typed and never picked, so every such
+// question was still blank to Greenhouse, and the loose label rules typed the
+// job title into "Did a current employee refer you to this position?" and a
+// state into "Are you able to legally work in the region…?".
+//
+// So: fillInput refuses these inputs outright (nothing can type into one), and
+// answerChoiceDropdowns picks an option the way a person does — press the
+// control, press the option. That exact sequence was verified on a live
+// Greenhouse form with script-dispatched events; typing and arrow keys were
+// tried too and open nothing.
+
+/** The control a pick-one dropdown's parts live in, or null. */
+function choiceDropdownControl(el) {
+  if (!el || !el.closest) return null;
+  const control = el.closest('[class*="select__control"]');
+  if (control) return control;
+  if (el.tagName === 'INPUT' && /^react-select-.+-input$/.test(el.id || '')) {
+    return el.closest('[class*="-control"]') || el.parentElement;
+  }
+  return null;
+}
+
+/** The search box of a pick-one dropdown: it never takes typed text. */
+function isChoiceDropdownInput(el) {
+  return !!(el && el.tagName === 'INPUT' && choiceDropdownControl(el));
+}
+
+/** What the dropdown shows as PICKED ('' while it only holds a placeholder or
+ * typed text). The input's own value is the search text, never the answer. */
+function choiceDropdownPicked(control) {
+  if (!control || !control.querySelector) return '';
+  const v = control.querySelector(
+    '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]');
+  return String((v && v.textContent) || '').replace(/\s+/g, ' ').trim();
+}
+
+/** A label that asks a Yes/No question ("Are you…?", "Did a current employee
+ * refer you…?"). Its answer is a choice; a name, a title, a city or a number
+ * typed at it is always wrong. */
+function looksLikeYesNoQuestion(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!t) return false;
+  return /^(are|is|am|do|does|did|have|has|had|will|would|can|could|should|were|was)\s+(you|a|an|the|any|your|there|this|we)\b/.test(t);
+}
+
+/** The options a dropdown is showing right now: its own list when the input
+ * names one, else the menu inside its own container, else whatever is open. */
+function _choiceOptionsFor(control, trigger) {
+  const shown = (o) => (o.offsetParent !== null || (o.getClientRects && o.getClientRects().length)) &&
+    !(o.getRootNode && o.getRootNode().host && o.getRootNode().host.id === 'hp-copilot-overlay');
+  const SEL = '[role="option"], [class*="select__option"]';
+  const ids = [trigger && trigger.getAttribute && trigger.getAttribute('aria-controls'),
+               trigger && trigger.getAttribute && trigger.getAttribute('aria-owns')]
+    .filter(Boolean).join(' ').split(/\s+/).filter(Boolean);
+  for (const id of ids) {
+    const list = document.getElementById(id);
+    const own = list ? Array.from(list.querySelectorAll(SEL)).filter(shown) : [];
+    if (own.length) return own;
+  }
+  const shell = control.closest && (control.closest('[class*="select-shell"], [class*="-container"]') ||
+                                    (control.parentElement && control.parentElement.parentElement));
+  const local = shell ? Array.from(shell.querySelectorAll(SEL)).filter(shown) : [];
+  if (local.length) return local;
+  return queryAllDeep(SEL).filter(shown);
+}
+
+/**
+ * Open a pick-one dropdown, let `choose(texts)` name the option (an index, or
+ * -1 for "none of these is the answer"), and press it. True only when the
+ * control then SHOWS a picked value — an answer the form will submit.
+ */
+async function pickCustomOption(control, choose) {
+  const trigger = (control.querySelector &&
+    control.querySelector('input[role="combobox"], [role="combobox"], input')) || control;
+  const press = (t) => {
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  };
+  const close = () => {
+    try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })); } catch (_) {}
+  };
+  try { trigger.focus(); } catch (_) {}
+  press(control);
+  await delay(350);
+  let options = _choiceOptionsFor(control, trigger);
+  if (!options.length) {
+    // In a tab that is not the focused one, focus() fires no focus event and
+    // the widget is still waiting for it (the apply queue runs in such tabs).
+    try { trigger.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); } catch (_) {}
+    press(control);
+    await delay(350);
+    options = _choiceOptionsFor(control, trigger);
+  }
+  if (!options.length) return false;
+  const texts = options.map((o) => String(o.textContent || '').replace(/\s+/g, ' ').trim());
+  let idx = -1;
+  try { idx = choose(texts); } catch (_) { idx = -1; }
+  if (!(idx >= 0) || !options[idx]) { close(); await delay(120); return false; }
+  press(options[idx]);
+  await delay(300);
+  if (!choiceDropdownPicked(control)) { close(); return false; }
+  try {
+    control.dataset.spotapplyFilled = 'true';
+    if (trigger.dataset) trigger.dataset.spotapplyFilled = 'true';
+  } catch (_) {}
+  return true;
+}
+
+/** "United States +1" is the United States: the dialling code is not the name. */
+function countryOptionIndex(texts, country) {
+  const want = _normCountry(country);
+  if (!want) return -1;
+  const name = (t) => _normCountry(String(t || '').replace(/\s*\(?\+\d[\d\s-]*\)?\s*$/, '').trim());
+  return (texts || []).findIndex((t) => name(t) === want);
+}
+
+/**
+ * Answer the pick-one dropdowns the profile answers: the country the user
+ * lives in, and any Yes/No question the screening rules can prove (work
+ * authorization, sponsorship, years, a degree — the SAME interpreter radios
+ * and Yes/No buttons use). Everything else is left for the person: an
+ * employer's own question is never guessed. Self-identification and "how did
+ * you hear" keep their own passes and their own consent rules.
+ */
+async function answerChoiceDropdowns(pack) {
+  let answered = 0;
+  const seen = new Set();
+  for (const raw of queryAllDeep('[class*="select__control"], input[id^="react-select-"]')) {
+    const control = choiceDropdownControl(raw) || raw;
+    if (seen.has(control)) continue;
+    seen.add(control);
+    if (!control.offsetParent && !(control.getClientRects && control.getClientRects().length)) continue;
+    const input = (control.querySelector && control.querySelector('input')) || raw;
+    if (isAntiBotField(input)) continue;
+    if ((input.dataset && input.dataset.spotapplyUserModified === 'true') ||
+        (control.dataset && control.dataset.spotapplyUserModified === 'true')) continue;
+    if (choiceDropdownPicked(control)) continue;                 // already answered
+    const question = String(labelText(input) || '').replace(/\s+/g, ' ').trim();
+    if (!question) continue;
+    if (eeoKindOf(control) || isDemographicQuestion(question)) continue;
+    if (isHowHeardQuestion(question)) continue;
+
+    let choose = null;
+    let said = '';
+    if (/^\s*country\b/i.test(question) && !looksLikeYesNoQuestion(question)) {
+      const country = residenceCountry(pack);
+      if (!country) continue;                                    // never assumed
+      choose = (texts) => countryOptionIndex(texts, country);
+      said = country;
+    } else {
+      const want = classifyScreeningQuestion(question, pack);
+      if (want === null || want === undefined) continue;
+      choose = (texts) => texts.findIndex((t) => (want ? /^\s*yes\b/i : /^\s*no\b/i).test(t));
+      said = want ? 'Yes' : 'No';
+    }
+    try {
+      if (await pickCustomOption(control, choose)) {
+        answered++;
+        console.log('[SpotApply] Dropdown answered:', said, '—', question.slice(0, 70));
+      }
+    } catch (e) {
+      console.warn('[SpotApply] dropdown pick failed:', e.message);
+    }
+  }
+  if (answered) console.log(`[SpotApply] Picked ${answered} dropdown answer(s) from your profile`);
+  return answered;
+}
+
 // ── Essay prompts vs field labels ────────────────────────────────────────────
 // Field matching is substring-based, so a 40-word prompt like "Our team
 // operates like an AI transformation startup within a larger company… share one
@@ -732,7 +908,7 @@ function classifyScreeningQuestion(q, pack) {
   if (/gender|race|ethnic|veteran|disab|hispanic|latino/.test(t)) return null;
 
   // Sponsorship / work authorization — ONE interpreter for every control type.
-  if (/sponsor|authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit/.test(t)) {
+  if (/sponsor|immigration (case|petition|filing)|employment-based (immigration|visa)|authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit/.test(t)) {
     return interpretWorkAuthQuestion(t, pack);
   }
 
@@ -978,7 +1154,10 @@ function workAuthFacts(pack) {
 /** true = Yes, false = No, null = leave for the applicant. */
 function interpretWorkAuthQuestion(q, pack) {
   const t = ' ' + String(q || '').toLowerCase().replace(/\s+/g, ' ').trim() + ' ';
-  const asksSponsor = /sponsor/.test(t);
+  // "…require us to commence an immigration case in order to employ you (for
+  // example, H-1B…)?" is the sponsorship question without the word (Lever,
+  // live test 2026-11-14).
+  const asksSponsor = /sponsor|immigration (case|petition|filing)|employment-based (immigration|visa)/.test(t);
   const asksAuth = /authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit|permitted to work/.test(t);
   // "without sponsorship", "not require sponsorship", "no sponsorship needed"
   // "…without the need for visa sponsorship…" is the same question as
@@ -1018,13 +1197,25 @@ function radioGroupQuestion(el) {
     const src = document.getElementById(labelledby);
     if (src && src.textContent.trim()) return src.textContent.trim();
   }
-  const group = el.closest('[role="radiogroup"], .form-group, .field, div');
-  if (group) {
-    // The question is the group's text minus the option captions.
-    const optionText = Array.from(group.querySelectorAll('label')).map((l) => l.textContent.trim());
-    let text = (group.textContent || '').trim();
+  // The question is the text around the options, minus their captions. It is
+  // not always in the options' own box: Lever puts it in a SIBLING of the
+  // list (li.application-question > .application-label + .application-field),
+  // so the nearest <div> held "Yes. No." and nothing else — every required
+  // work-authorization radio on a real Lever form went unanswered (live test,
+  // 2026-11-14). Climb while the box still belongs to this one question: stop
+  // before a box that holds another question's control.
+  const own = new Set(el.name
+    ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`))
+    : [el]);
+  const foreign = (box) => Array.from(box.querySelectorAll('input, select, textarea'))
+    .some((c) => c.type !== 'hidden' && !own.has(c));
+  let node = el.closest('[role="radiogroup"], .form-group, .field, div') || el.parentElement;
+  for (let depth = 0; node && depth < 6 && !foreign(node); depth++, node = node.parentElement) {
+    const optionText = Array.from(node.querySelectorAll('label')).map((l) => l.textContent.trim());
+    let text = (node.textContent || '').trim();
     optionText.forEach((o) => { if (o && o.length < 25) text = text.replace(o, ' '); });
-    return text.replace(/\s+/g, ' ').trim().slice(0, 300);
+    text = text.replace(/\s+/g, ' ').trim();
+    if (text.replace(/[^a-z0-9]/gi, '').length >= 6) return text.slice(0, 300);
   }
   return '';
 }
@@ -1376,6 +1567,19 @@ async function fillLocationCombobox(el, pack) {
   const loc = parseLocation(pack && pack.location);
   if (!loc.city) { _lastWriteSkippedEmpty = true; return false; }
   try { el.focus(); } catch (_) {}
+  // A react-select search box (Greenhouse's "Location (City)") ignores typed
+  // text until the widget itself has been opened: typing alone found nothing,
+  // pressing the control first found "San Francisco, California, United
+  // States" (verified on a live form, 2026-11-14). The focusin is for a tab
+  // that is not the focused one, where focus() fires no event.
+  const control = choiceDropdownControl(el);
+  if (control) {
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      control.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+    try { el.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); } catch (_) {}
+    await delay(250);
+  }
   _typeNoBlur(el, loc.city);
   let pick = null;
   let lastCount = -1;
@@ -1403,13 +1607,19 @@ async function fillLocationCombobox(el, pack) {
   }
   try { pick.click(); } catch (_) {}
   await delay(300);
-  const ok = deaccent(String(el.value || '')).toLowerCase().includes(deaccent(loc.city).toLowerCase());
+  // What the field now SHOWS: a react-select keeps the pick beside an emptied
+  // search box, everything else in the input itself.
+  const shown = control ? choiceDropdownPicked(control) : String(el.value || '');
+  const ok = deaccent(shown).toLowerCase().includes(deaccent(loc.city).toLowerCase());
   if (ok) {
     try {
       el.dataset.spotapplyFilled = 'true';
       el.dataset.spotapplyLastWrite = String(el.value || '');
+      if (control) control.dataset.spotapplyFilled = 'true';
     } catch (_) {}
-    console.log('[SpotApply] Location picked from suggestions:', String(el.value || '').slice(0, 60));
+    console.log('[SpotApply] Location picked from suggestions:', shown.slice(0, 60));
+  } else if (control) {
+    _typeNoBlur(el, '');
   }
   return ok;
 }
@@ -2190,6 +2400,10 @@ function fillInput(el, value) {
     console.log('[SpotApply] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
     return false;
   }
+
+  // A pick-one dropdown's search box: typed text is not an answer there
+  // (answerChoiceDropdowns picks an option instead). Refused for EVERY caller.
+  if (isChoiceDropdownInput(el)) return false;
   
   // Skip if value is already the same
   if (el.value === value) return true; // already correct
@@ -2610,6 +2824,10 @@ async function fillGreenhouse(pack) {
     // autofill wrote them and they are identity fields, which fillInput then
     // checks against the pack (a wrong parse of the applicant's own details).
     if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
+    // A dropdown is answered by picking (answerChoiceDropdowns), and a Yes/No
+    // question is never the place for a title, a city, a salary or a number.
+    if (isChoiceDropdownInput(inp)) continue;
+    const yesNoQ = looksLikeYesNoQuestion(lbl);
 
     if (/first.?name|given.?name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/i.test(lbl)) fillInput(inp, pack.last_name);
@@ -2621,14 +2839,17 @@ async function fillGreenhouse(pack) {
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillPhoneField(inp, pack.phone);
     // An autocomplete is left to fillUniversal, which picks a suggestion.
-    else if (/city|location|where.*based|where.*live/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
+    else if (/city|location|where.*based|where.*live/i.test(lbl) && !yesNoQ) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website|personal.*url/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
     else if (/cover.?letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
-    else if (/years?.*(of\s+)?experience|how.*long.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
-    else if (/current.*title|job.*title|position/i.test(lbl)) fillInput(inp, pack.current_title || "");
-    else if (/salary|compensation|expected.*pay/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
+    else if (/years?.*(of\s+)?experience|how.*long.*experience/i.test(lbl) && !yesNoQ) fillInput(inp, String(pack.years_experience || ""));
+    // "position" alone matched every question that mentions the job ("…refer
+    // you to this position?", "This position requires…"): only a label that
+    // NAMES the applicant's title is one.
+    else if (/current.*(title|position|role)|job.?title|^\s*(title|position)\s*\*?\s*$/i.test(lbl) && !yesNoQ) fillInput(inp, pack.current_title || "");
+    else if (/salary|compensation|expected.*pay/i.test(lbl) && !yesNoQ) fillInput(inp, String(pack.salary_min || ""));
     else if (/pronouns/i.test(lbl)) fillInput(inp, "");
     else if (inp.tagName === "SELECT") {
       if (/hispanic|latin/i.test(lbl) && !/\brace\b|ethnic/i.test(lbl)) fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
@@ -3504,6 +3725,10 @@ async function fillUniversal(pack) {
     // path in fillEssayQuestions owns these.
     const labelOnly = labelText(inp) || '';
     const essayPrompt = looksLikeEssayPrompt(labelOnly, inp);
+    // A Yes/No question takes a choice, never a profile scalar; and a pick-one
+    // dropdown takes an option, never typed text (answerChoiceDropdowns).
+    const yesNoQ = looksLikeYesNoQuestion(labelOnly);
+    const choiceDropdown = isChoiceDropdownInput(inp);
 
     // Match against canonical field types with broad regex
     // Snapshot before the branch runs so we can tell a real write from a
@@ -3562,7 +3787,7 @@ async function fillUniversal(pack) {
       fillInput(inp, pack.portfolio_url || '');
 
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
-    } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)
+    } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !yesNoQ && !/country/i.test(signals)
                && !_yesNoOptionsOf(inp)) {
       // An autocomplete commits only a picked suggestion (Ashby's Location).
       if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
@@ -3572,13 +3797,17 @@ async function fillUniversal(pack) {
     // "relocation" contains it, and so does "commute to the location the role
     // is based in?" — both took this branch and got the home address typed at
     // them (Loft Orbital, live test 2026-11-03).
-    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)
+    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !yesNoQ && !/country/i.test(signals)
                && !_yesNoOptionsOf(inp)) {
       if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
       else fillInput(inp, pack.location || '');
 
+    // ── Every other pick-one dropdown: answered by picking, not here ──
+    } else if (choiceDropdown) {
+      matched = false;
+
     // ── State (parsed from location) ──
-    } else if (/\bstate\b|\bprovince\b|\bregion\b/i.test(signals) && !/country|united/i.test(signals)) {
+    } else if (/\bstate\b|\bprovince\b|\bregion\b/i.test(signals) && !yesNoQ && !/country|united/i.test(signals)) {
       if (inp.tagName === 'SELECT') {
         selectOption(inp, loc.state) || selectOption(inp, loc.abbr);
       } else {
@@ -3610,19 +3839,19 @@ async function fillUniversal(pack) {
     } else if (/cover.?letter/i.test(signals) && inp.tagName === 'TEXTAREA') {
       fillInput(inp, pack.cover_letter || '');
     } else if (/years?.*(of\s+)?experience|how.*(many|much).*experience|experience.*years?/i.test(signals)
-               && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
+               && !yesNoQ && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
       // Total tenure only for a GENERIC question: "years of Rust" is not it.
       if (yearsQuestionIsGeneric(labelOnly || inp.getAttribute('aria-label') || '')) {
         fillInput(inp, String(pack.years_experience || ''));
       } else {
         matched = false;
       }
-    } else if (/current.?title|job.?title|current.?position|current.?role/i.test(signals) && !essayPrompt) {
+    } else if (/current.?title|job.?title|current.?position|current.?role/i.test(signals) && !essayPrompt && !yesNoQ) {
       fillInput(inp, pack.current_title || '');
-    } else if (/company|employer|organization/i.test(signals) && !essayPrompt
+    } else if (/company|employer|organization/i.test(signals) && !essayPrompt && !yesNoQ
                && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
       fillInput(inp, currentEmployer(pack));
-    } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals) && !essayPrompt) {
+    } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals) && !essayPrompt && !yesNoQ) {
       fillInput(inp, String(pack.salary_min || ''));
     } else if (/\bcountry\b/i.test(signals) && inp.tagName === 'SELECT') {
       // Residence country, stated by the user — never assumed (a Toronto
@@ -5085,7 +5314,7 @@ async function fillForm(fillPack) {
 function hasApplicationForm() {
   // Shadow-DOM aware throughout — a form rendered inside a shadow root is
   // still an application form, and querySelectorAll cannot see it.
-  if (queryAllDeep("input[type='email'], input[type='file']").length) return true;
+  if (queryAllDeep("input[type='file']").length) return true;
   // A captcha's hidden response textarea sits on job DESCRIPTION pages too; it
   // is not an application field.
   const named = queryAllDeep(
@@ -5093,10 +5322,43 @@ function hasApplicationForm() {
     "input[id*='first' i], input[id*='last' i], textarea"
   ).filter((el) => !isAntiBotField(el));
   if (named.length >= 2) return true;
+  // An email box alone used to be enough. A Teamtailor job page has one — the
+  // employer's own staff sign-in ("@company.com  Log in") — beside the real
+  // "Apply for this job" button: the applicant's email was typed into the
+  // staff box and the form was never opened (live test 2026-11-14). An email
+  // box counts when it is not a sign-in form's, and the page offers no Apply
+  // control to open the real form with.
+  const emails = queryAllDeep("input[type='email']").filter((el) => {
+    const form = el.closest && el.closest('form');
+    return !(form && isLoginForm(form));
+  });
+  if (emails.length && (named.length >= 1 || !pageHasApplyControl())) return true;
   // Fallback: many visible text inputs usually means a form
   const visibleText = queryAllDeep("input[type='text'], input:not([type])")
     .filter(el => el.offsetParent !== null || (el.getClientRects && el.getClientRects().length));
   return visibleText.length >= 3;
+}
+
+// The words a job page's "open the application" control uses. English first;
+// then the same button on boards that are not in English (JOIN, Recruitee,
+// Personio and Teamtailor postings come in German, Dutch, French, Spanish,
+// Portuguese and Italian), and SmartRecruiters' own "I'm interested".
+// Live test 2026-11-14: none of those were pressed, so the form never opened.
+const _APPLY_WORDS_RE = new RegExp('\\b(' + [
+  'apply', 'submit application', 'start application', 'apply manually', 'apply now', 'apply online',
+  "i[\u2019']?m interested", 'i am interested',
+  'jetzt bewerben', 'bewerben', 'bewerbung starten',
+  'solliciteer', 'solliciteren', 'nu solliciteren',
+  'postuler', 'postulez', 'candidater',
+  'postular', 'postularme', 'solicitar empleo', 'inscribirme', 'aplicar ahora',
+  'candidatar-se', 'candidate-se', 'candidatar',
+  'candidati', 'candidarsi', 'invia candidatura',
+].join('|') + ')\\b', 'i');
+function isApplyWording(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t || t.length > 150) return false;
+  if (/with\s+(linkedin|indeed)\b/i.test(t)) return false;
+  return _APPLY_WORDS_RE.test(t);
 }
 
 // ── Step runner ───────────────────────────────────────────────────────────────
@@ -5319,6 +5581,45 @@ function findSubmitControl() {
   return worded(typed) || outside || null;
 }
 
+/**
+ * What would hold a submit back on THIS page right now — {reason, detail?} —
+ * or {reason: '', btn} when nothing does. It only LOOKS: nothing is pressed
+ * and nothing is reported. maybeAutoSubmit obeys it, and the diagnostic report
+ * quotes it (with `anyHost`: a diagnostic has no approval to check a host
+ * against), so "would this form be submitted as it stands?" can be answered
+ * on a real page without submitting anything.
+ */
+function autoSubmitBlocker(pack, audit, opts) {
+  const anyHost = !!(opts && opts.anyHost);
+  if (!anyHost && !autoSubmitAllowedHost(location.hostname, pack.auto_submit_hosts)) return { reason: 'host_not_allowed' };
+  if (!anyHost && !samePosting(pack.apply_url, location.href)) return { reason: 'different_page' };
+  if (isLoginWall()) return { reason: 'login_wall' };
+  if (isCaptcha() || captchaBlocksSubmit()) return { reason: 'captcha' };
+  // Only what the form REQUIRES and still lacks holds a submit back (the
+  // Terms' own wording: "every required field has an answer"). An empty
+  // optional box — a Twitter handle, a second phone — is the applicant's to
+  // leave empty, and every real form has some. A field holding a value the
+  // site rejects (audit.failed) holds it back too.
+  if (!audit || audit.needRequired > 0 || audit.failed > 0) return { reason: 'fields_need_you' };
+  // Our own resume upload must have been acknowledged on a form that asks for
+  // one. Asked of the attach's own outcome first, not only of the inputs:
+  // Greenhouse uploads the file and REPLACES the input, so on a complete form
+  // the one file input left is the optional cover letter's, empty — and the
+  // gate read that as "no resume" (live test 2026-11-14).
+  const fileInputs = queryAllDeep('input[type="file"]');
+  const resumeAccepted = !!(_resumeStatus && _resumeStatus.state === 'accepted');
+  if (fileInputs.length && !resumeAccepted &&
+      !fileInputs.some((fi) => (fi.files && fi.files.length) || fi.dataset.spotapplyUpload === 'accepted')) {
+    return { reason: 'fields_need_you', detail: 'resume not attached' };
+  }
+  const btn = findSubmitControl();
+  if (!btn) return { reason: 'no_submit_button' };
+  if (btn.disabled) return { reason: 'submit_disabled' };
+  const form = btn.closest && btn.closest('form');
+  if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) return { reason: 'validation', form };
+  return { reason: '', btn };
+}
+
 async function maybeAutoSubmit(pack, audit) {
   const key = String(pack.app_id) + '|' + location.href.split('#')[0];
   const done = (attempted, reason, extra) => {
@@ -5338,24 +5639,13 @@ async function maybeAutoSubmit(pack, audit) {
     return out;
   };
   if (_autoSubmitDone.has(key)) return { requested: true, attempted: false, reason: 'already_attempted' };
-  if (!autoSubmitAllowedHost(location.hostname, pack.auto_submit_hosts)) return done(false, 'host_not_allowed');
-  if (!samePosting(pack.apply_url, location.href)) return done(false, 'different_page');
-  if (isLoginWall()) return done(false, 'login_wall');
-  if (isCaptcha() || captchaBlocksSubmit()) return done(false, 'captcha');
-  if (!audit || audit.needUser > 0 || audit.failed > 0) return done(false, 'fields_need_you');
-  // Our own resume upload must have been acknowledged on a form that asks for one.
-  const fileInputs = queryAllDeep('input[type="file"]');
-  if (fileInputs.length && !fileInputs.some((fi) => (fi.files && fi.files.length) || fi.dataset.spotapplyUpload === 'accepted')) {
-    return done(false, 'fields_need_you', { detail: 'resume not attached' });
+  const block = autoSubmitBlocker(pack, audit);
+  if (block.reason) {
+    // The browser's own message beside the field it rejects.
+    if (block.reason === 'validation' && block.form) { try { block.form.reportValidity(); } catch (_) {} }
+    return done(false, block.reason, block.detail ? { detail: block.detail } : undefined);
   }
-  const btn = findSubmitControl();
-  if (!btn) return done(false, 'no_submit_button');
-  if (btn.disabled) return done(false, 'submit_disabled');
-  const form = btn.closest && btn.closest('form');
-  if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) {
-    try { form.reportValidity(); } catch (_) {}
-    return done(false, 'validation');
-  }
+  const btn = block.btn;
   _autoSubmitDone.add(key);
   // Human pacing: never in a tab the user cannot see, and a 5 s countdown the
   // user can stop — with the Stop button or by touching the form themselves.
@@ -5593,6 +5883,14 @@ async function fillCurrentPage(pack) {
   } catch (e) {
     console.warn('[SpotApply] yes/no button error:', e.message);
   }
+  // …and for pick-one dropdowns (every dropdown on Greenhouse's new boards):
+  // the residence country and the Yes/No questions the profile proves, picked
+  // from the list the way a person picks them.
+  try {
+    await answerChoiceDropdowns(pack);
+  } catch (e) {
+    console.warn('[SpotApply] dropdown error:', e.message);
+  }
   // "How did you hear about us?" as radios or an option list: the answer the
   // user saved in their profile, or nothing.
   try {
@@ -5647,6 +5945,9 @@ function auditPageFields(pack, platformFilled) {
   ).filter((el) => {
     // A captcha response box or a honeypot is not a question for anyone.
     if (isAntiBotField(el)) return false;
+    // A dropdown widget's own bookkeeping input (react-select's required
+    // shadow: aria-hidden, unfocusable) is not a second question.
+    if (el.getAttribute('aria-hidden') === 'true' && el.tabIndex === -1 && el.type !== 'file') return false;
     const proxied = el.type === 'file' || el.type === 'radio' || el.type === 'checkbox';
     return proxied ? shownVia(el) : el.offsetParent !== null;
   });
@@ -5656,7 +5957,13 @@ function auditPageFields(pack, platformFilled) {
   const ynGroups = yesNoButtonGroups(document).filter((g) => g.box.getClientRects().length);
   const inYesNoField = (el) => ynGroups.some((g) => (g.entry || g.box).contains(el));
 
-  let filled = 0, needUser = 0, skipped = 0, failed = 0;
+  // needUser counts every empty field, optional ones too: it is what the
+  // widget invites the person to look at. needRequired counts only what the
+  // FORM requires and still lacks — the one number the one-click gate reads.
+  // Live test 2026-11-14: an Ashby form with all five required answers given
+  // said "5 need you" (Twitter, a website, a cover note…) and would never
+  // have been submitted; nor would any real form, they all have optional boxes.
+  let filled = 0, needUser = 0, needRequired = 0, skipped = 0, failed = 0;
   const needUserEls = [];
   const problems = [];
   // Why a question was left for the user, when we know (shown in the widget).
@@ -5686,7 +5993,7 @@ function auditPageFields(pack, platformFilled) {
       if (ours === 'wrong_format') { flag(el, 'this field does not accept that file format'); continue; }
       if (el.files && el.files.length) { filled++; highlightField(el, 'green'); }
       else if (isFieldRequired(el)) {
-        needUser++; needUserEls.push(el); highlightField(el, 'red');
+        needUser++; needRequired++; needUserEls.push(el); highlightField(el, 'red');
       } else { skipped++; }
       continue;
     }
@@ -5701,7 +6008,7 @@ function auditPageFields(pack, platformFilled) {
         : [el];
       if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
       if (isFieldRequired(el)) {
-        needUser++; needUserEls.push(el); highlightField(el, 'red');
+        needUser++; needRequired++; needUserEls.push(el); highlightField(el, 'red');
         noteWorkAuth(radioGroupQuestion(el));
       } else { skipped++; }
       continue;
@@ -5711,12 +6018,17 @@ function auditPageFields(pack, platformFilled) {
       // a name ("I agree…", "I confirm…") both have to be ticked.
       if (el.checked) { skipped++; continue; }
       if (el.required || el.getAttribute('aria-required') === 'true') {
-        needUser++; needUserEls.push(el); highlightField(el, 'red');
+        needUser++; needRequired++; needUserEls.push(el); highlightField(el, 'red');
       } else { skipped++; }
       continue;
     }
 
     let val = el.value ? el.value.trim() : '';
+    // A pick-one dropdown is answered by its PICKED option, not by what sits
+    // in its search box: typed text there is not an answer, and a picked
+    // option leaves the box empty.
+    const choiceControl = choiceDropdownControl(el);
+    if (choiceControl) val = choiceDropdownPicked(choiceControl);
     if (el.tagName === 'BUTTON') {
       const txt = el.textContent ? el.textContent.trim() : '';
       if (!txt || /select\b|choose\b|^-$|select\s+option/i.test(txt)) {
@@ -5741,6 +6053,7 @@ function auditPageFields(pack, platformFilled) {
       needUser++;
       needUserEls.push(el);
       const isReq = isFieldRequired(el);
+      if (isReq) needRequired++;
       highlightField(el, isReq ? 'red' : 'yellow');
       if (isReq) noteWorkAuth(labelText(el));
       // Observe unfilled fields for cross-form learning
@@ -5751,7 +6064,7 @@ function auditPageFields(pack, platformFilled) {
   for (const g of ynGroups) {
     if (yesNoChoice(g)) { filled++; highlightField(g.box, 'green'); continue; }
     if (yesNoRequired(g)) {
-      needUser++; needUserEls.push(g.box); highlightField(g.box, 'red');
+      needUser++; needRequired++; needUserEls.push(g.box); highlightField(g.box, 'red');
       noteWorkAuth(g.question);
     } else { skipped++; }
   }
@@ -5762,7 +6075,9 @@ function auditPageFields(pack, platformFilled) {
     if (g.kind === 'radio') continue;
     if (g.options.some(_choiceOn)) { filled++; highlightField(g.box, 'green'); continue; }
     needUser++; needUserEls.push(g.box);
-    highlightField(g.box, g.label && labelMarksRequired(g.label) ? 'red' : 'yellow');
+    const hhRequired = !!(g.label && labelMarksRequired(g.label));
+    if (hhRequired) needRequired++;
+    highlightField(g.box, hhRequired ? 'red' : 'yellow');
   }
 
   // The résumé's own outcome survives every recount until it changes.
@@ -5772,7 +6087,7 @@ function auditPageFields(pack, platformFilled) {
     problems.push('Resume: ' + (_resumeStatus.message || 'could not be attached — attach it yourself'));
   }
 
-  return { filled, needUser, needUserEls, platformFilled, failed, problems, notes };
+  return { filled, needUser, needRequired, needUserEls, platformFilled, failed, problems, notes };
 }
 
 function isFieldRequired(el) {
@@ -6081,7 +6396,7 @@ function pageHasApplyControl() {
       if (el.offsetParent === null) return false;
       const t = String(el.textContent || el.value || el.getAttribute('aria-label') || '')
         .replace(/\s+/g, ' ').trim();
-      return t.length <= 60 && /\bapply\b/i.test(t) && !/\bwith (linkedin|indeed)\b/i.test(t);
+      return t.length <= 60 && isApplyWording(t);
     });
 }
 
@@ -6289,8 +6604,8 @@ function findAndClickApply(pack) {
       const cleanLabel = label.toLowerCase();
       // Exclude legal / terms of service / cookie consent text
       if (/terms|conditions|privacy|policy|cookie|consent|agree|by\s+applying|learn\s+more/i.test(cleanLabel)) return false;
-      // Look for action verbs / apply signals
-      if (/\b(apply|submit\s+application|start\s+application|apply\s+manually|apply\s+now|apply\s+online)\b/i.test(cleanLabel)) return true;
+      // Look for action verbs / apply signals (in the page's own language)
+      if (isApplyWording(cleanLabel)) return true;
     }
 
     if (/\/apply\b|applynow|apply-now/i.test(href)) return true;
@@ -6532,6 +6847,23 @@ function submitReadiness() {
         .replace(/\s+/g, ' ').trim().slice(0, 40) : null;
     }),
     applyButtonOnly: safe(() => !hasApplicationForm() && pageHasApplyControl()),
+    // With an application in this tab: what the fill left open, and what the
+    // one-click gate would say about the page as it stands ('ready' = nothing
+    // holds a submit back). Still read only — the gate is asked, never run.
+    gate: safe(() => {
+      if (!_copilotPack || _fillingInProgress) return null;
+      const audit = auditPageFields(_copilotPack, false);
+      const block = autoSubmitBlocker(_copilotPack, audit, { anyHost: true });
+      return {
+        verdict: block.reason || 'ready',
+        detail: block.detail || '',
+        requiredOpen: audit.needRequired,
+        optionalOpen: Math.max(0, audit.needUser - audit.needRequired),
+        filled: audit.filled,
+        resume: _resumeStatus ? _resumeStatus.state : 'none',
+        problems: (audit.problems || []).slice(0, 4),
+      };
+    }),
   };
 }
 
