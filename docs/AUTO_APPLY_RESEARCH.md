@@ -446,3 +446,67 @@ submission sent. The Chrome Web Store listing must be updated for 1.3.0 (new
 `alarms` permission, the queue, submission while a tab is in the background)
 before Store users get it; until then the dashboard tells a user on an older
 extension to update, and their approved jobs simply wait.
+
+## 9. The extension on real pages (2026-11-14)
+
+Before uploading 1.3.0 to the Store, the real extension was run over **22 real
+postings on 13 boards** through the real dashboard's Auto-Fill click, with a
+synthetic profile (a US citizen in San Francisco). **Nothing was submitted, no
+account was made, no CAPTCHA was touched and no bot protection was worked
+around** — a page that refused this server was recorded as untestable.
+
+What the real pages showed that the fixture forms had not, and what changed:
+
+| Found on | What happened | Now |
+| --- | --- | --- |
+| Greenhouse (new boards) | every dropdown is a pick-one widget whose visible input only searches its list; "Yes", the job title and "California" were TYPED into them and thrown away by the form | nothing can type into such an input (`fillInput`); `answerChoiceDropdowns` presses the control and then the option — the country, and the Yes/No questions the screening rules prove; the city search opens the widget before typing |
+| Greenhouse | any label containing "position" got the applicant's job title (three unrelated questions on one form) | the title needs a label that asks for one; no rule types at a Yes/No question (`looksLikeYesNoQuestion`) |
+| Lever | the work-authorization radios were all blank: the question sits two levels above its "Yes." / "No." radios | `radioGroupQuestion` climbs to it; "commence ('sponsor') an immigration case" is a sponsorship question |
+| Teamtailor | the applicant's email went into the employer's STAFF sign-in box; the form never opened | an email box is not an application form while the page still offers an Apply control |
+| SmartRecruiters, JOIN | "I'm interested" and "Jetzt bewerben" were not pressed | `isApplyWording`: English, "I'm interested", and the apply button in German, Dutch, French, Spanish, Portuguese, Italian |
+| Recruitee | the form sits in a tab that is not selected; it was "filled" unseen and the resume never registered | the tab is pressed open first (Radix tabs ignore a bare `click()`); with no such control the fill and the resume wait for the person |
+| Ashby, Teamtailor | the resume was attached and the submit check said "missing": the site empties the upload box after reading the file | a file the site SHOWS in the field counts (`uploadStillShown`), and stops counting when the person removes it |
+| every board | the submit check counted optional empty boxes and read a picked dropdown as empty: no real form would ever have been submitted | only what the form REQUIRES and lacks, or a value the site rejects, holds a submit back (`autoSubmitBlocker`, read-only; `maybeAutoSubmit` obeys it) |
+
+**Re-run after the fixes** (same 22 pages; "required" = fields the form marks
+required that the fill answered; the submit check is the diagnostic's read-only
+`gate`, nothing was pressed):
+
+| Board | Before | After |
+| --- | --- | --- |
+| Greenhouse ×3 | dropdown answers typed, not picked; job title in 3 wrong questions | required 5/6, 9/19, 7/12, every dropdown answer picked, no stray text; open: the employer's own questions (clearance level, background check, "have you worked here before") |
+| Lever ×3 | required 5/8, 4/21, 4/18 | 7/8, 5/21, 7/18; open: "Are you local to Austin?", long employer questionnaires |
+| Ashby ×3 | fields filled, but the submit check would have held all three | one form reads **ready**; the other two wait on the employer's own required questions (UK right to work, office days) |
+| Recruitee | form never opened | opens itself, required 4/7, resume accepted |
+| Teamtailor | form never opened; email in the staff box | opens itself, required 7/9 (phone and street address open) |
+| SmartRecruiters ×2 | apply control not pressed | pressed; the next page is behind the site's bot protection for this server — not testable here |
+| JOIN ×2 | apply control not pressed | pressed; JOIN then asks for the applicant's own email sign-in, where the fill stops |
+| Rippling ×2, Pinpoint, Personio, Breezy | partial | unchanged (7/10, 8/9, 5/8, 3/8, 4/9): their dropdowns are another widget, Breezy does not acknowledge the upload |
+| Workday, Workable | refused this server's address | not testable here |
+
+**What this says about the queue**: of 16 real forms reached, **1 would be
+submitted as filled** and 15 would be parked as "needs you" — each for a
+required question only that employer asks and no profile answers. That is the
+honest shape of real forms, and it is with a synthetic profile that has no
+saved answers; `AnswerMemory` narrows it for a real user, form by form. The
+queue's value on day one is the fill plus the short list of what is left, not
+unattended submission of everything.
+
+**With the profile's auto-fill data** (the catalog that landed the same day,
+`app/autofill/autofill_fields.py`; real server, saved street address, ZIP,
+"18 or older", driver's license, clearance level): the real Pinpoint form went
+from required 5/8 to 7/8 (address and postcode filled; the consent box is the
+person's). Saved answers reached text boxes and `<select>`s only, and one was
+written into a dropdown's hidden bookkeeping input. `answerSavedChoices` now
+picks them in pick-one dropdowns and radio questions — by the exact question,
+and only when exactly one option says the saved answer; a local form asking
+for all of it went from required 11/14 to 14/14. On the real Greenhouse form
+the saved clearance level ("None") matched none of that employer's own option
+labels and was left for the person, as designed.
+
+**Still open**: Rippling's and Personio's dropdowns, Breezy's upload
+acknowledgement, Teamtailor's phone widget, and anything Workday, Workable and
+SmartRecruiters do past the pages this server could not load. Guards:
+`extension-tests/test_extension_boards.py` (37 checks, fixtures that mirror
+each real shape), the 2026-11-14 block of `tests/test_extension_rules.py`,
+T1–T8 of `test_extension_forms.py`.

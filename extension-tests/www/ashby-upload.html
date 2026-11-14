@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html><head><title>Account Manager — Ashby-style application (upload box emptied by the site)</title></head>
+<body>
+  <h1>Account Manager</h1>
+  <!-- A real Ashby form's resume field (live test 2026-11-14, synthetic copy):
+       the site READS the chosen file and then empties the input, showing the
+       file's name beside a "Replace" button. The input holds nothing, the
+       resume is attached — and the submit check read it as missing. -->
+  <!-- ?parsed=1: Ashby's own "Autofill from resume" card. It reads the resume,
+       fills what it can AND shows the file in the Resume field below — whose
+       input never held it. -->
+  <div class="ashby-autofill-card" id="autofill-card" hidden>
+    <label for="ash-autofill">Autofill from resume</label>
+    <p>Upload your resume here to autofill key application fields.</p>
+    <input type="file" id="ash-autofill" name="autofill_resume">
+    <p id="ash-autofill-status" hidden>Reading your resume…</p>
+  </div>
+  <form id="application-form" action="/thanks.html" method="get">
+    <div class="ashby-application-form-field-entry">
+      <label for="_systemfield_name">Name*</label>
+      <input type="text" id="_systemfield_name" name="_systemfield_name" required>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label for="_systemfield_email">Email*</label>
+      <input type="email" id="_systemfield_email" name="_systemfield_email" required>
+    </div>
+    <div class="ashby-application-form-field-entry" id="resume-entry">
+      <label for="_systemfield_resume">Resume*</label>
+      <div class="dropzone">
+        <input type="file" id="_systemfield_resume" style="position:absolute;opacity:0;width:1px;height:1px">
+        <div id="resume-shown"></div>
+        <button type="button" id="resume-pick">Upload file</button>
+        <span>or drag and drop here</span>
+      </div>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label for="twitter">Twitter</label>
+      <input type="text" id="twitter" name="twitter">
+    </div>
+    <button type="submit" class="ashby-application-form-submit-button">Submit Application</button>
+  </form>
+  <script>
+    const input = document.getElementById('_systemfield_resume');
+    const shown = document.getElementById('resume-shown');
+    window.__resumeInputChanges = 0;
+    function showFile(name) {
+      shown.innerHTML = '<span class="file-name">' + name + '</span> ' +
+                        '<button type="button" id="resume-clear" title="Clear">×</button>';
+      document.getElementById('resume-pick').textContent = 'Replace';
+      document.getElementById('resume-clear').addEventListener('click', function () {
+        shown.innerHTML = '';
+        document.getElementById('resume-pick').textContent = 'Upload file';
+      });
+    }
+    input.addEventListener('change', function () {
+      if (!input.files.length) return;
+      window.__resumeInputChanges++;
+      const name = input.files[0].name;
+      setTimeout(function () {
+        input.value = '';                               // the site has the file; the box is emptied
+        showFile(name);
+      }, 400);
+    });
+    if (/[?&]parsed=1/.test(location.search)) {
+      const card = document.getElementById('autofill-card');
+      const auto = document.getElementById('ash-autofill');
+      const status = document.getElementById('ash-autofill-status');
+      const form = document.getElementById('application-form');
+      card.hidden = false;
+      auto.addEventListener('change', function () {
+        if (!auto.files.length) return;
+        const name = auto.files[0].name;
+        status.hidden = false;
+        form.setAttribute('aria-busy', 'true');
+        setTimeout(function () {
+          document.getElementById('_systemfield_name').value = 'Alexandra Nguyen';
+          showFile(name);                               // the Resume field shows it; its input never held it
+          status.hidden = true;
+          form.removeAttribute('aria-busy');
+        }, 600);
+      });
+    }
+  </script>
+</body>
+</html>

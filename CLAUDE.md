@@ -1063,6 +1063,26 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   extension gets "update" and the approved jobs wait. Guards: `test_apply_queue`,
   the queue block of `test_extension_rules`, `extension-tests/test_extension_queue.py`.
 
+- **Real boards are not the fixtures** (2026-11-14, `docs/AUTO_APPLY_RESEARCH.md` §9:
+  22 real postings, 13 boards, nothing submitted). A pick-one dropdown's visible
+  input only SEARCHES (Greenhouse's new boards): `fillInput` refuses it and
+  `answerChoiceDropdowns` presses control → option, by the screening rules; no rule
+  types at a Yes/No label (`looksLikeYesNoQuestion`). `radioGroupQuestion` climbs
+  to a question above its radios (Lever). An email box is not a form while the page
+  offers an Apply control (Teamtailor's staff sign-in); a form in an unselected tab
+  is opened first, tabs PRESSED not `click()`ed (Recruitee); `isApplyWording` is the
+  one apply-button vocabulary. **The submit gate is `autoSubmitBlocker`** (read-only;
+  `maybeAutoSubmit` obeys it, the diagnostic quotes it): only REQUIRED-and-open
+  fields (`audit.needRequired`) or a rejected value hold a submit, and a resume the
+  site shows in its field counts though the input is empty (`uploadStillShown`).
+  1 of 16 real forms read "ready" — the rest wait on that employer's own questions.
+  **Saved answers reach every shape** (1.3.0): `answerSavedChoices` asks
+  `/api/recall-answers` for the open pick-one dropdowns and radio groups by their
+  exact question and picks only when ONE option says the answer (`savedOptionIndex`;
+  no fuzzy match, never work-auth / self-identification / how-heard), after the
+  profile's own rules; `canFillField` refuses a widget's hidden bookkeeping input.
+  Guard: `extension-tests/test_extension_boards.py`.
+
 - **My profile is a PAGE, and auto-fill data is ONE catalog** (2026-11-14, founder:
   "not popup", "remove trust profile", "collect all data to help autofill").
   `openProfileModal()` (name kept: settings rows, tour and setup call it) shows
@@ -1078,8 +1098,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`UserProfile.autofill_json` via `merge`: keys not sent are kept, "" clears) and
   for which saved answer a form field asks for (`answer_for_label`). Those answers
   reach forms through `/api/recall-answers`, so today's Store extension fills them
-  into empty text boxes and dropdowns with NO release (radio/button questions need
-  one). The matcher reads only the visible label, refuses work-authorization /
+  into empty text boxes and `<select>`s with NO release; radio questions and
+  pick-one dropdowns take them from extension 1.3.0 (`answerSavedChoices`), Ashby's
+  Yes/No buttons not yet. The matcher reads only the visible label, refuses work-authorization /
   self-identification / how-heard / anti-bot fields (`field_guards`), refuses an
   ambiguous label, and `drop_borrowable` withholds an answer the extension's 0.8
   fuzzy match would copy into a neighbour ("Address line 1" → "line 2").

@@ -50,6 +50,11 @@ REQUESTS: list[tuple[str, str]] = []
 # per-scenario override (phone, skills, sponsorship) is silently reverted.
 CURRENT_PACK: dict = {}
 
+# What /api/recall-answers gives back: {substring of the asked label (lower
+# case): answer}. Empty = nothing saved, as for a new user. The real route
+# answers by the caller's own label, so this does too.
+RECALL: dict = {}
+
 # How many resume requests the stub answers "still being written" (409) — the
 # server's answer while Auto-Fill's own tailor runs (live test 2026-11-03).
 RESUME_GENERATING = {"left": 0}
@@ -158,7 +163,16 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
                 pass
         REQUESTS.append(("POST", path))
         if "recall-answers" in self.path:
-            return self._json({"answers": []})
+            try:
+                labels = (json.loads(body.decode("utf-8") or "{}").get("labels")) or []
+            except Exception:
+                labels = []
+            answers = {}
+            for label in labels:
+                for needle, answer in RECALL.items():
+                    if needle in str(label).lower():
+                        answers[label] = answer
+            return self._json({"answers": answers})
         return self._json({"ok": True})
 
 
@@ -387,12 +401,16 @@ def main():
         # panel is display:none when auto-fill fires, so every field is
         # invisible (offsetParent null) and gets skipped.
         print("\nRecruitee layout (application panel hidden when fill fires)")
-        pack = base_pack(f"{BASE}/recruitee.html")
-        page, _ = drive_fill(ctx, f"{BASE}/recruitee.html", pack)
+        plain_url = f"{BASE}/recruitee.html?plain=1"
+        pack = base_pack(plain_url)
+        page, _ = drive_fill(ctx, plain_url, pack)
         v = lambda sel: page.eval_on_selector(sel, "el => el.value")
         hidden_full = v("#full_name")
-        check("T1 fields skipped while the panel is hidden (expected)",
-              hidden_full == "", f"full_name={hidden_full!r}")
+        check("T1 no control says \"apply\": fields are skipped while the panel is hidden",
+              hidden_full == "" and page.evaluate("() => window.__tabClicks") == 0, f"full_name={hidden_full!r}")
+        check("T1b ...and the resume is not pushed into a box nobody can see",
+              page.eval_on_selector("#cand_cv", "el => el.dataset.spotapplyUpload || ''") != "unconfirmed",
+              page.eval_on_selector("#cand_cv", "el => el.dataset.spotapplyUpload || ''"))
         # Now the user clicks through to the Application tab, as they would.
         page.click("#tab-application")
         page.wait_for_timeout(6000)  # copilot re-runs on DOM change
@@ -404,6 +422,25 @@ def main():
         marked = page.eval_on_selector(
             "#cand_email", "el => el.dataset.spotapplyFilled === 'true'")
         check("T5 filled fields are marked as ours (diagnostics)", marked)
+        check("T5b the resume goes in once the panel is on screen",
+              page.eval_on_selector("#cand_cv", "el => el.files.length") == 1)
+        page.close()
+
+        # Live test 2026-11-14 (learned.recruitee.com, Dutch): the form sits in
+        # the "Solliciteren" tab. The extension now opens that tab itself.
+        pack = base_pack(f"{BASE}/recruitee.html")
+        page, _ = drive_fill(ctx, f"{BASE}/recruitee.html", pack)
+        page.wait_for_timeout(3000)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("T6 the \"Application\" tab is opened by the extension, once",
+              page.evaluate("() => window.__tabClicks") == 1 and
+              page.evaluate("() => document.getElementById('panel-application').style.display") == "",
+              str(page.evaluate("() => window.__tabClicks")))
+        check("T7 ...and the form in it is filled without the person",
+              pack["first_name"] in (v("#full_name") or "") and v("#cand_email") == pack["email"],
+              f"{v('#full_name')!r} {v('#cand_email')!r}")
+        check("T8 ...resume included",
+              page.eval_on_selector("#cand_cv", "el => el.files.length") == 1)
         page.close()
 
         # ── A: Ashby — essay prompt, parser widget, required radios ─────────

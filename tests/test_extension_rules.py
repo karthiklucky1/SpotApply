@@ -48,6 +48,7 @@ FUNCTIONS = [
     "askingSentence", "asksAvailability", "_yesNoOptions", "_yesNoOptionsOf",
     "answerYesNoSelect", "selectOption", "answerWorkAuthField",
     "queueSignalForFill",
+    "looksLikeYesNoQuestion", "countryOptionIndex", "isApplyWording", "savedOptionIndex",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "AUTO_SUBMIT_BLOCK_TEXT", "QUEUE_FILL_ONLY_REASONS", "QUEUE_HANDOFF_REASON",
@@ -56,7 +57,7 @@ CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFF
           "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
           "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES",
           "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS", "_HH_ASKED", "_HOW_HEARD_FILL_RE",
-          "_SPECIFY_RE"]
+          "_SPECIFY_RE", "_APPLY_WORDS_RE"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -916,8 +917,9 @@ def test_one_click_hosts_match_by_suffix_from_the_servers_list(host, hosts, want
 def test_the_extension_carries_no_one_click_list_or_cap_of_its_own():
     """The allow-list and the daily cap live in the server's fill-pack verdict
     (server._one_click_decision); content.js only reads pack.auto_submit*."""
-    fn = _function(CONTENT, "maybeAutoSubmit")
+    fn = _function(CONTENT, "autoSubmitBlocker")
     assert "pack.auto_submit_hosts" in fn
+    assert "autoSubmitBlocker(pack, audit)" in _function(CONTENT, "maybeAutoSubmit"), "the press obeys that decision"
     assert "ONE_CLICK" not in CONTENT.upper().replace("ONE-CLICK", "") or "ONE_CLICK_HOSTS" not in CONTENT
     assert "auto_submit_hosts" not in BACKGROUND
     step = _function(CONTENT, "runCopilotStep")
@@ -929,14 +931,23 @@ def test_one_click_refuses_before_it_presses_anything():
     Submit control is even looked for; the press is the form's own button,
     announced as an ATTEMPT (noteSubmitAttempt) — "Submitted" still needs the
     employer's confirmation."""
+    # The decision (autoSubmitBlocker) only LOOKS; maybeAutoSubmit obeys it
+    # before anything else and is the only one of the two that presses.
+    decide = _function(CONTENT, "autoSubmitBlocker")
+    order = [decide.index(s) for s in ("autoSubmitAllowedHost(", "isLoginWall()", "isCaptcha() || captchaBlocksSubmit()",
+                                       "fields_need_you", "findSubmitControl()", "submit_disabled", "checkValidity")]
+    assert order == sorted(order), order
+    for acts in (".click(", "noteSubmitAttempt", "reportTelemetry", "showOverlay", "reportValidity", "fillInput"):
+        assert acts not in decide, f"the decision must not act: {acts}"
     fn = _function(CONTENT, "maybeAutoSubmit")
-    order = [fn.index(s) for s in ("autoSubmitAllowedHost(", "isLoginWall()", "isCaptcha() || captchaBlocksSubmit()",
-                                   "fields_need_you", "findSubmitControl()", "submitCountdown(pack)",
-                                   "noteSubmitAttempt('one_click')", "btn.click()")]
+    order = [fn.index(s) for s in ("autoSubmitBlocker(pack, audit)", "if (block.reason)", "submitCountdown(pack)",
+                                   "isCaptcha() || captchaBlocksSubmit()", "noteSubmitAttempt('one_click')",
+                                   "btn.click()")]
     assert order == sorted(order), order
     # The page-level isCaptcha() answers false whenever a form is present, so
     # the gate also asks the form-aware check — and asks AGAIN after the dwell.
-    assert fn.count("captchaBlocksSubmit()") >= 2
+    assert "captchaBlocksSubmit()" in decide and "captchaBlocksSubmit()" in fn
+    fn = decide + fn
     dwell = _function(CONTENT, "submitCountdown")
     assert "visibilityState !== 'visible'" in dwell, "never in a tab the user cannot see"
     assert "isTrusted" in dwell and "'keydown'" in dwell and "'mousedown'" in dwell, "the user's own touch cancels"
@@ -962,8 +973,11 @@ def test_overlay_text_is_escaped_and_every_block_reason_has_words():
         "&lt;b onclick=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/b&gt;"
     assert run_js([["escapeHtml", None]])[0] == ""
     text = _const(CONTENT, "AUTO_SUBMIT_BLOCK_TEXT")
-    fn = _function(CONTENT, "maybeAutoSubmit")
-    for reason in re.findall(r"done\(false, '([a-z_]+)'", fn):
+    reasons = set(re.findall(r"done\(false, '([a-z_]+)'", _function(CONTENT, "maybeAutoSubmit")))
+    reasons |= set(re.findall(r"reason: '([a-z_]+)'", _function(CONTENT, "autoSubmitBlocker")))
+    assert {"host_not_allowed", "login_wall", "captcha", "fields_need_you", "no_submit_button",
+            "validation", "cancelled_by_user"} <= reasons, reasons
+    for reason in reasons:
         assert f"{reason}:" in text, f"no user-facing words for {reason}"
 
 
@@ -991,7 +1005,7 @@ def test_the_clicks_approval_survives_the_packs_refresh_but_not_a_refusal():
     assert "fillPack.auto_submit === true" in fn
     assert "String(fillPack.app_id) === String(fresh.app_id)" in fn, "never another application's approval"
     assert "fresh.auto_submit = true" in carry
-    gate = _function(CONTENT, "maybeAutoSubmit")
+    gate = _function(CONTENT, "autoSubmitBlocker")
     assert gate.index("autoSubmitAllowedHost(") < gate.index("samePosting(pack.apply_url") < gate.index("isLoginWall()")
 
 
@@ -1036,7 +1050,7 @@ def test_the_queue_adds_a_list_not_a_second_gate():
     assert "function queueSignal(" in CONTENT
     sig = _function(CONTENT, "queueSignal")
     assert "!pack.queue_item_id" in sig and "QUEUE_SIGNAL" in sig
-    gate = _function(CONTENT, "maybeAutoSubmit")
+    gate = _function(CONTENT, "maybeAutoSubmit") + _function(CONTENT, "autoSubmitBlocker")
     assert "queue" not in gate.lower(), "the gate does not know the queue exists"
     step = _function(CONTENT, "runCopilotStep")
     assert step.index("maybeAutoSubmit(") < step.index("queueSignalForFill("), "signalled after the gate decided"
@@ -1233,3 +1247,347 @@ def test_the_resume_is_retried_while_it_is_being_written():
     # the native-autofill step runs before any field is filled: it must not wait
     native = _function(CONTENT, "runNativeAutofill")
     assert "noWait: true" in native
+
+
+# ── Live test 2026-11-14: 22 real postings on 13 boards ──────────────────────
+# Nothing was submitted, no account made, no CAPTCHA touched. What the real
+# pages showed that the synthetic forms had not is pinned below; the browser
+# side is extension-tests/test_extension_boards.py.
+
+@pytest.mark.parametrize("label,want", [
+    ("Are you legally authorized to work in the United States?*", True),
+    ("Did a current employee refer you to this position?", True),
+    ("Will you now, or in the future, require sponsorship?", True),
+    ("Do you have experience with Python?", True),
+    ("Have you worked at Neo4j before?*", True),
+    ("Is this your first application to HarnessCo?", True),
+    ("Would you be open to relocating?", True),
+    # a noun phrase is a field, and so is a question that asks FOR something
+    ("Current title", False),
+    ("Location (City)*", False),
+    ("Country*", False),
+    ("Position", False),
+    ("What is your current location?", False),
+    ("How many years of experience do you have?", False),
+    ("Desired salary", False),
+    ("", False),
+    (None, False),
+])
+def test_a_yes_no_question_is_recognised_by_how_it_starts(label, want):
+    assert run_js([["looksLikeYesNoQuestion", label]])[0] is want
+
+
+def _title_rule(fn_name: str) -> str:
+    """The regex a fill function tests a label against before writing the
+    applicant's current job title."""
+    fn = _function(CONTENT, fn_name)
+    m = re.search(r"/((?:[^/\n\\]|\\.)+)/i\.test\(\w+\) && !yesNoQ\) fillInput\(inp, pack\.current_title", fn)
+    assert m, f"{fn_name}: the job-title rule must also require a non-Yes/No label"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("label,want", [
+    ("Current title", True),
+    ("Current Job Title *", True),
+    ("Job title", True),
+    ("Title", True),
+    ("Position *", True),
+    ("Current role", True),
+    # the three real questions that received "Senior Software Engineer"
+    ("Did a current employee refer you to this position?", False),
+    ("Why are you interested in this position?", False),
+    ("How did you hear about this position?", False),
+    ("Are you applying for a position in the United States?", False),
+    ("What interests you about the position at HarnessCo?", False),
+])
+def test_the_job_title_goes_only_to_a_question_that_asks_for_it(label, want):
+    """Greenhouse's rule was /current.*title|job.*title|position/ — any label
+    with the word "position" in it got the applicant's job title."""
+    pattern = _title_rule("fillGreenhouse")
+    script = PRELUDE + f"""
+const rule = new RegExp({json.dumps(pattern)}, 'i');
+const label = {json.dumps(label)};
+process.stdout.write(JSON.stringify(rule.test(label) && !looksLikeYesNoQuestion(label)));
+"""
+    res = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout) is want
+
+
+def test_a_dropdowns_search_box_is_never_typed_into():
+    """Every dropdown on Greenhouse's new boards is a pick-one widget whose
+    visible input only SEARCHES its list. "Yes", a job title and "California"
+    were typed into them and thrown away by the form. Now: nothing can type
+    into one, and the answer is picked from the list by the same screening
+    rules radios and Yes/No buttons use."""
+    assert "if (isChoiceDropdownInput(el)) return false;" in _function(CONTENT, "fillInput")
+    assert "if (isChoiceDropdownInput(inp)) continue;" in _function(CONTENT, "fillGreenhouse")
+    uni = _function(CONTENT, "fillUniversal")
+    assert "const choiceDropdown = isChoiceDropdownInput(inp);" in uni and "} else if (choiceDropdown) {" in uni
+    pick = _function(CONTENT, "answerChoiceDropdowns")
+    for guard in ("isAntiBotField(input)", "spotapplyUserModified === 'true'", "choiceDropdownPicked(control)) continue",
+                  "eeoKindOf(control) || isDemographicQuestion(question)", "isHowHeardQuestion(question)",
+                  "classifyScreeningQuestion(question, pack)", "residenceCountry(pack)"):
+        assert guard in pick, guard
+    assert "if (!country) continue;" in pick, "a country is never assumed"
+    assert "ai_answers" not in pick and "recall" not in pick.lower(), "only the profile's own facts"
+    opener = _function(CONTENT, "pickCustomOption")
+    assert "if (!choiceDropdownPicked(control))" in opener, "a pick counts only when the control SHOWS it"
+    assert ".value =" not in opener and "_typeNoBlur" not in opener, "picked, never typed"
+    page = _function(CONTENT, "fillCurrentPage")
+    assert page.index("answerYesNoButtons(pack)") < page.index("await answerChoiceDropdowns(pack)") \
+        < page.index("fillEssayQuestions(")
+    # The city search is the one dropdown text goes into — and it opens the
+    # widget first, then reads the PICKED value, not the emptied search box.
+    loc = _function(CONTENT, "fillLocationCombobox")
+    assert loc.index("choiceDropdownControl(el)") < loc.index("_typeNoBlur(el, loc.city)")
+    assert "control ? choiceDropdownPicked(control) : String(el.value || '')" in loc
+
+
+@pytest.mark.parametrize("options,country,want", [
+    (["Afghanistan +93", "Canada +1", "United Kingdom +44", "United States +1"], "United States", 3),
+    (["Afghanistan +93", "Canada +1", "United Kingdom +44", "United States +1"], "Canada", 1),
+    (["United States", "Canada"], "United States", 0),
+    (["United States (+1)", "India (+91)"], "India", 1),
+    (["Afghanistan +93", "Canada +1"], "United States", -1),           # not offered: nothing is picked
+    (["United States +1"], "", -1),                                     # no country on the profile: never assumed
+    (["United States +1"], None, -1),
+    ([], "United States", -1),
+])
+def test_the_dialling_code_is_not_the_countrys_name(options, country, want):
+    assert run_js([["countryOptionIndex", options, country]])[0] == want
+
+
+@pytest.mark.parametrize("question,profile,want", [
+    # Lever, verbatim shape: a sponsorship question that never says "visa".
+    ('Will you now or in the future require HarnessCo to commence ("sponsor") an immigration case in order '
+     'to employ you (for example, H-1B or other employment-based immigration case)?',
+     dict(work_authorization="US Citizen", requires_sponsorship=False), False),
+    ('Will you now or in the future require HarnessCo to commence ("sponsor") an immigration case in order '
+     'to employ you (for example, H-1B or other employment-based immigration case)?',
+     dict(work_authorization="F-1 OPT", requires_sponsorship=True), True),
+    ("Will you require the company to file an immigration petition for you to work here?",
+     dict(work_authorization="US Citizen", requires_sponsorship=False), False),
+    ("Would you need an employment-based visa to work in the United States?",
+     dict(work_authorization="F-1 OPT", requires_sponsorship=True), True),
+    ("Are you legally authorized to work in the United States?",
+     dict(work_authorization="US Citizen", requires_sponsorship=False), True),
+])
+def test_an_immigration_case_is_a_sponsorship_question(question, profile, want):
+    assert run_js([["classifyScreeningQuestion", question, profile]])[0] is want
+
+
+@pytest.mark.parametrize("text,want", [
+    ("Apply", True), ("Apply now", True), ("Apply for this job", True), ("Start application", True),
+    ("I'm interested", True), ("I’m interested", True), ("I am interested", True),   # SmartRecruiters
+    ("Jetzt bewerben", True), ("Bewerben", True),                                         # German (JOIN, Personio)
+    ("Solliciteer nu", True), ("Solliciteren", True),                                      # Dutch (Recruitee)
+    ("Postuler", True), ("Postulez maintenant", True),                                     # French
+    ("Postular", True), ("Aplicar ahora", True),                                           # Spanish
+    ("Candidatar-se", True), ("Candidati ora", True),                                      # Portuguese, Italian
+    ("Apply with LinkedIn", False), ("Apply with Indeed", False),                          # never the shortcuts
+    ("Refer a friend", False), ("Share this job", False), ("Log in", False), ("Sign up for alerts", False),
+    ("Interested in more jobs like this?", False),
+    ("", False), (None, False),
+    ("apply " * 60, False),                                                                # a paragraph is not a button
+])
+def test_the_apply_control_is_recognised_in_the_pages_own_words(text, want):
+    assert run_js([["isApplyWording", text]])[0] is want
+
+
+def test_both_apply_finders_read_the_same_words():
+    assert "isApplyWording(cleanLabel)" in _function(CONTENT, "findAndClickApply")
+    assert "isApplyWording(t)" in _function(CONTENT, "pageHasApplyControl")
+    # The legal-text and shortcut exclusions stay in front of the wording.
+    fn = _function(CONTENT, "findAndClickApply")
+    assert fn.index("with\\s+linkedin|with\\s+indeed") < fn.index("terms|conditions|privacy") \
+        < fn.index("isApplyWording(cleanLabel)")
+    # An email box alone is not an application form when the page still offers
+    # an Apply control (Teamtailor's staff sign-in sat beside "Apply for this job").
+    form = _function(CONTENT, "hasApplicationForm")
+    assert "named.length >= 1 || !pageHasApplyControl()" in form
+    assert "isLoginForm(form)" in form
+
+
+def _gate(state: dict) -> dict:
+    """Run the real autoSubmitBlocker against a described page."""
+    script = "\n".join([
+        "const S = " + json.dumps(state) + ";",
+        "let _resumeStatus = S.resume ? { state: S.resume } : null;",
+        "globalThis.location = { hostname: S.host, href: S.href };",
+        "function isLoginWall() { return !!S.login; }",
+        "function isCaptcha() { return false; }",
+        "function captchaBlocksSubmit() { return !!S.captcha; }",
+        "function queryAllDeep() { return (S.fileInputs || []).map((f) => ({ files: f.files || [], dataset: f.dataset || {} })); }",
+        "function findSubmitControl() {",
+        "  if (!S.btn) return null;",
+        "  return { disabled: !!S.btn.disabled, closest: () => (S.btn.form ? { checkValidity: () => !!S.btn.form.valid } : null) };",
+        "}",
+        _function(CONTENT, "hostIs"), _function(CONTENT, "autoSubmitAllowedHost"),
+        _function(CONTENT, "samePosting"), _function(CONTENT, "autoSubmitBlocker"),
+        "const out = autoSubmitBlocker(S.pack, S.audit, S.opts);",
+        "process.stdout.write(JSON.stringify({ reason: out.reason, detail: out.detail || '', press: !!out.btn }));",
+    ])
+    res = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    return json.loads(res.stdout)
+
+
+_PAGE = dict(host="boards.greenhouse.io", href="https://boards.greenhouse.io/acme/jobs/123",
+             pack={"auto_submit_hosts": ["greenhouse.io"], "apply_url": "https://boards.greenhouse.io/acme/jobs/123"},
+             audit={"filled": 9, "needUser": 0, "needRequired": 0, "failed": 0},
+             btn={"form": {"valid": True}}, resume="accepted", fileInputs=[])
+
+
+@pytest.mark.parametrize("change,want", [
+    ({}, {"reason": "", "detail": "", "press": True}),
+    # Empty OPTIONAL boxes are the applicant's to leave empty: every real form
+    # has some, and counting them parked every real form.
+    ({"audit": {"filled": 9, "needUser": 5, "needRequired": 0, "failed": 0}}, {"reason": "", "detail": "", "press": True}),
+    # What the form REQUIRES and lacks holds it; so does a value the site rejects.
+    ({"audit": {"filled": 9, "needUser": 1, "needRequired": 1, "failed": 0}},
+     {"reason": "fields_need_you", "detail": "", "press": False}),
+    ({"audit": {"filled": 9, "needUser": 1, "needRequired": 0, "failed": 1}},
+     {"reason": "fields_need_you", "detail": "", "press": False}),
+    ({"audit": None}, {"reason": "fields_need_you", "detail": "", "press": False}),
+    # Greenhouse replaces the resume input once uploaded: the one file input
+    # left is the optional cover letter's, empty. The attach's own outcome decides.
+    ({"fileInputs": [{"files": []}]}, {"reason": "", "detail": "", "press": True}),
+    ({"fileInputs": [{"files": []}], "resume": ""},
+     {"reason": "fields_need_you", "detail": "resume not attached", "press": False}),
+    ({"fileInputs": [{"files": []}], "resume": "unconfirmed"},
+     {"reason": "fields_need_you", "detail": "resume not attached", "press": False}),
+    ({"fileInputs": [{"files": [1]}], "resume": ""}, {"reason": "", "detail": "", "press": True}),   # the user's own file
+    # The site's own steps come before any field is counted.
+    ({"login": True, "audit": {"needRequired": 3, "failed": 0}}, {"reason": "login_wall", "detail": "", "press": False}),
+    ({"captcha": True}, {"reason": "captcha", "detail": "", "press": False}),
+    ({"btn": None}, {"reason": "no_submit_button", "detail": "", "press": False}),
+    ({"btn": {"disabled": True, "form": {"valid": True}}}, {"reason": "submit_disabled", "detail": "", "press": False}),
+    ({"btn": {"form": {"valid": False}}}, {"reason": "validation", "detail": "", "press": False}),
+    # The server's list and the approved posting bind the press…
+    ({"host": "jobs.example.com", "href": "https://jobs.example.com/acme/jobs/123"},
+     {"reason": "host_not_allowed", "detail": "", "press": False}),
+    ({"href": "https://boards.greenhouse.io/other/jobs/9"}, {"reason": "different_page", "detail": "", "press": False}),
+    # …and are skipped only for the read-only diagnostic, which presses nothing.
+    ({"host": "jobs.example.com", "href": "https://jobs.example.com/acme/jobs/123", "opts": {"anyHost": True}},
+     {"reason": "", "detail": "", "press": True}),
+])
+def test_only_what_the_form_requires_holds_a_submit_back(change, want):
+    assert _gate(dict(_PAGE, **change)) == want
+
+
+def test_the_field_audit_counts_required_apart_and_reads_what_a_dropdown_shows():
+    audit = _function(CONTENT, "auditPageFields")
+    assert "needRequired" in audit[audit.rindex("return {"):], "the gate's number is part of the audit"
+    # a picked option leaves the search box empty; typed text is not an answer
+    assert "if (choiceControl) val = choiceDropdownPicked(choiceControl);" in audit
+    # the widget's unfocusable required shadow is not a second question
+    assert "el.getAttribute('aria-hidden') === 'true' && el.tabIndex === -1 && el.type !== 'file'" in audit
+    gate = _function(CONTENT, "autoSubmitBlocker")
+    assert "audit.needRequired > 0 || audit.failed > 0" in gate
+    assert "audit.needUser" not in gate, "optional empties never hold a submit back"
+    # The read-only diagnostic quotes the same decision and still presses nothing.
+    ready = _function(CONTENT, "submitReadiness")
+    assert "autoSubmitBlocker(_copilotPack, audit, { anyHost: true })" in ready
+    assert ".click(" not in ready and "noteSubmitAttempt" not in ready and "maybeAutoSubmit" not in ready
+
+
+def test_an_accepted_upload_counts_after_the_site_empties_the_box():
+    """Ashby and Greenhouse read the chosen file and then empty (or replace)
+    the input. The resume is attached and `files` is empty: every real Ashby
+    form read "resume missing". Proof is the site's own display — and it stops
+    counting the moment the person removes the file."""
+    shown = _function(CONTENT, "uploadStillShown")
+    assert "_hasUploadedMarker(fi)" in shown and "_resumeStatus.filename" in shown
+    assert "_resumeStatus.state !== 'accepted'" in shown, "only a resume the site accepted proves anything"
+    assert "_fileFieldScope(fi)" in shown, "the name must sit in THIS field, not anywhere on the page"
+    audit = _function(CONTENT, "auditPageFields")
+    assert "if (uploadStillShown(el)) {" in audit
+    # an upload the site never acknowledged, or a wrong format, is still a problem
+    assert audit.index("ours === 'unconfirmed'") < audit.index("uploadStillShown(el)")
+    assert audit.index("ours === 'wrong_format'") < audit.index("uploadStillShown(el)")
+    # the diagnostic names the questions behind its number, never a value
+    ready = _function(CONTENT, "submitReadiness")
+    assert "requiredOpenFields" in ready and ".value" not in ready[ready.index("requiredOpenFields"):]
+
+
+def test_a_form_in_an_unselected_tab_is_opened_before_it_is_filled():
+    """Recruitee keeps the application in a tab that is not selected. The form
+    was "filled" where nobody could see it: the resume went into a box the
+    site never registered and every other field stayed blank. Now the page's
+    own control opens it first — and a tab is PRESSED (Radix tabs act on
+    mousedown; a bare click() does nothing, verified on a live page)."""
+    hidden = _function(CONTENT, "applicationFormHidden")
+    assert "formLooksLikeApplication(f) && !isLoginForm(f)" in hidden and "getClientRects" in hidden
+    fill = _function(CONTENT, "fillForm")
+    gate = "applicationFormHidden() && pageHasApplyControl() && findAndClickApply(pack, { quiet: true })"
+    assert gate in fill
+    assert fill.index("if (!hasApplicationForm()) {") < fill.index(gate) < fill.rindex("runCopilotStep()")
+    find = _function(CONTENT, "findAndClickApply")
+    assert "if (quiet) return false;" in find
+    assert find.index("if (quiet) return false;") < find.index("queueSignal(pack, 'parked', 'no_form')"), \
+        "nothing is parked and no overlay shown when the caller has another path"
+    assert "getAttribute('role') === 'tab') _pressElement(candidates[0]);" in find
+    assert "[role='tab']" in find and "[role='tab']" in _function(CONTENT, "pageHasApplyControl")
+    tab = _function(CONTENT, "isApplicationTab")
+    assert "getAttribute('role') !== 'tab'" in tab, "the bare noun counts only as a TAB's whole label"
+    # While the form is not on screen the resume waits for the pass that sees it.
+    step = _function(CONTENT, "runCopilotStep")
+    assert step.index("if (applicationFormHidden()) {") < step.index("attachResume(document, pack)")
+
+
+@pytest.mark.parametrize("options,answer,want", [
+    (["None", "Public Trust", "Secret", "Top Secret"], "None", 0),
+    (["None", "Public Trust", "Secret", "Top Secret"], "secret", 2),          # case does not matter
+    (["None", "Public Trust", "Secret", "Top Secret"], "Confidential", -1),   # not offered: never a near match
+    (["None", "Public Trust", "Secret", "Top Secret"], "Top", -1),
+    (["Yes.", "No."], "Yes", 0),                                               # Lever's captions
+    (["Yes.", "No."], "No", 1),
+    (["Yes, I am", "No, I am not"], "Yes", 0),
+    (["Yes", "Yes but I may require flexibility", "No"], "Yes", 0),            # the exact one wins
+    (["Yes - Lendable loan", "Yes - Zable credit card", "Not applicable"], "Yes", -1),   # two candidates: no answer
+    (["None", "Not applicable", "Now"], "No", -1),                             # "no" is a word, not a prefix
+    (["Bachelor's degree", "Master's degree"], "Bachelor's degree", 0),
+    (["Bachelor\u2019s degree *", "Master\u2019s degree"], "Bachelor\u2019s degree", 0),
+    (["Secret", "Secret"], "Secret", -1),                                      # ambiguous list
+    (["Yes", "No"], "", -1),
+    (["Yes", "No"], None, -1),
+    ([], "Yes", -1),
+])
+def test_a_saved_answer_is_used_only_when_one_option_says_it(options, answer, want):
+    assert run_js([["savedOptionIndex", options, answer]])[0] == want
+
+
+def test_saved_answers_reach_dropdowns_and_radios_and_never_the_guarded_questions():
+    """The profile's auto-fill data and answers from earlier forms come back
+    from /api/recall-answers. recallFromMemory writes them into text boxes and
+    <select>s; a pick-one dropdown and a radio group need a PICK. Same
+    refusals as recall: work authorization (one interpreter), protected
+    self-identification, "how did you hear", anti-bot fields, and anything the
+    person already answered or changed."""
+    fn = _function(CONTENT, "answerSavedChoices")
+    for guard in ("isDemographicQuestion(q)", "isHowHeardQuestion(q)",
+                  "/sponsor|authoriz|visa|work permit|right to work/i.test(q)",
+                  "isAntiBotField(input) || choiceDropdownPicked(control)", "eeoKindOf(control)",
+                  "spotapplyUserModified === 'true'", "r.checked || r.disabled",
+                  "looksLikeModelOnlyReply(answer)"):
+        assert guard in fn, guard
+    assert "/api/recall-answers" in fn
+    assert "answers[item.question]" in fn and "keywordOverlap" not in fn, "the exact question only, never a fuzzy match"
+    assert fn.count("savedOptionIndex(") == 2, "dropdown and radio both pick by the one option that says it"
+    assert "ai_answers" not in fn and "answer-question" not in fn, "never a model's answer"
+    page = _function(CONTENT, "fillCurrentPage")
+    assert page.index("answerScreeningRadios(pack)") < page.index("await answerChoiceDropdowns(pack)") \
+        < page.index("await answerSavedChoices(pack)") < page.index("fillEssayQuestions("), \
+        "the profile's own rules answer first; saved answers take only what is still open"
+    # A dropdown widget's hidden bookkeeping input is never a fill target.
+    can = _function(CONTENT, "canFillField")
+    assert "getAttribute('aria-hidden') === 'true' && el.tabIndex === -1" in can
+
+
+def test_a_radio_groups_question_is_found_above_the_group():
+    """Lever's cards keep the question two levels above the radios, in a
+    sibling of the box that holds them; the radios' own labels say "Yes."."""
+    fn = _function(CONTENT, "radioGroupQuestion")
+    assert "foreign(" in fn, "the climb stops at a box that holds another question's controls"
+    assert re.search(r"depth\s*<\s*6|<\s*6;", fn), "bounded climb"

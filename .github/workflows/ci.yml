@@ -155,9 +155,9 @@ jobs:
     # depends on — including the audit's wrong-answer, cross-tab and false
     # "Submitted" regressions (test_extension_audit.py).
     runs-on: ubuntu-latest
-    # Five suites took ~9 min here (run 186); the apply-queue suite adds ~4.
-    # 15 left no room, and a timeout reads as a failure that is not one.
-    timeout-minutes: 25
+    # Five suites took ~9 min here (run 186); the apply-queue suite adds ~4 and
+    # the real-board-shapes suite ~4. A timeout reads as a failure that is not one.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -179,7 +179,7 @@ jobs:
           # headless mode, which does.
           export SPOTAPPLY_CHROMIUM="$(python -c 'from playwright.sync_api import sync_playwright as s; p = s().start(); print(p.chromium.executable_path); p.stop()')"
           echo "Chromium: $SPOTAPPLY_CHROMIUM"
-          for t in live forms payload security audit queue; do
+          for t in live forms payload security audit queue boards; do
             echo "── extension-tests/test_extension_$t.py"
             python extension-tests/test_extension_$t.py
           done

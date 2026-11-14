@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html><head><title>Platform Engineer — Lever application (radio cards)</title></head>
+<body>
+  <h1>Platform Engineer</h1>
+  <!-- A real Lever form's work-authorization card (live test 2026-11-14,
+       synthetic copy). The QUESTION is not a <legend> and not the radios'
+       <label> (those say "Yes." / "No."): it sits in .application-label .text,
+       a sibling of the .application-field that holds the radios, two levels
+       above them — which is why all of these were left blank. -->
+  <form id="application-form" action="/thanks.html" method="get">
+    <ul>
+      <li class="application-question">
+        <label><div class="application-label">Full name<span class="required">✱</span></div>
+          <div class="application-field"><input type="text" name="name" required></div></label>
+      </li>
+      <li class="application-question">
+        <label><div class="application-label">Email<span class="required">✱</span></div>
+          <div class="application-field"><input type="email" name="email" required></div></label>
+      </li>
+      <li class="application-question">
+        <label><div class="application-label">Phone</div>
+          <div class="application-field"><input type="text" name="phone"></div></label>
+      </li>
+      <li class="application-question resume">
+        <label><div class="application-label">Resume/CV<span class="required">✱</span></div>
+          <div class="application-field"><input type="file" id="resume-upload-input" name="resume" required>
+            <span class="filename"></span></div></label>
+      </li>
+    </ul>
+    <h4>Work authorization</h4>
+    <ul>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width multiple-choice">
+          <div class="text">Are you legally authorized to work in the United States?<span class="required">✱</span></div>
+        </div>
+        <div class="application-field full-width required-field">
+          <ul data-qa="multiple-choice">
+            <li><label><input type="radio" name="cards[a1][field0]" value="Yes." required><span class="application-answer-alternative">Yes.</span></label></li>
+            <li><label><input type="radio" name="cards[a1][field0]" value="No."><span class="application-answer-alternative">No.</span></label></li>
+          </ul>
+        </div>
+      </div></li>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width multiple-choice">
+          <div class="text">Will you now or in the future require sponsorship for employment visa status (e.g., H-1B visa status)?<span class="required">✱</span></div>
+        </div>
+        <div class="application-field full-width required-field">
+          <ul data-qa="multiple-choice">
+            <li><label><input type="radio" name="cards[a1][field1]" value="Yes." required><span class="application-answer-alternative">Yes.</span></label></li>
+            <li><label><input type="radio" name="cards[a1][field1]" value="No."><span class="application-answer-alternative">No.</span></label></li>
+          </ul>
+        </div>
+      </div></li>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width multiple-choice">
+          <div class="text">Will you now or in the future require HarnessCo to commence ("sponsor") an immigration case in order to employ you (for example, H-1B or other employment-based immigration case)?<span class="required">✱</span></div>
+        </div>
+        <div class="application-field full-width required-field">
+          <ul data-qa="multiple-choice">
+            <li><label><input type="radio" name="cards[a1][field2]" value="Yes." required><span class="application-answer-alternative">Yes.</span></label></li>
+            <li><label><input type="radio" name="cards[a1][field2]" value="No."><span class="application-answer-alternative">No.</span></label></li>
+          </ul>
+        </div>
+      </div></li>
+      <!-- The employer's own question: nothing in a profile answers it. With
+           ?local=1 it is on the form, required, and must be left for the person. -->
+      <li class="application-question custom-question" id="local-card" style="display:none"><div>
+        <div class="application-label full-width multiple-choice">
+          <div class="text">Are you local to Austin, TX?<span class="required">✱</span></div>
+        </div>
+        <div class="application-field full-width required-field">
+          <ul data-qa="multiple-choice">
+            <li><label><input type="radio" name="cards[a1][field3]" value="Yes."><span class="application-answer-alternative">Yes.</span></label></li>
+            <li><label><input type="radio" name="cards[a1][field3]" value="No."><span class="application-answer-alternative">No.</span></label></li>
+          </ul>
+        </div>
+      </div></li>
+    </ul>
+    <button type="submit" id="btn-submit" class="postings-btn template-btn-submit">Submit application</button>
+  </form>
+  <script>
+    if (/[?&]local=1/.test(location.search)) {
+      const card = document.getElementById('local-card');
+      card.style.display = '';
+      card.querySelector('input').required = true;
+    }
+    document.getElementById('resume-upload-input').addEventListener('change', function (e) {
+      document.querySelector('.filename').textContent = e.target.files.length ? e.target.files[0].name : '';
+    });
+  </script>
+</body>
+</html>

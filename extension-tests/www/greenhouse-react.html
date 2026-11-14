@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html><head><title>Data Engineer — Greenhouse new-board application (pick-one dropdowns)</title>
+<style>
+  .select__menu { border: 1px solid #999; background: #fff; max-width: 420px; }
+  .select__option { padding: 4px 8px; cursor: pointer; }
+  .select__control { display: flex; border: 1px solid #666; max-width: 420px; padding: 4px; }
+  .select__value-container { flex: 1; display: flex; gap: 6px; }
+  .req-shadow { opacity: 0; pointer-events: none; position: absolute; width: 1px; height: 1px; }
+  label { display: block; margin-top: 12px; }
+</style></head>
+<body>
+  <h1>Apply for Data Engineer at HarnessCo</h1>
+  <!-- The shape of Greenhouse's new job-boards form (live test 2026-11-14,
+       synthetic copy). EVERY dropdown is a react-select style widget:
+         - the visible <input role="combobox"> is only a search box; text typed
+           into it is NOT an answer and is thrown away on blur;
+         - the list opens when the CONTROL is pressed, not when text is typed;
+         - the picked option is shown in .select__single-value and mirrored
+           into an unfocusable required shadow input the browser validates;
+         - the resume input is REPLACED by a filename chip once uploaded, so
+           the only file input left is the optional cover letter's.
+       ?clearance=1 adds a required dropdown no profile can answer. -->
+  <form id="application-form" action="/thanks.html" method="get">
+    <label for="first_name">First Name<span aria-hidden="true">*</span></label>
+    <input type="text" id="first_name" name="first_name" aria-required="true" required>
+
+    <label for="last_name">Last Name<span aria-hidden="true">*</span></label>
+    <input type="text" id="last_name" name="last_name" aria-required="true" required>
+
+    <label for="email">Email<span aria-hidden="true">*</span></label>
+    <input type="email" id="email" name="email" aria-required="true" required>
+
+    <div id="slot-country"></div>
+
+    <label for="phone">Phone<span aria-hidden="true">*</span></label>
+    <input type="tel" id="phone" name="phone" aria-required="true" required>
+
+    <div id="slot-location"></div>
+
+    <div class="file-upload" id="resume-upload">
+      <label for="resume">Resume/CV<span aria-hidden="true">*</span></label>
+      <input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx,.txt,.rtf">
+    </div>
+    <div class="file-upload" id="cover-upload">
+      <label for="cover_letter">Cover Letter</label>
+      <input type="file" id="cover_letter" name="cover_letter" accept=".pdf,.doc,.docx,.txt,.rtf">
+    </div>
+
+    <label for="question_twitter">Twitter handle</label>
+    <input type="text" id="question_twitter" name="question_twitter">
+
+    <label for="question_title">Current title</label>
+    <input type="text" id="question_title" name="question_title">
+
+    <label for="question_why">Why are you interested in this position?</label>
+    <input type="text" id="question_why" name="question_why">
+
+    <div id="slot-auth"></div>
+    <div id="slot-sponsor"></div>
+    <div id="slot-refer"></div>
+    <div id="slot-clearance"></div>
+
+    <button type="submit" class="btn btn--pill">Submit application</button>
+  </form>
+  <script>
+    // What was ever TYPED into each dropdown's search box (the harness reads it).
+    window.__typed = {};
+    const PLACES = ['San Francisco, California, United States', 'San Francisco, Córdoba, Argentina',
+                    'South San Francisco, California, United States', 'San Jose, California, United States',
+                    'Austin, Texas, United States'];
+
+    function makeSelect(slot, id, label, options, opts) {
+      opts = opts || {};
+      const required = opts.required !== false;
+      const root = document.getElementById(slot);
+      root.innerHTML =
+        '<div class="select"><div class="select__container">' +
+        '<label id="' + id + '-label" for="' + id + '" class="label select__label">' + label +
+        (required ? '<span aria-hidden="true">*</span>' : '') + '</label>' +
+        '<div class="select-shell remix-css-b62m3t-container">' +
+        '<div class="select__control remix-css-13cymwt-control">' +
+        '<div class="select__value-container"><div class="select__placeholder">Select...</div>' +
+        '<div class="select__input-container"><input class="select__input" id="' + id + '" type="text" ' +
+        'role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" ' +
+        'aria-labelledby="' + id + '-label"' + (required ? ' aria-required="true"' : '') + ' value=""></div></div>' +
+        '<div class="select__indicators"><span aria-hidden="true">▾</span></div></div>' +
+        (required ? '<input class="req-shadow" tabindex="-1" aria-hidden="true" required name="" value="">' : '') +
+        '</div></div></div>';
+      const shell = root.querySelector('.select-shell');
+      const control = root.querySelector('.select__control');
+      const input = root.querySelector('input.select__input');
+      const shadow = root.querySelector('.req-shadow');
+      let menu = null, timer = null;
+      window.__typed[id] = [];
+
+      function render(list) {
+        if (!menu) return;
+        menu.innerHTML = '';
+        if (!list.length) {
+          menu.innerHTML = '<div class="select__menu-notice">' + (opts.async ? 'Start typing to search' : 'No options') + '</div>';
+          return;
+        }
+        list.forEach((text) => {
+          const o = document.createElement('div');
+          o.className = 'select__option';
+          o.setAttribute('role', 'option');
+          o.textContent = text;
+          o.addEventListener('mousedown', (e) => e.preventDefault());   // keeps the search box focused
+          o.addEventListener('click', () => pick(text));
+          menu.appendChild(o);
+        });
+      }
+      function open() {
+        if (menu) return;
+        menu = document.createElement('div');
+        menu.className = 'select__menu';
+        menu.setAttribute('role', 'listbox');
+        shell.appendChild(menu);
+        input.setAttribute('aria-expanded', 'true');
+        render(opts.async ? [] : options);
+      }
+      function close() {
+        if (menu) { menu.remove(); menu = null; }
+        input.setAttribute('aria-expanded', 'false');
+        clearTimeout(timer);
+      }
+      function pick(text) {
+        const box = root.querySelector('.select__value-container');
+        const old = box.querySelector('.select__placeholder, .select__single-value');
+        if (old) old.remove();
+        const v = document.createElement('div');
+        v.className = 'select__single-value';
+        v.textContent = text;
+        box.insertBefore(v, box.firstChild);
+        if (shadow) shadow.value = text;
+        input.value = '';
+        close();
+      }
+      // The list opens when the control is pressed (and closes when pressed again).
+      control.addEventListener('mousedown', (e) => {
+        if (!menu) { open(); try { input.focus(); } catch (_) {} }
+        else if (e.target !== input) close();
+      });
+      // Typed text only SEARCHES an open list; with the list closed it is ignored.
+      input.addEventListener('input', () => {
+        if (input.value) window.__typed[id].push(input.value);
+        if (!menu) { input.value = ''; return; }
+        const q = input.value.trim().toLowerCase();
+        clearTimeout(timer);
+        if (opts.async) {
+          render([]);
+          if (q.length >= 2) timer = setTimeout(() => render(options.filter((o) => o.toLowerCase().includes(q))), 300);
+        } else {
+          render(options.filter((o) => o.toLowerCase().includes(q)));
+        }
+      });
+      // Whatever was typed is thrown away when the box loses focus.
+      input.addEventListener('blur', () => { input.value = ''; setTimeout(close, 150); });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    }
+
+    makeSelect('slot-country', 'country', 'Country',
+               ['Afghanistan +93', 'Canada +1', 'Germany +49', 'United Kingdom +44', 'United States +1']);
+    makeSelect('slot-location', 'candidate-location', 'Location (City)', PLACES, { async: true });
+    makeSelect('slot-auth', 'question_auth', 'Are you legally authorized to work in the United States?', ['Yes', 'No']);
+    makeSelect('slot-sponsor', 'question_sponsor',
+               'Will you now, or in the future, require sponsorship for employment visa status?', ['Yes', 'No']);
+    makeSelect('slot-refer', 'question_refer', 'Did a current employee refer you to this position?',
+               ['Yes', 'No'], { required: false });
+    if (/[?&]clearance=1/.test(location.search)) {
+      makeSelect('slot-clearance', 'question_clearance', 'Current clearance level',
+                 ['None', 'Secret', 'Top Secret', 'TS/SCI']);
+    }
+
+    // Greenhouse uploads the file and REPLACES the input with the file's name.
+    document.getElementById('resume').addEventListener('change', function (e) {
+      if (!e.target.files.length) return;
+      const name = e.target.files[0].name;
+      window.__resumeName = name;
+      setTimeout(() => {
+        const box = document.getElementById('resume-upload');
+        box.innerHTML = '<p class="label">Resume/CV*</p><div class="file-upload__filename"><p>' + name +
+                        '</p><button type="button" aria-label="Remove file">×</button></div>';
+      }, 400);
+    });
+  </script>
+</body>
+</html>
