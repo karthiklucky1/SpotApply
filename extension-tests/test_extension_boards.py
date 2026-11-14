@@ -16,6 +16,8 @@ made, no CAPTCHA touched) showed what the synthetic forms had not:
       recognised as the apply control.
   The submit check counted optional empty boxes and read a picked dropdown as
       empty, so no real form would ever have been submitted.
+  Saved answers (the profile's auto-fill data) reached text boxes and
+      <select>s, never a pick-one dropdown or a radio question.
 
   Ashby        the site reads the resume and EMPTIES the upload box; the
       attached resume was read as a required field still missing.
@@ -164,6 +166,85 @@ def main():
         check("GR12b ...and authorization without an end date stays the applicant's",
               page.evaluate(PICKED, "slot-auth") == "", repr(page.evaluate(PICKED, "slot-auth")))
         page.close()
+
+        # ── SA: answers the person SAVED reach dropdowns and radios ─────────
+        # The profile's "Auto-fill data" (and answers given on earlier forms)
+        # come back from /api/recall-answers. Text boxes and <select>s took
+        # them already; a pick-one dropdown and a radio group did not, and the
+        # answer was written into the dropdown's hidden bookkeeping input.
+        print("\nSaved answers (profile auto-fill data) on dropdowns and radios")
+        shadow = "() => document.querySelector('#slot-clearance .req-shadow').value"
+        held_pack = dict(fh.base_pack(held_url), auto_submit=True, auto_submit_reason="ok",
+                         auto_submit_hosts=["127.0.0.1"])
+        try:
+            fh.RECALL.clear()
+            fh.RECALL.update({"current clearance level": "None"})
+            oc_from = len(fh.REQUESTS)
+            page, logs, reply = fh.drive_fill_reply(ctx, held_url, held_pack, timeout_ms=60000)
+            auto = reply.get("auto_submit") or {}
+            check("SA1 the saved answer is PICKED in the dropdown (the one option that says it)",
+                  any("Saved answer picked: None" in l for l in logs), str([l for l in logs if "Saved" in l]))
+            try:
+                page.wait_for_url("**/thanks.html**", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3000)
+            check("SA2 ...which completes the form: the approved application is submitted",
+                  auto.get("attempted") is True and "thanks.html" in page.url and len(submits(oc_from)) == 1,
+                  json.dumps(auto) + " " + page.url)
+            page.close()
+
+            # A saved answer that is none of the options: nothing is picked,
+            # nothing typed, and the hidden bookkeeping input stays empty.
+            fh.RECALL.clear()
+            fh.RECALL.update({"current clearance level": "Confidential"})
+            oc_from = len(fh.REQUESTS)
+            page, logs, reply = fh.drive_fill_reply(ctx, held_url, held_pack, timeout_ms=60000)
+            auto = reply.get("auto_submit") or {}
+            typed = page.evaluate("() => window.__typed")
+            check("SA3 a saved answer that is not one of the options is not guessed",
+                  page.evaluate(PICKED, "slot-clearance") == "" and not typed.get("question_clearance"),
+                  repr(page.evaluate(PICKED, "slot-clearance")) + " " + json.dumps(typed.get("question_clearance")))
+            check("SA3b ...nor written into the dropdown's hidden bookkeeping input",
+                  page.evaluate(shadow) == "", repr(page.evaluate(shadow)))
+            check("SA3c ...so the form is still held for the person",
+                  auto.get("attempted") is False and auto.get("reason") == "fields_need_you" and not submits(oc_from),
+                  json.dumps(auto))
+            page.close()
+
+            # Work authorization keeps its ONE interpreter: a saved "Yes" never
+            # answers it for a status the profile cannot prove.
+            fh.RECALL.clear()
+            fh.RECALL.update({"legally authorized": "Yes", "sponsorship": "No"})
+            opt_pack = dict(fh.base_pack(url), work_authorization="F-1 OPT", work_auth_status="OPT",
+                            requires_sponsorship=True, authorized_now=None)
+            page, logs, reply = fh.drive_fill_reply(ctx, url, opt_pack)
+            check("SA4 a saved answer never answers a work-authorization question",
+                  page.evaluate(PICKED, "slot-auth") == "" and page.evaluate(PICKED, "slot-sponsor") == "Yes",
+                  repr((page.evaluate(PICKED, "slot-auth"), page.evaluate(PICKED, "slot-sponsor"))))
+            page.close()
+
+            # Radio questions: the employer's own question, answered only
+            # because the person saved the answer to exactly that question.
+            fh.RECALL.clear()
+            fh.RECALL.update({"are you local to austin": "Yes"})
+            lever_local = f"{BASE}/lever-radios.html?local=1"
+            page, logs, reply = fh.drive_fill_reply(ctx, lever_local, fh.base_pack(lever_local))
+            check("SA5 a saved Yes checks the \"Yes.\" radio of that question",
+                  page.evaluate(RADIO, "cards[a1][field3]") == "Yes.", repr(page.evaluate(RADIO, "cards[a1][field3]")))
+            check("SA5b ...and the profile's own answers are unchanged",
+                  page.evaluate(RADIO, "cards[a1][field0]") == "Yes." and page.evaluate(RADIO, "cards[a1][field1]") == "No.",
+                  repr((page.evaluate(RADIO, "cards[a1][field0]"), page.evaluate(RADIO, "cards[a1][field1]"))))
+            page.close()
+
+            fh.RECALL.clear()
+            fh.RECALL.update({"are you local to austin": "Sometimes"})
+            page, logs, reply = fh.drive_fill_reply(ctx, lever_local, fh.base_pack(lever_local))
+            check("SA6 a saved answer that matches no radio leaves the question open",
+                  page.evaluate(RADIO, "cards[a1][field3]") == "", repr(page.evaluate(RADIO, "cards[a1][field3]")))
+            page.close()
+        finally:
+            fh.RECALL.clear()
 
         # ── LV: Lever radio cards ───────────────────────────────────────────
         print("\nLever radio cards (the question sits two levels above the radios)")

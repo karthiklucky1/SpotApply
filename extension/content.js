@@ -133,6 +133,11 @@ function isTextEntry(el) {
 function canFillField(el) {
   if (!el || isAntiBotField(el)) return false;
   if (isTextEntry(el) && !isUserVisible(el)) return false;
+  // A dropdown widget's own bookkeeping input (react-select's required
+  // shadow: aria-hidden, unfocusable, drawn at opacity 0). It is not a
+  // question; a saved answer written there made the browser read an
+  // unanswered dropdown as answered (live test 2026-11-14).
+  if (el.tagName === 'INPUT' && el.type !== 'file' && el.getAttribute('aria-hidden') === 'true' && el.tabIndex === -1) return false;
   return true;
 }
 
@@ -685,6 +690,122 @@ async function answerChoiceDropdowns(pack) {
   }
   if (answered) console.log(`[SpotApply] Picked ${answered} dropdown answer(s) from your profile`);
   return answered;
+}
+
+/** Which of `texts` IS the saved answer: the one option that says exactly
+ * that, or — for a saved Yes / No — the one option that starts with it
+ * ("Yes.", "No, I do not"). Two candidates, or none, is no answer: an option
+ * is never guessed from a near match. */
+function savedOptionIndex(texts, answer) {
+  const norm = (t) => deaccent(String(t == null ? '' : t)).toLowerCase()
+    .replace(/[\s\u00a0]+/g, ' ').replace(/[\s.*:!]+$/g, '').trim();
+  const want = norm(answer);
+  if (!want) return -1;
+  const list = (texts || []).map(norm);
+  const only = (test) => {
+    const hits = [];
+    list.forEach((t, i) => { if (test(t)) hits.push(i); });
+    return hits.length === 1 ? hits[0] : (hits.length ? -2 : -1);
+  };
+  const exact = only((t) => t === want);
+  if (exact !== -1) return exact === -2 ? -1 : exact;
+  if (want === 'yes' || want === 'no') {
+    const starts = only((t) => (want === 'yes' ? /^yes\b/ : /^no\b/).test(t));
+    return starts >= 0 ? starts : -1;
+  }
+  return -1;
+}
+
+/**
+ * The answers the person SAVED (their profile's auto-fill data, and answers
+ * they gave on earlier forms) for the two question shapes recallFromMemory
+ * cannot write: pick-one dropdowns and radio groups. Asked of the same
+ * /api/recall-answers, by the question's exact wording; the saved answer is
+ * used only when ONE option says it (savedOptionIndex). Runs after the
+ * profile's own rules (work authorization, sponsorship, years), which keep
+ * their questions: this pass never touches work authorization,
+ * self-identification or "how did you hear", and never a question the person
+ * has answered or changed.
+ */
+async function answerSavedChoices(pack) {
+  if (!packBase(pack) || !pack.auth_token) return 0;
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const skip = (q) => !q || q.length < 3 || q.length > 300 || isDemographicQuestion(q) || isHowHeardQuestion(q) ||
+    /sponsor|authoriz|visa|work permit|right to work/i.test(q);
+  const open = [];
+
+  const seen = new Set();
+  for (const raw of queryAllDeep('[class*="select__control"], input[id^="react-select-"]')) {
+    const control = choiceDropdownControl(raw) || raw;
+    if (seen.has(control)) continue;
+    seen.add(control);
+    if (!control.offsetParent && !(control.getClientRects && control.getClientRects().length)) continue;
+    const input = (control.querySelector && control.querySelector('input')) || raw;
+    if (isAntiBotField(input) || choiceDropdownPicked(control)) continue;
+    if ((input.dataset && input.dataset.spotapplyUserModified === 'true') ||
+        (control.dataset && control.dataset.spotapplyUserModified === 'true')) continue;
+    const question = clean(labelText(input));
+    if (skip(question) || eeoKindOf(control)) continue;
+    open.push({ kind: 'dropdown', question, control });
+  }
+
+  const byGroup = new Map();
+  for (const r of queryAllDeep('input[type="radio"]')) {
+    const key = r.name || (r.closest('fieldset, [role="radiogroup"]') || {}).id || '';
+    if (!key) continue;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(r);
+  }
+  for (const [, group] of byGroup) {
+    if (group.some((r) => r.checked || r.disabled)) continue;
+    if (group.some((r) => r.dataset.spotapplyUserModified === 'true' || isAntiBotField(r))) continue;
+    const question = clean(radioGroupQuestion(group[0]));
+    if (skip(question)) continue;
+    open.push({ kind: 'radio', question, group });
+  }
+  if (!open.length) return 0;
+
+  const res = await apiFetch(`${packBase(pack)}/api/recall-answers`, 'POST', pack.auth_token,
+                             { labels: Array.from(new Set(open.map((o) => o.question))) });
+  const answers = res && res.ok && res.data && res.data.answers;
+  if (!answers || Array.isArray(answers)) return 0;
+
+  let picked = 0;
+  for (const item of open) {
+    // The exact question only: a fuzzy match between two questions is how one
+    // question's answer lands on another.
+    const answer = answers[item.question];
+    if (typeof answer !== 'string' || !answer.trim() || looksLikeModelOnlyReply(answer)) continue;
+    let ok = false;
+    try {
+      if (item.kind === 'dropdown') {
+        ok = await pickCustomOption(item.control, (texts) => savedOptionIndex(texts, answer));
+      } else {
+        const caption = (r) => {
+          const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+          return clean((lbl && lbl.textContent) || r.value || '');
+        };
+        const target = item.group[savedOptionIndex(item.group.map(caption), answer)];
+        if (target) {
+          target.click();          // click, not .checked — frameworks listen for it
+          if (!target.checked) {
+            target.checked = true;
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          ok = !!target.checked;
+          if (ok) target.dataset.spotapplyFilled = 'true';
+        }
+      }
+    } catch (e) {
+      console.debug('[SpotApply] saved answer pick failed:', e.message);
+    }
+    if (ok) {
+      picked++;
+      console.log('[SpotApply] Saved answer picked:', answer.slice(0, 30), '—', item.question.slice(0, 70));
+    }
+  }
+  if (picked) console.log(`[SpotApply] Picked ${picked} answer(s) you saved in your profile`);
+  return picked;
 }
 
 // ── Essay prompts vs field labels ────────────────────────────────────────────
@@ -5938,6 +6059,13 @@ async function fillCurrentPage(pack) {
     await answerChoiceDropdowns(pack);
   } catch (e) {
     console.warn('[SpotApply] dropdown error:', e.message);
+  }
+  // …then the answers the person saved (profile auto-fill data, earlier
+  // forms) for the dropdowns and radio questions still open.
+  try {
+    await answerSavedChoices(pack);
+  } catch (e) {
+    console.warn('[SpotApply] saved answers error:', e.message);
   }
   // "How did you hear about us?" as radios or an option list: the answer the
   // user saved in their profile, or nothing.

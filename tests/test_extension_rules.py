@@ -48,7 +48,7 @@ FUNCTIONS = [
     "askingSentence", "asksAvailability", "_yesNoOptions", "_yesNoOptionsOf",
     "answerYesNoSelect", "selectOption", "answerWorkAuthField",
     "queueSignalForFill",
-    "looksLikeYesNoQuestion", "countryOptionIndex", "isApplyWording",
+    "looksLikeYesNoQuestion", "countryOptionIndex", "isApplyWording", "savedOptionIndex",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "AUTO_SUBMIT_BLOCK_TEXT", "QUEUE_FILL_ONLY_REASONS", "QUEUE_HANDOFF_REASON",
@@ -1534,6 +1534,55 @@ def test_a_form_in_an_unselected_tab_is_opened_before_it_is_filled():
     # While the form is not on screen the resume waits for the pass that sees it.
     step = _function(CONTENT, "runCopilotStep")
     assert step.index("if (applicationFormHidden()) {") < step.index("attachResume(document, pack)")
+
+
+@pytest.mark.parametrize("options,answer,want", [
+    (["None", "Public Trust", "Secret", "Top Secret"], "None", 0),
+    (["None", "Public Trust", "Secret", "Top Secret"], "secret", 2),          # case does not matter
+    (["None", "Public Trust", "Secret", "Top Secret"], "Confidential", -1),   # not offered: never a near match
+    (["None", "Public Trust", "Secret", "Top Secret"], "Top", -1),
+    (["Yes.", "No."], "Yes", 0),                                               # Lever's captions
+    (["Yes.", "No."], "No", 1),
+    (["Yes, I am", "No, I am not"], "Yes", 0),
+    (["Yes", "Yes but I may require flexibility", "No"], "Yes", 0),            # the exact one wins
+    (["Yes - Lendable loan", "Yes - Zable credit card", "Not applicable"], "Yes", -1),   # two candidates: no answer
+    (["None", "Not applicable", "Now"], "No", -1),                             # "no" is a word, not a prefix
+    (["Bachelor's degree", "Master's degree"], "Bachelor's degree", 0),
+    (["Bachelor\u2019s degree *", "Master\u2019s degree"], "Bachelor\u2019s degree", 0),
+    (["Secret", "Secret"], "Secret", -1),                                      # ambiguous list
+    (["Yes", "No"], "", -1),
+    (["Yes", "No"], None, -1),
+    ([], "Yes", -1),
+])
+def test_a_saved_answer_is_used_only_when_one_option_says_it(options, answer, want):
+    assert run_js([["savedOptionIndex", options, answer]])[0] == want
+
+
+def test_saved_answers_reach_dropdowns_and_radios_and_never_the_guarded_questions():
+    """The profile's auto-fill data and answers from earlier forms come back
+    from /api/recall-answers. recallFromMemory writes them into text boxes and
+    <select>s; a pick-one dropdown and a radio group need a PICK. Same
+    refusals as recall: work authorization (one interpreter), protected
+    self-identification, "how did you hear", anti-bot fields, and anything the
+    person already answered or changed."""
+    fn = _function(CONTENT, "answerSavedChoices")
+    for guard in ("isDemographicQuestion(q)", "isHowHeardQuestion(q)",
+                  "/sponsor|authoriz|visa|work permit|right to work/i.test(q)",
+                  "isAntiBotField(input) || choiceDropdownPicked(control)", "eeoKindOf(control)",
+                  "spotapplyUserModified === 'true'", "r.checked || r.disabled",
+                  "looksLikeModelOnlyReply(answer)"):
+        assert guard in fn, guard
+    assert "/api/recall-answers" in fn
+    assert "answers[item.question]" in fn and "keywordOverlap" not in fn, "the exact question only, never a fuzzy match"
+    assert fn.count("savedOptionIndex(") == 2, "dropdown and radio both pick by the one option that says it"
+    assert "ai_answers" not in fn and "answer-question" not in fn, "never a model's answer"
+    page = _function(CONTENT, "fillCurrentPage")
+    assert page.index("answerScreeningRadios(pack)") < page.index("await answerChoiceDropdowns(pack)") \
+        < page.index("await answerSavedChoices(pack)") < page.index("fillEssayQuestions("), \
+        "the profile's own rules answer first; saved answers take only what is still open"
+    # A dropdown widget's hidden bookkeeping input is never a fill target.
+    can = _function(CONTENT, "canFillField")
+    assert "getAttribute('aria-hidden') === 'true' && el.tabIndex === -1" in can
 
 
 def test_a_radio_groups_question_is_found_above_the_group():

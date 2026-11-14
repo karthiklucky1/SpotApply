@@ -50,6 +50,11 @@ REQUESTS: list[tuple[str, str]] = []
 # per-scenario override (phone, skills, sponsorship) is silently reverted.
 CURRENT_PACK: dict = {}
 
+# What /api/recall-answers gives back: {substring of the asked label (lower
+# case): answer}. Empty = nothing saved, as for a new user. The real route
+# answers by the caller's own label, so this does too.
+RECALL: dict = {}
+
 # How many resume requests the stub answers "still being written" (409) — the
 # server's answer while Auto-Fill's own tailor runs (live test 2026-11-03).
 RESUME_GENERATING = {"left": 0}
@@ -158,7 +163,16 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
                 pass
         REQUESTS.append(("POST", path))
         if "recall-answers" in self.path:
-            return self._json({"answers": []})
+            try:
+                labels = (json.loads(body.decode("utf-8") or "{}").get("labels")) or []
+            except Exception:
+                labels = []
+            answers = {}
+            for label in labels:
+                for needle, answer in RECALL.items():
+                    if needle in str(label).lower():
+                        answers[label] = answer
+            return self._json({"answers": answers})
         return self._json({"ok": True})
 
 

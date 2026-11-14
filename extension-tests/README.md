@@ -15,7 +15,7 @@ python3 extension-tests/test_extension_payload.py       #  12 checks — payload
 python3 extension-tests/test_extension_security.py      #  11 checks — gates
 python3 extension-tests/test_extension_audit.py         #  45 checks — the 2026-09-30 audit
 python3 extension-tests/test_extension_queue.py         #  24 checks — the apply queue
-python3 extension-tests/test_extension_boards.py        #  37 checks — real board shapes
+python3 extension-tests/test_extension_boards.py        #  46 checks — real board shapes
 ```
 
 **test_extension_boards.py** — the shapes found on 22 REAL postings (2026-11-14;
@@ -26,6 +26,7 @@ nothing submitted, no account made, no CAPTCHA touched), rebuilt as fixtures:
 | `greenhouse-react.html` | every dropdown is a pick-one widget; its visible input only searches the list and throws typed text away; the resume input is replaced by a file name | country, authorization and sponsorship are PICKED; nothing is typed into a Yes/No dropdown; the city is searched then picked; "…this position?" never gets the job title; a complete form with empty OPTIONAL boxes submits; an unanswerable REQUIRED dropdown holds it |
 | `lever-radios.html` | the question sits two levels above its "Yes." / "No." radios | authorization and both sponsorship wordings ("commence an immigration case") are answered; "Are you local to Austin, TX?" is not guessed and holds a submit |
 | `ashby-upload.html` | the site reads the resume, then empties the upload box and shows the file's name | the resume counts as attached (it read as a required field still missing); removing the file opens the field again |
+| the same two forms, with saved answers | the profile's auto-fill data reached text boxes and `<select>`s only; one answer was written into a dropdown's hidden bookkeeping input | a saved answer is PICKED in a pick-one dropdown and CHECKED on a radio question when exactly one option says it; no near match, never a work-authorization question, never the hidden input |
 | `teamtailor-job.html` | the page's only email box is the employer's staff sign-in | it is not an application form; "Apply for this job" is pressed and the real form filled |
 | `smartrecruiters-job.html` | the apply control says "I'm interested" | pressed; "Apply with LinkedIn" never |
 | `join-job.html` | "Jetzt bewerben" builds the form on the page | pressed once, the form filled |

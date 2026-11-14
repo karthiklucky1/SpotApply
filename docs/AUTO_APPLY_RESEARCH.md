@@ -492,6 +492,18 @@ saved answers; `AnswerMemory` narrows it for a real user, form by form. The
 queue's value on day one is the fill plus the short list of what is left, not
 unattended submission of everything.
 
+**With the profile's auto-fill data** (the catalog that landed the same day,
+`app/autofill/autofill_fields.py`; real server, saved street address, ZIP,
+"18 or older", driver's license, clearance level): the real Pinpoint form went
+from required 5/8 to 7/8 (address and postcode filled; the consent box is the
+person's). Saved answers reached text boxes and `<select>`s only, and one was
+written into a dropdown's hidden bookkeeping input. `answerSavedChoices` now
+picks them in pick-one dropdowns and radio questions — by the exact question,
+and only when exactly one option says the saved answer; a local form asking
+for all of it went from required 11/14 to 14/14. On the real Greenhouse form
+the saved clearance level ("None") matched none of that employer's own option
+labels and was left for the person, as designed.
+
 **Still open**: Rippling's and Personio's dropdowns, Breezy's upload
 acknowledgement, Teamtailor's phone widget, and anything Workday, Workable and
 SmartRecruiters do past the pages this server could not load. Guards:
