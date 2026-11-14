@@ -19,7 +19,8 @@
            into an unfocusable required shadow input the browser validates;
          - the resume input is REPLACED by a filename chip once uploaded, so
            the only file input left is the optional cover letter's.
-       ?clearance=1 adds a required dropdown no profile can answer. -->
+       ?clearance=1 adds a required dropdown no profile can answer.
+       ?ai=1 adds two required employer questions (a dropdown and a text box). -->
   <form id="application-form" action="/thanks.html" method="get">
     <label for="first_name">First Name<span aria-hidden="true">*</span></label>
     <input type="text" id="first_name" name="first_name" aria-required="true" required>
@@ -59,6 +60,8 @@
     <div id="slot-sponsor"></div>
     <div id="slot-refer"></div>
     <div id="slot-clearance"></div>
+    <div id="slot-worked"></div>
+    <div id="slot-pay"></div>
 
     <button type="submit" class="btn btn--pill">Submit application</button>
   </form>
@@ -167,6 +170,14 @@
                'Will you now, or in the future, require sponsorship for employment visa status?', ['Yes', 'No']);
     makeSelect('slot-refer', 'question_refer', 'Did a current employee refer you to this position?',
                ['Yes', 'No'], { required: false });
+    // ?ai=1: two REQUIRED questions only this employer asks, which no rule and
+    // no saved answer covers: a Yes/No dropdown and a one-line text question.
+    if (/[?&]ai=1/.test(location.search)) {
+      makeSelect('slot-worked', 'question_worked', 'Have you worked at HarnessCo before?', ['Yes', 'No']);
+      document.getElementById('slot-pay').innerHTML =
+        '<label for="question_pay">Which programming language do you use most?<span aria-hidden="true">*</span></label>' +
+        '<input type="text" id="question_pay" name="question_pay" aria-required="true" required>';
+    }
     if (/[?&]clearance=1/.test(location.search)) {
       makeSelect('slot-clearance', 'question_clearance', 'Current clearance level',
                  ['None', 'Secret', 'Top Secret', 'TS/SCI']);

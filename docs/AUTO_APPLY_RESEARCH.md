@@ -510,3 +510,74 @@ SmartRecruiters do past the pages this server could not load. Guards:
 `extension-tests/test_extension_boards.py` (37 checks, fixtures that mirror
 each real shape), the 2026-11-14 block of `tests/test_extension_rules.py`,
 T1–T8 of `test_extension_forms.py`.
+
+## 10. AI answers for the questions nothing else answers (2026-11-14)
+
+§9 measured it: on 16 real forms the fill answered 7.6 of 16.4 fields, about
+56% of the required ones, and of the 74 required fields left open roughly 80%
+were questions only that employer asks (27 radio questions, 16 dropdowns, 12
+one-line questions). The founder's decision the same day: let AI answer those
+from the profile, and work through the skipped kinds the same way.
+
+**Three sources, in this order, each taking only what is still open:**
+
+1. the profile's own rules (work authorization, sponsorship, years, a degree,
+   the country) — unchanged, and still the only source for those questions;
+2. the answers the person saved: the profile's auto-fill data and what they
+   answered on earlier forms (`/api/recall-answers`, `answerSavedChoices`);
+3. one call to `POST /api/answer-form-questions` for the rest
+   (`app/autofill/form_answers.py`).
+
+**What keeps a wrong answer off an employer's form:**
+
+- *Refused before any model sees it* (`refusal`; the extension's `aiMayAnswer`
+  holds the same list and does not even send them): work authorization and
+  sponsorship, self-identification, "how did you hear", an agreement, consent
+  or signature, a background check or drug test, age, criminal history,
+  security clearance, citizenship, an identity or bank number.
+- *Evidence or nothing*: every answer carries one line copied word for word
+  from the facts the model was shown; the server checks the line exists
+  (`supported_by`). An option answer must be exactly one of the form's own
+  options. A free-text answer must be made of that line's own words
+  (`text_supported`): "Cincinnati, OH" from "Home location: Cincinnati, OH",
+  never a composed sentence. A missing fact is not evidence, except for a list
+  the facts call complete (the employers worked for).
+- *Checked once by the person*: an AI answer is outlined on the form and
+  listed in the panel with the line it rests on. A form holding one that has
+  not been looked at is not submitted for them (`ai_review`; the queue parks
+  it with that reason). "These are right", or pressing Submit themselves,
+  saves each as their own answer; from then on it fills from memory with no
+  model and no hold. `AI_FORM_ANSWERS_AUTO_SUBMIT=1` lifts the hold and is off.
+
+**What the model is shown**: home city, job history (title, employer, dates),
+the complete employer list, education, skills, work arrangements wanted,
+relocation, salary, notice period, the saved auto-fill answers that are not
+contact details or refused questions, and the resume text without its name
+and contact lines. Not shown: name, email, phone, street address and ZIP,
+work-authorization status, self-identification answers.
+
+**Cost**: one call per form at most (questions are batched and each is asked
+once per page; answers and non-answers are cached six hours), the cheap
+model, the same provider breaker and platform budget as every other call, a
+per-user daily cap (`AI_FORM_ANSWERS_DAILY_CAP`, 60), booked in the spend
+ledger as `form_answers`.
+
+**Also fixed here**: the extension only remembered answers typed into text
+boxes. What a person picks on a radio question or a pick-one dropdown is now
+remembered when they submit the form (`learnChoicesOnSubmit`), so the same
+question is not asked of them twice; saved answers also reach Ashby's Yes/No
+buttons.
+
+**Checked** (nothing submitted to any employer): `tests/test_form_answers.py`
+(55 tests: refusals, evidence, options, the facts, every paid-call control);
+`extension-tests/test_extension_boards.py` AI1-AI11 with the real extension;
+and one run through the REAL route with a stand-in for the provider, which on
+a form of nine employer questions answered three with evidence ("worked here
+before" twice, "local to Austin"), dropped one whose evidence it had invented
+and one that was not an option, and never received the felony, agreement or
+work-authorization questions.
+
+**Not known until real use**: how often the real model finds evidence on real
+forms (the stand-in only proves the plumbing and the checks), and how many of
+those answers people change when they look. Both will show in
+`form_answers` spend and in the share of queue items parked as `ai_review`.

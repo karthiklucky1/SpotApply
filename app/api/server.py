@@ -6201,6 +6201,16 @@ def get_fill_pack(application_id: int, request: Request, submit: bool = False) -
         "auto_submit_reason": _ocs["auto_submit_reason"],
         "auto_submit_hosts": _ocs["auto_submit_hosts"],
         "one_click_submit": bool(getattr(p, "one_click_submit", False)) if p else False,
+        # AI answers for the questions no rule and no saved answer covers
+        # (app/autofill/form_answers.py). Decided here: whether the extension
+        # may ask at all, how many questions a call takes, and whether a form
+        # holding an unconfirmed AI answer may be submitted for the person
+        # (default no: they look once, then it is their saved answer).
+        "ai_form_answers": {
+            "enabled": bool(settings.ai_form_answers_enabled),
+            "max_questions": int(settings.ai_form_answers_max_questions),
+            "auto_submit": bool(settings.ai_form_answers_auto_submit),
+        },
     }
 
     # Add AI-generated essay answers
@@ -6867,6 +6877,7 @@ _AQ_REASON_TEXT = {
     "login_wall": "The site asks you to sign in. Sign in and the form fills itself.",
     "verification_code": "The site emailed you a code. Enter it to finish.",
     "fields_need_you": "Some questions need your answer. Fill them and click Submit.",
+    "ai_review": "Filled. AI answered some questions from your profile. Check them once, then click Submit.",
     "resume_not_attached": "Your resume could not be attached. Attach it in the tab, then click Submit.",
     "no_submit_button": "Filled. This form has more steps, so finish it and click Submit.",
     "submit_disabled": "Filled, but the Submit button is disabled. Check the form.",
@@ -8302,6 +8313,38 @@ def answer_question_endpoint(request: Request, body: AskQuestionBody) -> dict:
     if source.startswith("refused:"):
         out["refused"] = source.split(":", 1)[1]
     return out
+
+
+class FormQuestionBody(BaseModel):
+    id: str
+    question: str
+    kind: _Opt[str] = "text"
+    options: _Opt[list] = None
+
+
+class AnswerFormQuestionsBody(BaseModel):
+    app_id: int
+    questions: list[FormQuestionBody]
+
+
+@app.post("/api/answer-form-questions")
+@_rate_limit("12/minute")  # one model call per form, at most; cached per question
+def answer_form_questions_endpoint(request: Request, body: AnswerFormQuestionsBody) -> dict:
+    """Answers for the questions a form asks that no rule and no saved answer
+    covers, from the applicant's own facts (app/autofill/form_answers.py).
+
+    Each answer comes with the line of the profile it rests on, or it does not
+    come at all; work authorization, self-identification, "how did you hear",
+    agreements and the facts only the applicant states are refused before any
+    model sees them. What is returned is a suggestion: the extension marks it
+    and holds an automatic submit until the person has looked once.
+    """
+    uid = _require_user(request)
+    _require_owned_application(request, body.app_id)
+    from app.autofill import form_answers as _fa
+    return _fa.answer_questions(
+        [q.model_dump() for q in (body.questions or [])[:60]],
+        application_id=body.app_id, user_id=uid if uid != "local" else None)
 
 
 @app.get("/api/extension/download")

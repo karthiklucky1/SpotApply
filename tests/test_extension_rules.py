@@ -49,6 +49,7 @@ FUNCTIONS = [
     "answerYesNoSelect", "selectOption", "answerWorkAuthField",
     "queueSignalForFill",
     "looksLikeYesNoQuestion", "countryOptionIndex", "isApplyWording", "savedOptionIndex",
+    "aiMayAnswer", "questionKey", "isJobRelativeQuestion",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "AUTO_SUBMIT_BLOCK_TEXT", "QUEUE_FILL_ONLY_REASONS", "QUEUE_HANDOFF_REASON",
@@ -57,7 +58,7 @@ CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFF
           "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
           "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES",
           "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS", "_HH_ASKED", "_HOW_HEARD_FILL_RE",
-          "_SPECIFY_RE", "_APPLY_WORDS_RE"]
+          "_SPECIFY_RE", "_APPLY_WORDS_RE", "_AGREEMENT_RE", "_APPLICANT_ONLY_RE", "_JOB_RELATIVE_RE"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -1419,6 +1420,7 @@ def _gate(state: dict) -> dict:
         "function isCaptcha() { return false; }",
         "function captchaBlocksSubmit() { return !!S.captcha; }",
         "function queryAllDeep() { return (S.fileInputs || []).map((f) => ({ files: f.files || [], dataset: f.dataset || {} })); }",
+        "function pendingAiAnswers() { return S.aiPending || []; }",
         "function findSubmitControl() {",
         "  if (!S.btn) return null;",
         "  return { disabled: !!S.btn.disabled, closest: () => (S.btn.form ? { checkValidity: () => !!S.btn.form.valid } : null) };",
@@ -1471,6 +1473,21 @@ _PAGE = dict(host="boards.greenhouse.io", href="https://boards.greenhouse.io/acm
     # …and are skipped only for the read-only diagnostic, which presses nothing.
     ({"host": "jobs.example.com", "href": "https://jobs.example.com/acme/jobs/123", "opts": {"anyHost": True}},
      {"reason": "", "detail": "", "press": True}),
+    # An AI answer the person has not looked at holds the submit (2026-11-14)…
+    ({"aiPending": [1, 2]}, {"reason": "ai_review", "detail": "2 AI answers to check", "press": False}),
+    ({"aiPending": [1]}, {"reason": "ai_review", "detail": "1 AI answer to check", "press": False}),
+    # …a required question still open is said first…
+    ({"aiPending": [1], "audit": {"filled": 9, "needUser": 1, "needRequired": 1, "failed": 0}},
+     {"reason": "fields_need_you", "detail": "", "press": False}),
+    # …and only the SERVER's switch lifts it (the pack, never the page).
+    ({"aiPending": [1, 2], "pack": {"auto_submit_hosts": ["greenhouse.io"],
+                                    "apply_url": "https://boards.greenhouse.io/acme/jobs/123",
+                                    "ai_form_answers": {"enabled": True, "auto_submit": True}}},
+     {"reason": "", "detail": "", "press": True}),
+    ({"aiPending": [1, 2], "pack": {"auto_submit_hosts": ["greenhouse.io"],
+                                    "apply_url": "https://boards.greenhouse.io/acme/jobs/123",
+                                    "ai_form_answers": {"enabled": True, "auto_submit": "yes"}}},
+     {"reason": "ai_review", "detail": "2 AI answers to check", "press": False}),
 ])
 def test_only_what_the_form_requires_holds_a_submit_back(change, want):
     assert _gate(dict(_PAGE, **change)) == want
@@ -1574,12 +1591,13 @@ def test_saved_answers_reach_dropdowns_and_radios_and_never_the_guarded_question
         assert guard in fn, guard
     assert "/api/recall-answers" in fn
     assert "answers[item.question]" in fn and "keywordOverlap" not in fn, "the exact question only, never a fuzzy match"
-    assert fn.count("savedOptionIndex(") == 2, "dropdown and radio both pick by the one option that says it"
+    assert fn.count("savedOptionIndex(") == 3, "dropdown, radio and Yes/No buttons all pick by the one option that says it"
     assert "ai_answers" not in fn and "answer-question" not in fn, "never a model's answer"
     page = _function(CONTENT, "fillCurrentPage")
     assert page.index("answerScreeningRadios(pack)") < page.index("await answerChoiceDropdowns(pack)") \
-        < page.index("await answerSavedChoices(pack)") < page.index("fillEssayQuestions("), \
-        "the profile's own rules answer first; saved answers take only what is still open"
+        < page.index("await answerSavedChoices(pack)") < page.index("fillEssayQuestions(") \
+        < page.index("await answerOpenQuestionsWithAI(pack)") < page.index("return auditPageFields("), \
+        "the profile's own rules first, then saved answers, and a model only for what is still open"
     # A dropdown widget's hidden bookkeeping input is never a fill target.
     can = _function(CONTENT, "canFillField")
     assert "getAttribute('aria-hidden') === 'true' && el.tabIndex === -1" in can
@@ -1591,3 +1609,126 @@ def test_a_radio_groups_question_is_found_above_the_group():
     fn = _function(CONTENT, "radioGroupQuestion")
     assert "foreign(" in fn, "the climb stops at a box that holds another question's controls"
     assert re.search(r"depth\s*<\s*6|<\s*6;", fn), "bounded climb"
+
+
+# ── AI answers for the questions nothing else answers (2026-11-14) ───────────
+# Founder: "AI need to answer based on profile". The server answers only with
+# evidence (tests/test_form_answers.py); these pin the extension's half.
+
+_AI_TABLE = [
+    "Are you legally authorized to work in the United States?",
+    "Will you now or in the future require sponsorship?",
+    "What is your gender?",
+    "How did you hear about this role?",
+    "I agree to the terms and conditions",
+    "Do you consent to the processing of your personal data?",
+    "Are you willing to undergo a background check and drug test?",
+    "I would like to receive text messages about jobs",
+    "Have you ever been convicted of a felony?",
+    "Are you at least 18 years of age?",
+    "Do you hold an active TS/SCI clearance?",
+    "Are you a U.S. citizen?",
+    "Are you related to anyone who works here?",
+    "g-recaptcha-response",
+    "question_68444493",
+    "Phone",
+    "Have you worked at Neo4j before?",
+    "Are you local to Austin, TX?",
+    "What is your desired compensation for this position?",
+    "Are you able to be in the office 3 days per week?",
+    "Did a current employee refer you to this position?",
+    "Which state do you plan to be physically located in?",
+    "What is your current stage of interviewing with other companies?",
+]
+
+
+def test_the_extension_and_the_server_refuse_the_same_questions():
+    """Neither sends a model a question the applicant alone may answer: the
+    extension does not ask, and the server would not answer."""
+    from app.autofill import form_answers as fa
+    got = run_js([["aiMayAnswer", q] for q in _AI_TABLE])
+    for question, js_may in zip(_AI_TABLE, got):
+        assert js_may is (fa.refusal(question) is None), question
+    assert sum(got) == 7, "the seven employer questions, and only those"
+
+
+@pytest.mark.parametrize("options,answer", [
+    (["Yes", "No"], "No"), (["Yes.", "No."], "yes"), (["Yes, I am", "No, I am not"], "Yes"),
+    (["Yes - Lendable loan", "Yes - Zable credit card", "Not applicable"], "Yes"),
+    (["None", "Not applicable", "Now"], "No"), (["None", "Secret", "Top Secret"], "Confidential"),
+    (["Secret", "Secret"], "Secret"), (["Bachelor\u2019s degree *", "Master\u2019s degree"], "Bachelor\u2019s degree"),
+    (["Yes", "No"], ""), ([], "Yes"), (["None", "Secret"], "none"),
+])
+def test_the_extension_and_the_server_match_an_answer_to_an_option_the_same_way(options, answer):
+    from app.autofill import form_answers as fa
+    assert run_js([["savedOptionIndex", options, answer]])[0] == fa.option_index(options, answer)
+
+
+@pytest.mark.parametrize("label,want", [
+    ("Have you worked at Neo4j before?*", "Have you worked at Neo4j before?"),
+    ("Have you worked at Neo4j before? *", "Have you worked at Neo4j before?"),
+    ("Are you local to Austin, TX?\u2731", "Are you local to Austin, TX?"),
+    ("Are you local   to Austin, TX? (required)", "Are you local to Austin, TX?"),
+    ("Rate yourself 1-5 * (required)", "Rate yourself 1-5"),
+    ("What is 3 * 4?", "What is 3 * 4?"),
+    ("", ""), (None, ""),
+])
+def test_a_question_has_one_key_however_a_form_decorates_it(label, want):
+    assert run_js([["questionKey", label]])[0] == want
+
+
+def test_a_model_is_asked_once_and_only_with_the_servers_permission():
+    ask = _function(CONTENT, "answerOpenQuestionsWithAI")
+    assert "cfg.enabled !== true" in ask, "no fill-pack permission (an older server, the switch off) = nothing is sent"
+    assert "/api/answer-form-questions" in ask
+    assert "_aiAsked.has(it.key)" in ask and "_aiAsked.add(it.key)" in ask, "a page is re-run many times; a question is asked once"
+    assert "savedOptionIndex(it.options, a.answer)" in ask, "an option answer must be one of the options read off the page"
+    assert "looksLikeMetaReply(a.answer)" in ask
+    assert "markAiAnswered(it.target, 'pending')" in ask and "confirmed: false" in ask
+    collect = _function(CONTENT, "collectOpenQuestions")
+    assert "if (!aiMayAnswer(item.question)) return;" in collect, "every question passes the refusals before it can be sent"
+    for guard in ("yesNoChoice(g) || userTouched(g.box)", "r.checked || r.disabled || userTouched(r) || isAntiBotField(r)",
+                  "choiceDropdownPicked(control) || userTouched(input)", "eeoKindOf(control)", "eeoKindOf(el)",
+                  "!isFieldRequired(el)"):
+        assert guard in collect, guard
+    assert "ai_answers" not in collect and "password" in collect, "never a password box, never the essay cache"
+    # Nothing it writes is trusted until the person has looked.
+    confirm = _function(CONTENT, "confirmAiAnswers")
+    assert "pendingAiAnswers()" in confirm and "/api/save-answer" in confirm
+    own = _function(CONTENT, "rememberOnOwnSubmit")
+    assert "_autoSubmitPressing" in own, "our own one-click press is not the person's review"
+    press = _function(CONTENT, "maybeAutoSubmit")
+    assert press.index("_autoSubmitPressing = true") < press.index("btn.click()")
+    assert "confirmAiAnswers" not in press and "save-answer" not in press
+    # What the person chose themselves is remembered, with the same refusals.
+    learn = _function(CONTENT, "learnChoicesOnSubmit")
+    assert "aiMayAnswer(question)" in learn and "/api/save-answer" in learn
+    assert "ours(picked)" in learn and "spotapplyPicked === picked" in learn, "never an answer a profile rule wrote"
+
+
+@pytest.mark.parametrize("question,want", [
+    ("Have you worked here before?", True),
+    ("Have you ever worked for us?", True),
+    ("Have you previously been employed at this company?", True),
+    ("Did a current employee refer you to this position?", True),
+    ("Are you able to work on-site at our office 3 days a week?", True),
+    ("Can you commute to this location?", True),
+    ("Do you know any of our employees?", True),
+    ("Why do you want to join us?", True),
+    # the same answer at every employer: remembered
+    ("Are you local to Austin, TX?", False),
+    ("Have you worked at Neo4j before?", False),
+    ("Are you willing to travel up to 25%?", False),
+    ("Do you have a valid driver's license?", False),
+    ("Which programming language do you use most?", False),
+    ("", False), (None, False),
+])
+def test_an_answer_about_this_job_is_not_remembered_for_the_next(question, want):
+    assert run_js([["isJobRelativeQuestion", question]])[0] is want
+
+
+def test_job_relative_answers_are_confirmed_but_never_saved():
+    confirm = _function(CONTENT, "confirmAiAnswers")
+    assert confirm.index("a.confirmed = true") < confirm.index("isJobRelativeQuestion(a.question)") \
+        < confirm.index("/api/save-answer"), "checked here, not carried to another employer"
+    assert "isJobRelativeQuestion(question)" in _function(CONTENT, "learnChoicesOnSubmit")

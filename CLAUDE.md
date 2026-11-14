@@ -1083,6 +1083,29 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   profile's own rules; `canFillField` refuses a widget's hidden bookkeeping input.
   Guard: `extension-tests/test_extension_boards.py`.
 
+- **AI answers what nothing else answers, with evidence, and is checked once**
+  (founder 2026-11-14, `app/autofill/form_answers.py`, `docs/AUTO_APPLY_RESEARCH.md`
+  §10). Order on a form: the profile's rules → saved answers → ONE call to
+  `POST /api/answer-form-questions` for what is still open (radios, pick-one
+  dropdowns, `<select>`s, Yes/No buttons, required one-line questions). `refusal`
+  runs BEFORE any model (work authorization, self-identification, how-heard,
+  agreements/consents, age, criminal history, clearance, citizenship, identity
+  numbers; the extension's `aiMayAnswer` is the same list, pinned equal). An answer
+  needs ONE verbatim line of the FACTS (`supported_by`), an option answer is one of
+  the form's options (`option_index` = `savedOptionIndex`), a text answer is COPIED
+  from its line (`text_supported`). Facts carry no name, email, phone, street
+  address, work-auth status or EEO answer. Same breaker, platform budget, spend
+  ledger (kind `form_answers`) and a per-user daily cap
+  (`AI_FORM_ANSWERS_DAILY_CAP`, `form_answers:user:<uid>`); cached 6 h per
+  question. **A suggestion until the person looks**: the field is outlined, the
+  panel lists answer + evidence, and `autoSubmitBlocker` holds the form
+  (`ai_review`) unless `AI_FORM_ANSWERS_AUTO_SUBMIT` (default off). "These are
+  right" or the person's own Submit saves each as THEIR answer (`/api/save-answer`,
+  key `questionKey`), which `answerSavedChoices` fills without a model next time;
+  `learnChoicesOnSubmit` remembers what they chose themselves on radios and
+  dropdowns (only typed text was learned before). Extension 1.3.1. Guards:
+  `test_form_answers`, the AI block of `test_extension_rules`, boards AI1-AI11.
+
 - **My profile is a PAGE, and auto-fill data is ONE catalog** (2026-11-14, founder:
   "not popup", "remove trust profile", "collect all data to help autofill").
   `openProfileModal()` (name kept: settings rows, tour and setup call it) shows
