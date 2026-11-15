@@ -37,6 +37,8 @@ class FakeClient:
                 return resp
         return FakeResp(status=404)
 
+    post = get
+
 
 WIDGET_HTML = """
 <ul>
@@ -74,27 +76,58 @@ def test_bamboohr(monkeypatch):
     assert j.posted_at is not None and "Austin" in j.location
 
 
+def test_bamboohr_json_widget(monkeypatch):
+    """Since October 2026 the same widget URL answers JSON, and the detail
+    record sits under result.jobOpening. Both shapes are the live ones."""
+    import app.discovery.bamboohr as m
+    widget = FakeResp(text=(
+        '{"version":null,"labels":{"heading":"Open Positions"},"success":true,'
+        '"departments":[{"id":7,"label":"Engineering","positions":['
+        '{"id":259,"name":"Senior Backend Engineer ","url":"https://acme.bamboohr.com/careers/259",'
+        '"location":"Austin, TX"}]}]}'))
+    routes = {
+        "careers/259/detail": FakeResp(json_data={"meta": {}, "result": {"jobOpening": {
+            "jobOpeningName": "Senior Backend Engineer",
+            "description": "<p>Python, Kafka</p>", "datePosted": "2026-10-23",
+            "departmentLabel": "Engineering", "compensation": "$150k",
+            "location": {"city": "Austin", "state": "TX", "addressCountry": "United States"},
+            "locationType": "2"}}}),
+    }
+    monkeypatch.setattr(m.httpx, "get", lambda *a, **k: widget)
+    monkeypatch.setattr(m.httpx, "Client", lambda *a, **k: FakeClient(routes))
+    s = m.BambooHRScraper("acme")
+    (j,) = s.fetch()
+    assert j.title == "Senior Backend Engineer" and j.external_id == "acme:259"
+    assert j.url == "https://acme.bamboohr.com/careers/259"
+    assert "Kafka" in j.description, "the description is under result.jobOpening"
+    assert j.posted_at is not None and j.location == "Austin, TX, United States"
+    assert j.geo.country == "United States" and j.geo.work_mode == "hybrid"
+    assert j.salary_text == "$150k"
+    assert j.context["department"].value == "Engineering"
+    assert s.fetch_complete is True
+
+
 def test_join(monkeypatch):
     import app.discovery.join as m
     company_html = '<script>{"company":{"id":8899,"domain":"acme","name":"Acme"}}</script>'
     routes = {
         "/companies/acme": FakeResp(text=company_html),  # resolve id
-        "/api/public/companies/8899/jobs": FakeResp(json_data={
+        "/candidate-api/graphql": FakeResp(json_data={"data": {"publicJobs": {
             "items": [{
-                "id": "j1", "name": "Product Manager",
-                "location": {"cityName": "Berlin", "countryName": "Germany"},
-                "publishedAt": "2026-07-09T00:00:00Z",
-                "description": "Roadmaps", "jobLocationType": "onsite",
-                "url": "https://join.com/companies/acme/jobs/j1",
+                "id": 4411, "idParam": "4411-product-manager", "title": "Product Manager",
+                "createdAt": "2026-07-09T00:00:00.000Z", "workplaceType": "ONSITE",
+                "city": {"cityName": "Berlin", "countryName": "Germany"},
             }],
-            "pagination": {"totalPages": 1},
-        }),
+            "pageInfo": {"pageCount": 1, "rowCount": 1},
+        }}}),
     }
     monkeypatch.setattr(m.httpx, "Client", lambda *a, **k: FakeClient(routes))
     jobs = m.JoinScraper("acme").fetch()
     assert len(jobs) == 1
     j = jobs[0]
     assert j.title == "Product Manager" and j.source == "join"
+    assert j.external_id == "4411"
+    assert j.url == "https://join.com/companies/acme/jobs/4411-product-manager"
     assert "Berlin" in j.location and j.posted_at is not None
 
 

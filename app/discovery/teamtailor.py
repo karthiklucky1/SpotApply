@@ -28,7 +28,7 @@ from xml.etree import ElementTree as ET
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.base import BoardUnreadableError, GeoEvidence, RawJob, swallowed
 from app.discovery.job_identity import scoped_external_id
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,9 @@ class TeamtailorScraper:
         url = f"https://{self.board_slug}.teamtailor.com/jobs.rss"
         # Complete only once the whole listing parsed (app/discovery/base.py).
         self.fetch_complete = False
+        # "" = the fetch succeeded; an empty list WITH a reason is not an
+        # empty board (app/discovery/base.py `fetch_error`, `swallowed`).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -100,16 +103,17 @@ class TeamtailorScraper:
             if e.response is not None and e.response.status_code in (401, 403, 404, 410):
                 raise
             log.warning("Teamtailor fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "teamtailor", e)
         except httpx.HTTPError as e:
             log.warning("Teamtailor fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "teamtailor", e)
 
         try:
             root = ET.fromstring(r.content)
         except ET.ParseError as e:
+            # A feed we cannot parse is not "no openings".
             log.warning("Teamtailor[%s] bad RSS: %s", self.board_slug, e)
-            return []
+            raise BoardUnreadableError("teamtailor", f"RSS feed did not parse: {e}") from e
 
         jobs: List[RawJob] = []
         items = list(root.iter("item"))

@@ -227,6 +227,49 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   deferred, upsert p90 38s, deferrals 1-4K → 20-41K/day) was ~230 wasted fetches
   per tick feeding back into a Disk-IO-exhausted database. `board_cap` is in
   every tick event; `PULSE_ADAPTIVE_ENABLED=0` restores constant selection.
+- **A failed fetch is not always about the BOARD** (2026-11-14, `discovery/base.py`
+  + `discovery/site_health.py`): 86% of the 29,790 "no jobs" boards sat on three
+  adapters that had stopped reading their site. BambooHR's widget became JSON (the
+  HTML parser read 0 jobs, successfully, on 5,557 boards for five weeks; the detail
+  moved under `result.jobOpening`, so no row had a description); join.com REMOVED its
+  REST listing (the 404 was read as "board ends here") — it now lists through the
+  site's GraphQL `publicJobs` query, 100 a page, company id memoised; Rippling's one
+  API host answered 403 to production's address and each refusal was a strike — 960
+  boards / 15,293 open jobs retired "unreachable x5" in a day. Rules: an answer an
+  adapter cannot READ raises `BoardUnreadableError`, never `[]`; a REFUSAL raises
+  `BoardBlockedError`; both are spared (`pipeline._not_about_the_board`: backed off
+  6 h, no strike, `job_count` untouched) UNLESS that system is answering for most of
+  its other boards (`site_health.answering`) — then this board alone is broken and
+  takes the strike; a 429 is never a strike. A swallowed error sets `last_error` (an
+  empty list with a reason is not an empty board). BambooHR costs one detail request
+  per posting per poll: a 429 (or three 403s) on a detail stops the poll and backs
+  the board off, three unanswered details stop the detail requests for that poll. `site_health` records how each SYSTEM is
+  answering: when ≥`SITE_HEALTH_FAILURE_SHARE` (80%) of ≥`SITE_HEALTH_MIN_FAILURES`
+  (20) fetches of one system failed in `SITE_HEALTH_WINDOW_MINUTES` (15), the failure
+  is the system's and no board takes a strike — a 404 is an ANSWER (junk slugs still
+  retire), and one dead board among healthy ones still retires.
+  `PULSE_ATS_MIN_INTERVAL_MINUTES` ("rippling=30,join=120,bamboohr=60") is a per-SITE
+  floor under `_cadence`: the 5-minute fast tier says how fresh we want a board, not
+  how often one host will answer. **The other sources (2026-11-15):** Workday and
+  SmartRecruiters answered `None` for ANY non-200, which reached the lane as a
+  failure with an EMPTY error — a strike nothing could classify: 1,329 Workday
+  boards / 30,812 open jobs retired 11-14 05:18–15:29 UTC with no reason recorded.
+  They now say why (`last_error`) or raise `BoardBlockedError` (403/429); a
+  not-found is spelled WITHOUT the status so a moved site path gets five tries, not
+  retirement on the spot. A failure with no reason is never "the site answered".
+  Six template adapters no longer answer `[]` for a timeout / 429 / 5xx
+  (`base.swallowed`) or for a body that does not parse (`BoardUnreadableError`) —
+  Workable's 429s were being stored as empty boards. A refusal backs off
+  `REFUSED_BOARD_BACKOFF_HOURS` (24), a throttle 6. join.com throttles BURSTS
+  (HTTP 200 + GraphQL "too many requests" is a throttle, not a changed answer):
+  requests are spaced `JOIN_MIN_REQUEST_INTERVAL_SECONDS` (1.0) process-wide, and
+  past `JOIN_MAX_PACE_WAIT_SECONDS` (5) a request is NOT sent and reads as a
+  throttle, so join boards never hold the fetch pool. Still open: Rippling refused
+  production 15 h after the fix; Rippling, JOIN and Breezy listings carry NO
+  description (rows scored blind); The Muse 403s every run; the Greenhouse/Lever
+  keyword searches time out at 45 s (redundant with the board lanes); the registry
+  `last_error` is not cleared by a later success, so read `failure_count`.
+  Guards: `test_board_outages`, `test_join_contract`.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score
   IS NULL` queue across ALL users with a fixed pool of `scoring_workers` (GPT

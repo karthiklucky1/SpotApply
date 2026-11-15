@@ -15,8 +15,11 @@ from bs4 import BeautifulSoup
 
 from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
+    BoardBlockedError,
+    BoardUnreadableError,
     GeoEvidence,
     RawJob,
+    body_hint,
 )
 from app.discovery.job_identity import scoped_external_id
 from app.discovery.hiring_context import put
@@ -86,6 +89,13 @@ class WorkdayScraper:
         }
         
         jobs: List[RawJob] = []
+        # "" = the fetch succeeded. A first page that fails returns None WITH a
+        # reason here (or raises): `None` alone reached the pulse lane as a
+        # failure with an EMPTY error — not recognisable as a throttle, a
+        # refusal or an outage — so every such poll was a strike, and on
+        # 2026-11-14 that retired 1,329 boards holding 30,812 open jobs as
+        # "unreachable x5" in ten hours with nothing recorded about why.
+        self.last_error = ""
         offset = 0
         limit = 20
         total = 0   # source-reported posting count; set per fetched page
@@ -148,9 +158,30 @@ class WorkdayScraper:
                     self.fetch_complete = False
                     self.listing_complete = False
                     self.signature_stable = False
-                    return None if offset == 0 else jobs
-                    
-                data = r.json()
+                    if offset != 0:
+                        return jobs
+                    if r.status_code in (403, 429):
+                        # Refused or throttled: backed off, and a strike only
+                        # when the rest of Workday is answering (base.py).
+                        raise BoardBlockedError("workday", r.status_code)
+                    # Not-found is spelled without the status on purpose: the
+                    # recorders retire a board on the spot for one, and a
+                    # tenant whose site path moved gets the usual five tries.
+                    self.last_error = ("workday listing not found (site path moved?)"
+                                       if r.status_code in (404, 410)
+                                       else f"workday listing returned {r.status_code}")
+                    return None
+
+                try:
+                    data = r.json()
+                except ValueError as e:
+                    if offset != 0:
+                        self.fetch_complete = False
+                        self.listing_complete = False
+                        self.signature_stable = False
+                        return jobs
+                    raise BoardUnreadableError(
+                        "workday", f"listing did not send JSON: {body_hint(r.text)}") from e
                 postings = data.get("jobPostings", [])
                 try:
                     reported_total = max(reported_total, int(data.get("total") or 0))
@@ -295,7 +326,10 @@ class WorkdayScraper:
             log.warning("Workday connection failed for %s: %s", tenant, e)
             self.fetch_complete = False
             self.signature_stable = False
-            return None if offset == 0 else jobs
+            if offset != 0:
+                return jobs
+            self.last_error = f"workday unreachable: {type(e).__name__}: {e}"[:300]
+            return None
 
         # Truncation can land exactly on a page boundary (max_total is a
         # multiple of the page limit, so on an all-tech board it always does):

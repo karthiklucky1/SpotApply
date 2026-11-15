@@ -474,9 +474,19 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
     Computed here, inside the same transaction that increments the counter, so
     the delay always matches the failure count it is derived from.
     """
+    from app.discovery import site_health
     from app.discovery.pipeline import (
-        BOARD_DEACTIVATE_AFTER_FAILURES, THROTTLED_BOARD_BACKOFF_HOURS, _is_throttled,
+        BOARD_DEACTIVATE_AFTER_FAILURES, _not_about_the_board, spared_backoff_hours,
     )
+    # The site's own record, written before the board's: whether THIS failure
+    # is about the board is decided against how the whole system is answering.
+    # (A failure with no reason is not an answer: `answered("")` means "no
+    # error", and an adapter that returns None says nothing at all.)
+    site_health.record(ats, ok or (bool(error) and site_health.answered(error)))
+    # A throttle, a refusal or unreadable answer the rest of the site shares,
+    # or a failure while nearly every board of that system is failing too, is
+    # not the board's. Spared exactly like a 429: backed off, never a strike.
+    spared = (not ok) and _not_about_the_board(ats, error)
     try:
         with get_session() as session:
             row = session.exec(
@@ -493,7 +503,7 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 row.new_jobs_last_poll = new_jobs
                 if new_jobs > 0:
                     row.last_new_job_at = datetime.utcnow()
-            elif _is_throttled(error):
+            elif spared:
                 # A rate limit says "slow down", not "this company is gone".
                 # failure_count is deliberately NOT incremented: Workday and
                 # join.com both throttle under the pulse cadence, and letting
@@ -503,10 +513,11 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 # since 2026-09-02 (pipeline.record_board_failure); the lane
                 # that does ~288k polls a day did not.
                 row.last_error = (error or "")[:300]
-                row.next_poll_at = datetime.utcnow() + timedelta(
-                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
-                log.info("Board %s/%s throttled — backing off %dh, not retiring",
-                         ats, slug, THROTTLED_BOARD_BACKOFF_HOURS)
+                backoff_hours = spared_backoff_hours(error)
+                row.next_poll_at = datetime.utcnow() + timedelta(hours=backoff_hours)
+                log.info("Board %s/%s not counted (throttled, refused, unreadable "
+                         "or site-wide failure) — backing off %dh, not retiring",
+                         ats, slug, backoff_hours)
             else:
                 row.failure_count = (row.failure_count or 0) + 1
                 row.last_error = (error or "")[:300]

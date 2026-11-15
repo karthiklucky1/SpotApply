@@ -14,7 +14,7 @@ from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Job, JobSource, CompanyRegistry, Application, ApplicationStatus
 from app.discovery.ashby import AshbyScraper
-from app.discovery.base import RawJob
+from app.discovery.base import BLOCKED_MARKER, UNREADABLE_MARKER, RawJob
 # Greenhouse/Lever/Ashby are used by the .env fallback in _all_scrapers; the
 # full per-ATS mapping (incl. Workday/Workable/Recruitee/Personio/Rippling/
 # Breezy/Pinpoint/Teamtailor) lives in scraper_for() to keep both paths in sync.
@@ -1109,12 +1109,27 @@ BOARD_DEACTIVATE_AFTER_FAILURES = 5
 # silently shrink job coverage for a company that is perfectly alive.
 THROTTLED_BOARD_BACKOFF_HOURS = 6
 
+# How long to leave a board alone after the SITE refused us outright (a 403
+# that is not a rate limit). Rippling was still refusing production fifteen
+# hours after its boards stopped being retired; asking 1,650 boards again every
+# six hours is 275 requests an hour at a host that has said no. A day is the
+# polite retry, and the first board that answers puts its site back to normal.
+REFUSED_BOARD_BACKOFF_HOURS = 24
+
+
+def spared_backoff_hours(error: str) -> int:
+    """Hours to back a spared board off: a refusal waits a day, a throttle six."""
+    e = (error or "").lower()
+    throttle = "429" in e or "too many requests" in e or "rate limit" in e
+    return REFUSED_BOARD_BACKOFF_HOURS if (BLOCKED_MARKER in e and not throttle) \
+        else THROTTLED_BOARD_BACKOFF_HOURS
+
 
 def _is_throttled(error: str) -> bool:
     """True when the failure is not evidence that the board is dead.
 
     Retirement at BOARD_DEACTIVATE_AFTER_FAILURES is a thirty-day sentence
-    passed on five data points, so what counts as a data point matters. Three
+    passed on five data points, so what counts as a data point matters. Four
     kinds of failure say nothing about the board:
 
       429 / rate limit — Workday and join.com both throttle under the pulse
@@ -1130,19 +1145,74 @@ def _is_throttled(error: str) -> bool:
         2026-09-02: join board fetches return a mix of 429 and 422 and nothing
         else.) Fixing the request is the fix; deleting the board is not.
 
-    5xx and transport failures are deliberately NOT spared — a board that
+      a REFUSAL the adapter recognised as the site's, not the board's
+        (``BoardBlockedError``) — Rippling serves every board from one host,
+        and when that host answered 403 to production's address on 2026-11-14
+        each refusal was a strike: 960 boards holding 15,293 open jobs retired
+        in a day, while the same request succeeded from another network.
+
+      an answer the adapter could not READ (``BoardUnreadableError``) — a
+        changed response shape is our bug. BambooHR's widget became JSON and
+        was read as "0 jobs" on 5,557 boards for five weeks; counting it as a
+        failure instead would have retired them all in an afternoon.
+
+    5xx and transport failures are deliberately NOT spared here — a board that
     answers 500 forever is unusable whatever the cause, and
-    test_board_throttling pins that. A 404 still retires immediately, and an
-    unrecognised error still counts toward the threshold, so this can only
-    spare a board, never keep a genuinely dead one alive: a spared board is
-    backed off and re-polled, not trusted.
+    test_board_throttling pins that. (When nearly EVERY board of one system is
+    failing that way the failure recorders spare them through
+    ``site_health.mass_failing`` — that is evidence about the system, and it is
+    weighed there, not in this text match.) A 404 still retires immediately,
+    and an unrecognised error still counts toward the threshold, so this can
+    only spare a board, never keep a genuinely dead one alive: a spared board
+    is backed off and re-polled, not trusted.
     """
     e = (error or "").lower()
+    if BLOCKED_MARKER in e or UNREADABLE_MARKER in e:
+        return True
     if "429" in e or "too many requests" in e or "rate limit" in e:
         return True
     # Contract errors, matched on the status token so "HTTP 422", "returned 422"
     # and "status 422" all read the same.
     return bool(re.search(r"\b(?:400|422)\b", e))
+
+
+def _not_about_the_board(ats, error: str) -> bool:
+    """True when a failed fetch must not count toward the board's retirement.
+
+    Three cases, in order:
+
+      * an adapter said the failure is the SITE's — it refused us
+        (``BoardBlockedError``) or answered in a shape we cannot read
+        (``BoardUnreadableError``). Believed, UNLESS that same system is
+        demonstrably answering for most of its boards right now
+        (``site_health.answering``): then this board alone is refused or
+        unreadable — a private board, a tenant's custom page, a stale id — and
+        sparing it forever would keep a dead slug in rotation. It takes the
+        strike and retires like any other broken board.
+      * the error is a throttle or a contract error (``_is_throttled``): never
+        about the board, whatever its neighbours are doing.
+      * the site did not answer and nearly every board of that system is
+        failing right now (``site_health.mass_failing``) — a blocked address,
+        an outage, a moved API.
+
+    The caller backs the board off and re-polls it; it is never trusted on the
+    strength of this, only not sentenced.
+    """
+    from app.discovery import site_health
+    e = (error or "").lower()
+    # A refusal that is explicitly a rate limit is a throttle first: one board
+    # can be throttled while the rest of the site answers.
+    explicit_throttle = "429" in e or "too many requests" in e or "rate limit" in e
+    if site_health.site_level(error) and not explicit_throttle:
+        return not site_health.answering(ats)
+    if _is_throttled(error):
+        return True
+    # A failure with NO reason is not an answer. Workday and SmartRecruiters
+    # returned None for any non-200, so the error arrived here empty — and
+    # `answered("")` is True (it means "no error"), which hid a site-wide
+    # failure from the one check built to see it.
+    unanswered = (not error) or (not site_health.answered(error))
+    return unanswered and site_health.mass_failing(ats)
 
 
 def record_board_failure(source_name: str, slug: str | None, error: str) -> None:
@@ -1165,13 +1235,13 @@ def record_board_failure(source_name: str, slug: str | None, error: str) -> None
             if not row:
                 return
             row.last_error = (error or "")[:300]
-            if _is_throttled(error):
+            if _not_about_the_board(source_name, error):
                 # Back off, don't retire. failure_count is deliberately NOT
                 # incremented: a throttled board is healthy, and letting 429s
                 # accumulate toward the retirement threshold deletes it.
                 from datetime import datetime as _dt, timedelta as _td
                 row.next_poll_at = _dt.utcnow() + _td(
-                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                    hours=spared_backoff_hours(error))
                 log.info("Board %s/%s throttled (429) — backing off %dh, not retiring",
                          source_name, slug, THROTTLED_BOARD_BACKOFF_HOURS)
                 session.add(row)
@@ -1241,14 +1311,14 @@ def record_board_failures_bulk(failures: list) -> int:
             if error is None:
                 continue
             last_error = error[:300]
-            if _is_throttled(error):
+            if _not_about_the_board(ats, error):
                 # Back off, never retire: a 429 is about our request rate, not
                 # the board, and it must not count toward retirement.
                 from datetime import datetime as _dt, timedelta as _td
                 throttled_rows.append({
                     "id": rid, "last_error": last_error,
                     "next_poll_at": _dt.utcnow() + _td(
-                        hours=THROTTLED_BOARD_BACKOFF_HOURS),
+                        hours=spared_backoff_hours(error)),
                 })
                 continue
             new_count = (failure_count or 0) + 1
@@ -1681,6 +1751,15 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
           or getattr(s, "org_slug", None)), s.name, err)
         for (s, raw, err) in fetched_boards if raw is None and err
     ]
+    # How each SYSTEM answered in this batch, recorded before any board is
+    # judged: a failure shared by nearly every board of one system is that
+    # system's, and is not counted against the boards (site_health).
+    try:
+        from app.discovery import site_health as _site_health
+        for (s, raw, err) in fetched_boards:
+            _site_health.record(s.name, err is None or _site_health.answered(err))
+    except Exception as _she:
+        log.debug("site health record skipped: %s", _she)
     if _failures:
         _deactivated = record_board_failures_bulk(_failures)
         if _deactivated:

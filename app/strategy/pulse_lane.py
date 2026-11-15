@@ -47,6 +47,7 @@ from app.db.init_db import get_session
 from app.db.models import (
     Application, CompanyRegistry, FunnelEvent, Job, UserProfile,
 )
+from app.discovery import site_health
 
 log = logging.getLogger(__name__)
 
@@ -158,8 +159,60 @@ def _is_watched(row: CompanyRegistry, terms: set[str]) -> bool:
     return False
 
 
+_ATS_FLOORS: tuple[str, dict] = ("", {})
+
+
+def _ats_min_interval(ats) -> Optional[timedelta]:
+    """The shortest interval ONE site tolerates between polls of a board, from
+    ``PULSE_ATS_MIN_INTERVAL_MINUTES`` ("rippling=30,join=120"). None = no floor.
+
+    Parsed once per distinct setting string; a malformed pair is ignored
+    rather than failing the tick.
+    """
+    global _ATS_FLOORS
+    raw = str(getattr(settings, "pulse_ats_min_interval_minutes", "") or "")
+    if _ATS_FLOORS[0] != raw:
+        parsed: dict = {}
+        for part in raw.split(","):
+            name, _, minutes = part.partition("=")
+            try:
+                m = int(minutes.strip())
+            except ValueError:
+                continue
+            if name.strip() and m > 0:
+                parsed[name.strip().lower()] = m
+        _ATS_FLOORS = (raw, parsed)
+    m = _ATS_FLOORS[1].get(str(getattr(ats, "value", ats) or "").lower())
+    return timedelta(minutes=m) if m else None
+
+
+def _failure_backoff_minutes(ats, base: int) -> int:
+    """The first retry after a REAL failure: the lane's base, never sooner than
+    the site's floor. A join.com board that timed out was otherwise retried in
+    15, 30 and 60 minutes — under the two hours we promise that site."""
+    floor = _ats_min_interval(ats)
+    if floor is None or base <= 0:
+        return base
+    return max(base, int(floor.total_seconds() // 60))
+
+
 def _cadence(row: CompanyRegistry, terms: set[str], now: datetime) -> timedelta:
-    """How long until this board's next poll, from its signals."""
+    """How long until this board's next poll: what its signals ask for, never
+    shorter than what its SITE tolerates.
+
+    The signals say how fresh we want a board. They say nothing about how
+    often one host will answer: every Rippling board is one API behind one
+    edge, and the fast tier's 5 minutes — every recently-posting board, twelve
+    times an hour, the whole board each time — is the load that host began
+    refusing on 2026-11-14.
+    """
+    wanted = _signal_cadence(row, terms, now)
+    floor = _ats_min_interval(getattr(row, "ats", None))
+    return max(wanted, floor) if floor is not None else wanted
+
+
+def _signal_cadence(row: CompanyRegistry, terms: set[str], now: datetime) -> timedelta:
+    """The cadence a board's own signals ask for (no per-site floor)."""
     if _is_watched(row, terms):
         return timedelta(minutes=settings.pulse_fast_interval_minutes)
     if row.last_new_job_at and \
@@ -1190,7 +1243,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 # board through the normal failure path (and its backoff).
                 stats["fetch_failed"] += 1
                 _mark_polled(board.slug, board.ats, job_count=None, ok=False,
-                             error=str(e), failure_backoff_minutes=backoff,
+                             error=str(e),
+                             failure_backoff_minutes=_failure_backoff_minutes(board.ats, backoff),
                              failure_backoff_cap_hours=backoff_cap)
                 continue
             finally:
@@ -1203,13 +1257,18 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 else:
                     stats["fetch_failed"] += 1
                     _mark_polled(board.slug, board.ats, job_count=None, ok=False,
-                                 error=err, failure_backoff_minutes=backoff,
+                                 error=err,
+                                 failure_backoff_minutes=_failure_backoff_minutes(board.ats, backoff),
                                  failure_backoff_cap_hours=backoff_cap)
                 continue
 
             # From here the fetch COMPLETED — this board was genuinely polled.
             stats["fetch_ok"] += 1
             stats["fetched_jobs"] += len(raw)
+            # The site answered. Failures are noted inside `_mark_polled`; a
+            # success never reaches it (successes are batched), so the other
+            # half of the site's record is written here.
+            site_health.record(board.ats, True)
             meta = meta or {}
             entries = meta.get("entries") or None
             _t = time.monotonic()
