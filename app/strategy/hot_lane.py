@@ -476,12 +476,13 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
     """
     from app.discovery import site_health
     from app.discovery.pipeline import (
-        BOARD_DEACTIVATE_AFTER_FAILURES, THROTTLED_BOARD_BACKOFF_HOURS,
-        _not_about_the_board,
+        BOARD_DEACTIVATE_AFTER_FAILURES, _not_about_the_board, spared_backoff_hours,
     )
     # The site's own record, written before the board's: whether THIS failure
     # is about the board is decided against how the whole system is answering.
-    site_health.record(ats, ok or site_health.answered(error))
+    # (A failure with no reason is not an answer: `answered("")` means "no
+    # error", and an adapter that returns None says nothing at all.)
+    site_health.record(ats, ok or (bool(error) and site_health.answered(error)))
     # A throttle, a refusal or unreadable answer the rest of the site shares,
     # or a failure while nearly every board of that system is failing too, is
     # not the board's. Spared exactly like a 429: backed off, never a strike.
@@ -512,11 +513,11 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 # since 2026-09-02 (pipeline.record_board_failure); the lane
                 # that does ~288k polls a day did not.
                 row.last_error = (error or "")[:300]
-                row.next_poll_at = datetime.utcnow() + timedelta(
-                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                backoff_hours = spared_backoff_hours(error)
+                row.next_poll_at = datetime.utcnow() + timedelta(hours=backoff_hours)
                 log.info("Board %s/%s not counted (throttled, refused, unreadable "
                          "or site-wide failure) — backing off %dh, not retiring",
-                         ats, slug, THROTTLED_BOARD_BACKOFF_HOURS)
+                         ats, slug, backoff_hours)
             else:
                 row.failure_count = (row.failure_count or 0) + 1
                 row.last_error = (error or "")[:300]

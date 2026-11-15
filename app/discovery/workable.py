@@ -12,7 +12,14 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob, listing_truncated
+from app.discovery.base import (
+    BoardUnreadableError,
+    GeoEvidence,
+    RawJob,
+    body_hint,
+    listing_truncated,
+    swallowed,
+)
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +40,9 @@ class WorkableScraper:
         url = f"{BASE}/{self.board_slug}?details=true"
         # Complete only once the whole listing parsed (app/discovery/base.py).
         self.fetch_complete = False
+        # "" = the fetch succeeded; an empty list WITH a reason is not an
+        # empty board (app/discovery/base.py `fetch_error`, `swallowed`).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -45,12 +55,20 @@ class WorkableScraper:
             if e.response is not None and e.response.status_code in (401, 403, 404, 410):
                 raise
             log.warning("Workable fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "workable", e)
         except httpx.HTTPError as e:
             log.warning("Workable fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "workable", e)
 
-        payload = r.json()
+        try:
+            payload = r.json()
+        except ValueError as e:
+            raise BoardUnreadableError(
+                "workable", f"widget did not send JSON: {body_hint(r.text)}") from e
+        if not isinstance(payload, dict):
+            # A 200 we cannot read is not "no openings".
+            raise BoardUnreadableError(
+                "workable", f"widget answer is not an account object: {body_hint(r.text)}")
         company = (payload.get("name") or self.board_slug.replace("-", " ").title()).strip()
         jobs: List[RawJob] = []
         listing = payload.get("jobs", [])

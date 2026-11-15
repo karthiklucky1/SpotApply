@@ -18,8 +18,11 @@ from app.discovery.base import (
     EVIDENCE_TEAM_OR_DEPARTMENT,
     EVIDENCE_TITLE_ONLY,
     GeoEvidence,
+    BoardUnreadableError,
     RawJob,
+    body_hint,
     listing_truncated,
+    swallowed,
 )
 from app.discovery.hiring_context import put
 
@@ -48,6 +51,9 @@ class PinpointScraper:
         url = f"https://{self.board_slug}.pinpointhq.com/postings.json"
         # Complete only once the whole listing parsed (app/discovery/base.py).
         self.fetch_complete = False
+        # "" = the fetch succeeded; an empty list WITH a reason is not an
+        # empty board (app/discovery/base.py `fetch_error`, `swallowed`).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -60,15 +66,17 @@ class PinpointScraper:
             if e.response is not None and e.response.status_code in (401, 403, 404, 410):
                 raise
             log.warning("Pinpoint fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "pinpoint", e)
         except httpx.HTTPError as e:
             log.warning("Pinpoint fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "pinpoint", e)
 
         try:
             payload = r.json()
-        except Exception:
-            return []
+        except Exception as e:
+            # A 200 we cannot read is not "no openings".
+            raise BoardUnreadableError(
+                "pinpoint", f"postings did not send JSON: {body_hint(r.text)}") from e
         items = payload.get("data", payload) if isinstance(payload, dict) else payload
         jobs: List[RawJob] = []
         for j in items or []:

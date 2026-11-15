@@ -1109,6 +1109,21 @@ BOARD_DEACTIVATE_AFTER_FAILURES = 5
 # silently shrink job coverage for a company that is perfectly alive.
 THROTTLED_BOARD_BACKOFF_HOURS = 6
 
+# How long to leave a board alone after the SITE refused us outright (a 403
+# that is not a rate limit). Rippling was still refusing production fifteen
+# hours after its boards stopped being retired; asking 1,650 boards again every
+# six hours is 275 requests an hour at a host that has said no. A day is the
+# polite retry, and the first board that answers puts its site back to normal.
+REFUSED_BOARD_BACKOFF_HOURS = 24
+
+
+def spared_backoff_hours(error: str) -> int:
+    """Hours to back a spared board off: a refusal waits a day, a throttle six."""
+    e = (error or "").lower()
+    throttle = "429" in e or "too many requests" in e or "rate limit" in e
+    return REFUSED_BOARD_BACKOFF_HOURS if (BLOCKED_MARKER in e and not throttle) \
+        else THROTTLED_BOARD_BACKOFF_HOURS
+
 
 def _is_throttled(error: str) -> bool:
     """True when the failure is not evidence that the board is dead.
@@ -1192,7 +1207,12 @@ def _not_about_the_board(ats, error: str) -> bool:
         return not site_health.answering(ats)
     if _is_throttled(error):
         return True
-    return (not site_health.answered(error)) and site_health.mass_failing(ats)
+    # A failure with NO reason is not an answer. Workday and SmartRecruiters
+    # returned None for any non-200, so the error arrived here empty — and
+    # `answered("")` is True (it means "no error"), which hid a site-wide
+    # failure from the one check built to see it.
+    unanswered = (not error) or (not site_health.answered(error))
+    return unanswered and site_health.mass_failing(ats)
 
 
 def record_board_failure(source_name: str, slug: str | None, error: str) -> None:
@@ -1221,7 +1241,7 @@ def record_board_failure(source_name: str, slug: str | None, error: str) -> None
                 # accumulate toward the retirement threshold deletes it.
                 from datetime import datetime as _dt, timedelta as _td
                 row.next_poll_at = _dt.utcnow() + _td(
-                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                    hours=spared_backoff_hours(error))
                 log.info("Board %s/%s throttled (429) — backing off %dh, not retiring",
                          source_name, slug, THROTTLED_BOARD_BACKOFF_HOURS)
                 session.add(row)
@@ -1298,7 +1318,7 @@ def record_board_failures_bulk(failures: list) -> int:
                 throttled_rows.append({
                     "id": rid, "last_error": last_error,
                     "next_poll_at": _dt.utcnow() + _td(
-                        hours=THROTTLED_BOARD_BACKOFF_HOURS),
+                        hours=spared_backoff_hours(error)),
                 })
                 continue
             new_count = (failure_count or 0) + 1

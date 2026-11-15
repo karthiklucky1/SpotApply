@@ -604,3 +604,189 @@ def test_the_floors_cover_the_three_sites_that_refused_us():
     for ats in ("rippling", "join", "bamboohr"):
         assert pulse_lane._ats_min_interval(ats) is not None, ats
     assert pulse_lane._ats_min_interval("greenhouse") is None
+
+
+# ── 2026-11-15: the other sources ────────────────────────────────────────────
+# Checking the remaining adapters found the same two mistakes still live:
+#
+#   * Workday and SmartRecruiters answered `None` for ANY non-200 and said
+#     nothing else. The pulse lane recorded that as a failure with an EMPTY
+#     error, which no rule could recognise as a throttle, a refusal or an
+#     outage: every one was a strike. On 2026-11-14, 05:18–15:29 UTC, that
+#     retired 1,329 Workday boards holding 30,812 open jobs as "unreachable x5"
+#     with nothing recorded about why.
+#   * Six adapters answered `[]` for a timeout, a 429 or a 5xx — a successful
+#     poll of an employer with no openings (`job_count = 0`, 72-hour cadence) —
+#     and four of them did the same for a body they could not parse.
+
+from app.discovery import (  # noqa: E402
+    breezy, personio, pinpoint, recruitee, smartrecruiters, teamtailor, workable, workday,
+)
+from app.discovery.pipeline import (  # noqa: E402
+    REFUSED_BOARD_BACKOFF_HOURS, THROTTLED_BOARD_BACKOFF_HOURS, _not_about_the_board,
+    spared_backoff_hours,
+)
+
+
+def _workday(monkeypatch, status=200, payload=None, exc=None):
+    def post(url, **kw):
+        if exc is not None:
+            raise exc
+        return _http(status, payload=payload if payload is not None else {})
+    monkeypatch.setattr(workday.httpx, "post", post)
+    return workday.WorkdayScraper("acme", "https://acme.wd1.myworkdayjobs.com/External")
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_workday_refusal_is_blocked_not_a_blank_failure(monkeypatch, status):
+    s = _workday(monkeypatch, status)
+    with pytest.raises(BoardBlockedError) as exc:
+        s.fetch()
+    assert str(status) in str(exc.value)
+
+
+@pytest.mark.parametrize("status,needle", [(500, "500"), (503, "503"), (404, "not found")])
+def test_a_workday_failure_says_why(monkeypatch, status, needle):
+    """`None` with no reason was a strike nobody could classify."""
+    s = _workday(monkeypatch, status)
+    assert s.fetch() is None
+    assert needle in fetch_error(s), fetch_error(s)
+
+
+def test_a_missing_workday_site_is_not_retired_on_the_spot(monkeypatch):
+    """The recorders retire a board immediately on an error naming 404. A
+    tenant whose site path moved keeps the five tries it always had — and if
+    every tenant says it at once, that is Workday, not the tenants."""
+    s = _workday(monkeypatch, 404)
+    s.fetch()
+    assert "404" not in fetch_error(s)
+    assert site_health.answered(fetch_error(s)) is False
+
+
+def test_a_workday_timeout_says_why(monkeypatch):
+    s = _workday(monkeypatch, exc=httpx.ReadTimeout("timed out"))
+    assert s.fetch() is None
+    assert "unreachable" in fetch_error(s) and "ReadTimeout" in fetch_error(s)
+
+
+def test_a_working_workday_fetch_has_no_error(monkeypatch):
+    s = _workday(monkeypatch, 200, {"jobPostings": [], "total": 0})
+    assert s.fetch() == []
+    assert fetch_error(s) == ""
+
+
+def _smartrecruiters(monkeypatch, status=200, exc=None):
+    def get(url, **kw):
+        if exc is not None:
+            raise exc
+        return _http(status, payload={"content": [], "totalFound": 0})
+    monkeypatch.setattr(smartrecruiters.httpx, "get", get)
+    return smartrecruiters.SmartRecruitersScraper("acme")
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_smartrecruiters_refusal_is_blocked(monkeypatch, status):
+    with pytest.raises(BoardBlockedError):
+        _smartrecruiters(monkeypatch, status).fetch()
+
+
+@pytest.mark.parametrize("status,needle", [(500, "500"), (404, "not found")])
+def test_a_smartrecruiters_failure_says_why(monkeypatch, status, needle):
+    s = _smartrecruiters(monkeypatch, status)
+    assert s.fetch() is None
+    assert needle in fetch_error(s)
+    s = _smartrecruiters(monkeypatch, exc=httpx.ConnectTimeout("x"))
+    assert s.fetch() is None and "unreachable" in fetch_error(s)
+
+
+_TEMPLATE_ADAPTERS = [
+    (workable, "WorkableScraper"), (recruitee, "RecruiteeScraper"),
+    (personio, "PersonioScraper"), (pinpoint, "PinpointScraper"),
+    (breezy, "BreezyScraper"), (teamtailor, "TeamtailorScraper"),
+]
+
+
+@pytest.mark.parametrize("mod,cls", _TEMPLATE_ADAPTERS, ids=lambda v: getattr(v, "__name__", v))
+def test_a_failed_fetch_is_never_an_empty_board(monkeypatch, mod, cls):
+    """A timeout, a throttle and a 5xx each used to come back as `[]` with
+    nothing said: a clean poll of an employer with no openings."""
+    s = getattr(mod, cls)("acme")
+    for response, exc, needle in ((_http(503), None, "503"), (_http(429), None, "429"),
+                                  (None, httpx.ReadTimeout("timed out"), "unreachable")):
+        def get(url, _r=response, _e=exc, **kw):
+            if _e is not None:
+                raise _e
+            return _r
+        monkeypatch.setattr(mod.httpx, "get", get)
+        assert s.fetch() == []
+        assert needle in fetch_error(s), f"{cls}: {fetch_error(s)!r}"
+    assert _is_throttled(f"{s.name} returned 429") is True
+
+
+@pytest.mark.parametrize("mod,cls", _TEMPLATE_ADAPTERS, ids=lambda v: getattr(v, "__name__", v))
+def test_an_answer_that_does_not_parse_is_not_an_empty_board(monkeypatch, mod, cls):
+    s = getattr(mod, cls)("acme")
+    monkeypatch.setattr(mod.httpx, "get",
+                        lambda url, **kw: _http(200, text="<html>Just a moment...</html"))
+    with pytest.raises(BoardUnreadableError):
+        s.fetch()
+
+
+@pytest.mark.parametrize("mod,cls", _TEMPLATE_ADAPTERS, ids=lambda v: getattr(v, "__name__", v))
+def test_a_good_fetch_clears_the_reason(monkeypatch, mod, cls):
+    """`last_error` is per fetch: a reason left over from a failed poll would
+    turn the next genuinely empty board into a failure."""
+    s = getattr(mod, cls)("acme")
+    monkeypatch.setattr(mod.httpx, "get", lambda url, **kw: _http(503))
+    s.fetch()
+    assert fetch_error(s)
+    empty = {workable: _http(payload={"name": "Acme", "jobs": []}),
+             recruitee: _http(payload={"offers": []}),
+             personio: _http(text="<workzag-jobs></workzag-jobs>"),
+             pinpoint: _http(payload={"data": []}),
+             breezy: _http(payload=[]),
+             teamtailor: _http(text="<rss><channel></channel></rss>")}[mod]
+    monkeypatch.setattr(mod.httpx, "get", lambda url, **kw: empty)
+    assert s.fetch() == []
+    assert fetch_error(s) == ""
+
+
+# ── a failure with no reason, and how long a spared board waits ──────────────
+
+def test_a_blank_failure_is_not_the_site_answering():
+    """`answered("")` means "no error". A failed fetch that says nothing was
+    being recorded as the site answering, which hid a site-wide failure from
+    the one check built to see it — the Workday day exactly."""
+    slugs = _seed(30, ats=JobSource.WORKDAY)
+    for _round in range(BOARD_DEACTIVATE_AFTER_FAILURES + 2):
+        for slug in slugs:
+            _fail(slug, JobSource.WORKDAY, "")
+    rows = _rows()
+    assert all(r.is_active for r in rows.values()), (
+        f"{sum(not r.is_active for r in rows.values())} boards retired by blank failures")
+    assert site_health.mass_failing(JobSource.WORKDAY) is True
+
+
+def test_a_blank_failure_on_one_board_still_counts():
+    (slug,) = _seed(ats=JobSource.WORKDAY)
+    for _ in range(80):
+        site_health.record(JobSource.WORKDAY, True)
+    for _ in range(BOARD_DEACTIVATE_AFTER_FAILURES):
+        _fail(slug, JobSource.WORKDAY, "")
+    assert _rows()[slug].is_active is False
+    assert _not_about_the_board(JobSource.WORKDAY, "") is False
+
+
+def test_a_refused_board_waits_a_day_and_a_throttled_one_six_hours():
+    """A site that said no outright is not asked again by 1,650 boards every
+    six hours; a throttle is a request to slow down, not to go away."""
+    assert REFUSED_BOARD_BACKOFF_HOURS > THROTTLED_BOARD_BACKOFF_HOURS
+    assert spared_backoff_hours(str(BoardBlockedError("rippling", 403))) == REFUSED_BOARD_BACKOFF_HOURS
+    assert spared_backoff_hours(str(BoardBlockedError("rippling", 429))) == THROTTLED_BOARD_BACKOFF_HOURS
+    assert spared_backoff_hours("join jobs API returned 429") == THROTTLED_BOARD_BACKOFF_HOURS
+    assert spared_backoff_hours(str(BoardUnreadableError("bamboohr", "x"))) == THROTTLED_BOARD_BACKOFF_HOURS
+    (slug,) = _seed()
+    _fail(slug, JobSource.RIPPLING, str(BoardBlockedError("rippling", 403)))
+    wait = _rows()[slug].next_poll_at - datetime.utcnow()
+    assert timedelta(hours=REFUSED_BOARD_BACKOFF_HOURS - 1) < wait <= timedelta(
+        hours=REFUSED_BOARD_BACKOFF_HOURS)

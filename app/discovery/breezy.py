@@ -13,7 +13,14 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob, listing_truncated
+from app.discovery.base import (
+    BoardUnreadableError,
+    GeoEvidence,
+    RawJob,
+    body_hint,
+    listing_truncated,
+    swallowed,
+)
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +47,9 @@ class BreezyScraper:
         url = f"https://{self.board_slug}.breezy.hr/json"
         # Complete only once the whole listing parsed (app/discovery/base.py).
         self.fetch_complete = False
+        # "" = the fetch succeeded; an empty list WITH a reason is not an
+        # empty board (app/discovery/base.py `fetch_error`, `swallowed`).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -52,15 +62,17 @@ class BreezyScraper:
             if e.response is not None and e.response.status_code in (401, 403, 404, 410):
                 raise
             log.warning("Breezy fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "breezy", e)
         except httpx.HTTPError as e:
             log.warning("Breezy fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "breezy", e)
 
         try:
             payload = r.json()
-        except Exception:
-            return []
+        except Exception as e:
+            # A 200 we cannot read is not "no openings".
+            raise BoardUnreadableError(
+                "breezy", f"board did not send JSON: {body_hint(r.text)}") from e
         items = payload if isinstance(payload, list) else payload.get("positions", [])
         jobs: List[RawJob] = []
         for j in items or []:

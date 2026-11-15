@@ -17,6 +17,7 @@ from app.discovery.base import (
     EVIDENCE_STRUCTURED_PERSON,
     EVIDENCE_TEAM_OR_DEPARTMENT,
     EVIDENCE_TITLE_ONLY,
+    BoardBlockedError,
     GeoEvidence,
     RawJob,
 )
@@ -121,13 +122,22 @@ class SmartRecruitersScraper:
         self.fetch_complete = False
         self.listing_complete = False
         self.listed_ids: set = set()
+        # "" = the fetch succeeded. `None` with no reason reached the pulse lane
+        # as a failure with an EMPTY error, which nothing could recognise as a
+        # throttle or a refusal: every one was a strike (see workday.py).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
-            if r.status_code != 200:
-                log.warning("SmartRecruiters fetch postings failed for %s: HTTP %d", self.company_slug, r.status_code)
-                return None
         except httpx.HTTPError as e:
             log.warning("SmartRecruiters fetch postings failed for %s: %s", self.company_slug, e)
+            self.last_error = f"smartrecruiters unreachable: {type(e).__name__}: {e}"[:300]
+            return None
+        if r.status_code != 200:
+            log.warning("SmartRecruiters fetch postings failed for %s: HTTP %d", self.company_slug, r.status_code)
+            if r.status_code in (403, 429):
+                raise BoardBlockedError("smartrecruiters", r.status_code)
+            self.last_error = ("smartrecruiters company not found" if r.status_code in (404, 410)
+                               else f"smartrecruiters returned {r.status_code}")
             return None
 
         payload = r.json()

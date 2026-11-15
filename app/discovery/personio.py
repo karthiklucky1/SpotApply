@@ -14,7 +14,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.base import BoardUnreadableError, GeoEvidence, RawJob, swallowed
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,9 @@ class PersonioScraper:
         url = f"https://{self.board_slug}.jobs.personio.de/xml"
         # Complete only once the whole listing parsed (app/discovery/base.py).
         self.fetch_complete = False
+        # "" = the fetch succeeded; an empty list WITH a reason is not an
+        # empty board (app/discovery/base.py `fetch_error`, `swallowed`).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -50,16 +53,18 @@ class PersonioScraper:
             if e.response is not None and e.response.status_code in (401, 403, 404, 410):
                 raise
             log.warning("Personio fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "personio", e)
         except httpx.HTTPError as e:
             log.warning("Personio fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "personio", e)
 
         try:
             root = ET.fromstring(r.text)
         except ET.ParseError as e:
+            # A feed we cannot parse is not "no openings" (it used to be
+            # recorded as exactly that).
             log.warning("Personio XML parse failed for %s: %s", self.board_slug, e)
-            return []
+            raise BoardUnreadableError("personio", f"XML feed did not parse: {e}") from e
 
         company = self.board_slug.replace("-", " ").title()
         jobs: List[RawJob] = []

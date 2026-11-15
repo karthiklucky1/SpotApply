@@ -532,3 +532,108 @@ def test_a_real_fault_still_counts_toward_retirement(error):
     still retire, or the registry fills with slugs nobody can fetch."""
     from app.discovery.pipeline import _is_throttled
     assert _is_throttled(error) is False, error
+
+
+# ── join.com's throttle, and our own pace ────────────────────────────────────
+# First fifteen hours on the GraphQL listing in production (2026-11-15): about
+# half of all join polls were throttled, at an AVERAGE of three requests a
+# minute. join.com answers a BURST with HTTP 200 and a GraphQL error, and the
+# pulse lane's thread pool sent each tick's join boards together.
+
+def test_the_graphql_throttle_is_a_throttle_not_a_changed_answer(patch_client):
+    """1,009 boards were filed as "unreadable response" for this."""
+    patch_client(lambda page: _Resp(200, payload={"errors": [{
+        "message": "You are doing too many requests to publicJobs",
+        "locations": [{"line": 1, "column": 52}], "path": ["publicJobs"]}], "data": None}))
+    with pytest.raises(JoinTransientError) as exc:
+        JoinScraper(_SLUG).fetch()
+    from app.discovery.pipeline import _is_throttled
+    assert _is_throttled(str(exc.value)) is True
+    assert "unreadable" not in str(exc.value)
+    assert _SLUG in join_mod._COMPANY_IDS, "a throttle says nothing about the id"
+
+
+def test_a_throttle_on_a_later_page_is_partial(patch_client):
+    def q(page):
+        if page == 1:
+            return _Resp(200, payload=_listing([_job(1)], page_count=2, row_count=120))
+        return _Resp(200, payload={"errors": [{"message": "You are doing too many requests to publicJobs"}]})
+
+    patch_client(q)
+    s = JoinScraper(_SLUG)
+    assert len(s.fetch()) == 1 and s.fetch_complete is False
+
+
+class _Clock:
+    """A fake monotonic clock + sleep, so pacing is tested without waiting."""
+
+    def __init__(self):
+        self.now, self.slept = 100.0, []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(round(seconds, 3))
+        self.now += seconds
+
+
+@pytest.fixture
+def paced(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "join_min_request_interval_seconds", 1.0, raising=False)
+    monkeypatch.setattr(settings, "join_max_pace_wait_seconds", 5.0, raising=False)
+    clock = _Clock()
+    monkeypatch.setattr(join_mod.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(join_mod.time, "sleep", clock.sleep)
+    join_mod._reset_pace()
+    return clock
+
+
+def test_requests_to_join_are_spaced(paced, patch_client):
+    patch_client(lambda page: _Resp(200, payload=_listing([_job(1)])))
+    JoinScraper(_SLUG).fetch()                      # company page + jobs query
+    assert paced.slept == [1.0], "the second request waits a full interval"
+    JoinScraper(_SLUG).fetch()                      # id remembered: one request
+    assert paced.slept == [1.0, 1.0]
+
+
+def test_a_long_queue_is_not_sent_and_reads_as_a_throttle(monkeypatch, patch_client):
+    """A burst must not hold the tick's fetch threads: past the wait we are
+    willing to pay, the request is not sent at all."""
+    from app.config import settings
+    from app.discovery.pipeline import _is_throttled
+    monkeypatch.setattr(settings, "join_min_request_interval_seconds", 1.0, raising=False)
+    monkeypatch.setattr(settings, "join_max_pace_wait_seconds", 5.0, raising=False)
+    monkeypatch.setattr(join_mod.time, "monotonic", lambda: 100.0)     # the clock never moves
+    monkeypatch.setattr(join_mod.time, "sleep", lambda s: None)
+    join_mod._reset_pace()
+    sent: list[int] = []
+
+    def q(page):
+        sent.append(page)
+        return _Resp(200, payload=_listing([_job(1)]))
+
+    patch_client(q)
+    join_mod._COMPANY_IDS[_SLUG] = "9001"
+    results = []
+    for _ in range(12):
+        try:
+            JoinScraper(_SLUG).fetch()
+            results.append("sent")
+        except JoinTransientError as e:
+            assert _is_throttled(str(e)) is True
+            results.append("held")
+    assert results.count("sent") == 6, results          # waits of 0..5 s
+    assert results[6:] == ["held"] * 6
+    assert len(sent) == 6, "a held request must never reach join.com"
+
+
+def test_pacing_off_sends_at_once(monkeypatch, patch_client):
+    from app.config import settings
+    monkeypatch.setattr(settings, "join_min_request_interval_seconds", 0.0, raising=False)
+    monkeypatch.setattr(join_mod.time, "sleep",
+                        lambda s: pytest.fail("slept with pacing off"))
+    patch_client(lambda page: _Resp(200, payload=_listing([_job(1)])))
+    for _ in range(5):
+        assert len(JoinScraper(_SLUG).fetch()) == 1

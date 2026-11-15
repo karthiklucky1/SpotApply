@@ -40,6 +40,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -101,6 +103,60 @@ def _reset_company_ids() -> None:
     _COMPANY_IDS.clear()
 
 
+# ── our own pace ─────────────────────────────────────────────────────────────
+# join.com limits by address, and answers a burst with "You are doing too many
+# requests to publicJobs". The pulse lane fetches a tick's boards from a thread
+# pool, so the join boards in one tick left as a burst: in the first fifteen
+# hours on the GraphQL listing (2026-11-15) about half of all join polls were
+# throttled — 2,782 boards in a 429 backoff — at an AVERAGE of three requests a
+# minute. The average was never the problem; the spacing was.
+#
+# So requests to join.com are spaced process-wide. A caller waits for its slot,
+# but only briefly: when the queue is longer than `JOIN_MAX_PACE_WAIT_SECONDS`
+# the request is NOT SENT and the board is backed off exactly as if join.com had
+# throttled it — without spending the request, and without a fetch thread
+# sleeping its way through the tick.
+_PACE_LOCK = threading.Lock()
+_next_slot = 0.0
+
+
+def _pace_settings() -> tuple[float, float]:
+    try:
+        from app.config import settings
+        return (float(getattr(settings, "join_min_request_interval_seconds", 1.0) or 0.0),
+                float(getattr(settings, "join_max_pace_wait_seconds", 5.0) or 0.0))
+    except Exception:
+        return 1.0, 5.0
+
+
+def _take_turn() -> None:
+    """Wait for this process's next slot on join.com.
+
+    Raises ``JoinTransientError`` (a throttle, to every recorder) when the wait
+    would be longer than we are willing to hold a fetch thread.
+    """
+    global _next_slot
+    interval, max_wait = _pace_settings()
+    if interval <= 0:
+        return
+    with _PACE_LOCK:
+        now = time.monotonic()
+        slot = max(now, _next_slot)
+        wait = slot - now
+        if wait > max_wait:
+            raise JoinTransientError(
+                "join: not sent — our own pace for join.com is full (rate limit)")
+        _next_slot = slot + interval
+    if wait > 0:
+        time.sleep(wait)
+
+
+def _reset_pace() -> None:
+    """Tests only."""
+    global _next_slot
+    _next_slot = 0.0
+
+
 # The name the tests and older callers know.
 _reset_learned_shape = _reset_company_ids
 
@@ -135,6 +191,10 @@ def _read_listing(payload) -> tuple[list, int, int, Optional[int]]:
     items = listing.get("items") if isinstance(listing, dict) else None
     page_count = page_info.get("pageCount") if isinstance(page_info, dict) else None
     row_count = page_info.get("rowCount") if isinstance(page_info, dict) else None
+    if errors and "too many requests" in json.dumps(errors, default=str).lower():
+        # HTTP 200 with a GraphQL error: join.com's throttle. It is a throttle,
+        # not a changed answer — 1,009 boards were filed as "unreadable" for it.
+        raise JoinTransientError("join jobs query throttled: too many requests")
     if errors or not isinstance(items, list) or not isinstance(page_count, int) \
             or isinstance(page_count, bool):
         try:
@@ -172,6 +232,7 @@ class JoinScraper:
         known = _COMPANY_IDS.get(key)
         if known:
             return known
+        _take_turn()
         try:
             r = client.get(f"{_BASE}/companies/{self.board_slug}")
         except httpx.HTTPError as e:
@@ -200,6 +261,7 @@ class JoinScraper:
         return None
 
     def _post_page(self, client: httpx.Client, company_id: str, page: int):
+        _take_turn()
         return client.post(
             _GRAPHQL,
             json={"query": _JOBS_QUERY, "variables": {"input": {
@@ -278,6 +340,11 @@ class JoinScraper:
                 first = page == 1
                 try:
                     r = self._post_page(client, company_id, page)
+                except JoinTransientError:
+                    if first:
+                        raise
+                    partial = True      # our own pace: keep what page 1 gave us
+                    break
                 except httpx.HTTPError as e:
                     if first:
                         raise JoinTransientError(f"join jobs API unreachable: {e}") from e
@@ -318,7 +385,7 @@ class JoinScraper:
                             "join", f"jobs query sent unparseable JSON: {e}") from e
                     partial = True
                     break
-                except BoardUnreadableError:
+                except (BoardUnreadableError, JoinTransientError):
                     if first:
                         raise
                     partial = True

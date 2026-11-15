@@ -34,6 +34,9 @@ os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
 # cycle) when a returning user makes a request; off for the suite so a request
 # in one test cannot start work that runs into the next. test_welcome turns it on.
 os.environ.setdefault("WELCOME_BOOST_MINUTES", "0")
+# join.com requests are spaced a second apart in production (app/discovery/join.py).
+# Off in the suite — a mocked request must not sleep; the pacing tests turn it on.
+os.environ.setdefault("JOIN_MIN_REQUEST_INTERVAL_SECONDS", "0")
 
 import importlib.util
 import sys
@@ -182,6 +185,7 @@ def _reset_process_globals():
         from app.discovery import join as _join, site_health as _sh
         _sh.reset()
         _join._reset_company_ids()
+        _join._reset_pace()
     except ImportError:
         pass
 

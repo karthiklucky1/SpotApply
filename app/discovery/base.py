@@ -183,6 +183,23 @@ class BoardUnreadableError(RuntimeError):
         super().__init__(f"{source}: {UNREADABLE_MARKER}{tail}")
 
 
+def swallowed(scraper, source: str, exc: Exception) -> list:
+    """An adapter is about to answer ``[]`` for a fetch that FAILED: say why.
+
+    Sets ``scraper.last_error`` (read through ``fetch_error``) and returns the
+    empty list. Without the reason, a timeout, a 429 or a 503 is recorded as a
+    successful poll of an employer with no openings — ``job_count = 0`` and the
+    72-hour cadence. Six adapters still did exactly that on 2026-11-15. The
+    status is written as digits so a 429 is recognised as a throttle.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status:
+        scraper.last_error = f"{source} returned {status}"
+    else:
+        scraper.last_error = f"{source} unreachable: {type(exc).__name__}: {exc}"[:300]
+    return []
+
+
 def body_hint(text: str, limit: int = 160) -> str:
     """A short, single-line slice of a response body for an error message."""
     try:

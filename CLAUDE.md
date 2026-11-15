@@ -250,8 +250,26 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   retire), and one dead board among healthy ones still retires.
   `PULSE_ATS_MIN_INTERVAL_MINUTES` ("rippling=30,join=120,bamboohr=60") is a per-SITE
   floor under `_cadence`: the 5-minute fast tier says how fresh we want a board, not
-  how often one host will answer. Rippling and JOIN listings carry NO description
-  (rows scored blind) — open. Guards: `test_board_outages`, `test_join_contract`.
+  how often one host will answer. **The other sources (2026-11-15):** Workday and
+  SmartRecruiters answered `None` for ANY non-200, which reached the lane as a
+  failure with an EMPTY error — a strike nothing could classify: 1,329 Workday
+  boards / 30,812 open jobs retired 11-14 05:18–15:29 UTC with no reason recorded.
+  They now say why (`last_error`) or raise `BoardBlockedError` (403/429); a
+  not-found is spelled WITHOUT the status so a moved site path gets five tries, not
+  retirement on the spot. A failure with no reason is never "the site answered".
+  Six template adapters no longer answer `[]` for a timeout / 429 / 5xx
+  (`base.swallowed`) or for a body that does not parse (`BoardUnreadableError`) —
+  Workable's 429s were being stored as empty boards. A refusal backs off
+  `REFUSED_BOARD_BACKOFF_HOURS` (24), a throttle 6. join.com throttles BURSTS
+  (HTTP 200 + GraphQL "too many requests" is a throttle, not a changed answer):
+  requests are spaced `JOIN_MIN_REQUEST_INTERVAL_SECONDS` (1.0) process-wide, and
+  past `JOIN_MAX_PACE_WAIT_SECONDS` (5) a request is NOT sent and reads as a
+  throttle, so join boards never hold the fetch pool. Still open: Rippling refused
+  production 15 h after the fix; Rippling, JOIN and Breezy listings carry NO
+  description (rows scored blind); The Muse 403s every run; the Greenhouse/Lever
+  keyword searches time out at 45 s (redundant with the board lanes); the registry
+  `last_error` is not cleared by a later success, so read `failure_count`.
+  Guards: `test_board_outages`, `test_join_contract`.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score
   IS NULL` queue across ALL users with a fixed pool of `scoring_workers` (GPT

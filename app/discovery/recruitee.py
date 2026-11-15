@@ -17,8 +17,11 @@ from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
     EVIDENCE_TEAM_OR_DEPARTMENT,
     GeoEvidence,
+    BoardUnreadableError,
     RawJob,
+    body_hint,
     listing_truncated,
+    swallowed,
 )
 from app.discovery.hiring_context import put
 
@@ -39,6 +42,9 @@ class RecruiteeScraper:
         url = f"https://{self.board_slug}.recruitee.com/api/offers/"
         # Complete only once the whole listing parsed (app/discovery/base.py).
         self.fetch_complete = False
+        # "" = the fetch succeeded; an empty list WITH a reason is not an
+        # empty board (app/discovery/base.py `fetch_error`, `swallowed`).
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -51,12 +57,20 @@ class RecruiteeScraper:
             if e.response is not None and e.response.status_code in (401, 403, 404, 410):
                 raise
             log.warning("Recruitee fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "recruitee", e)
         except httpx.HTTPError as e:
             log.warning("Recruitee fetch failed for %s: %s", self.board_slug, e)
-            return []
+            return swallowed(self, "recruitee", e)
 
-        payload = r.json()
+        try:
+            payload = r.json()
+        except ValueError as e:
+            raise BoardUnreadableError(
+                "recruitee", f"offers API did not send JSON: {body_hint(r.text)}") from e
+        if not isinstance(payload, dict):
+            # A 200 we cannot read is not "no openings".
+            raise BoardUnreadableError(
+                "recruitee", f"offers answer is not an object: {body_hint(r.text)}")
         jobs: List[RawJob] = []
         listing = payload.get("offers", [])
         for j in listing:
