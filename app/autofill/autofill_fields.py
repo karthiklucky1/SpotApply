@@ -215,7 +215,9 @@ SECTIONS: tuple = (
     Section("education", "Education", "Schools are edited on your profile. These are the questions asked about them.",
             icon="i-scan", fields=(
         Field("highest_education", "Highest level of education", SELECT, EDUCATION_LEVELS, required=True,
-              ask=(r"\bhighest (level of )?(education|degree|qualification)\b",
+              # "What is your highest attained degree?" (a real Lever form).
+              ask=(r"\bhighest (level of |attained |completed |earned |obtained |achieved |academic |educational )?"
+                   r"(education|degree|qualification)\b",
                    r"\b(level of education|education level)\b"), max_label=120),
         Field("currently_enrolled", "Currently enrolled in school / university?", YESNO,
               ask=(r"\bcurrently (enrolled|attending|studying)\b", r"\bare you (a )?(current|full[- ]time) student\b",
@@ -260,7 +262,9 @@ SECTIONS: tuple = (
               # Never a bare "Start date": that is the date a job or a degree began.
               ask=(r"\b(earliest|available|possible|desired|preferred|anticipated|expected) start\b",
                    r"\bwhen (can|could|would) you (be able to )?start\b",
-                   r"\bdate (you are |you're )?available\b"),
+                   r"\bdate (you are |you're )?available\b",
+                   # Personio's own wording (a real form, 2026-11-15).
+                   r"^\W*available (from|as of|starting)\b"),
               deny=(r"school", r"employment start", r"job start", r"position start"),
               max_label=120),
         Field("shifts_available", "Shifts available", SELECT,
@@ -601,6 +605,44 @@ _CERTS_ASK = tuple(re.compile(p, re.I) for p in (
     r"^licen[cs]es?( and | & |/)certifications?$", r"\blist (any|your)[^|]*certifications?\b"))
 
 
+_LANGUAGE_RUNG = {"native or bilingual": 5, "fluent": 4, "professional": 3, "conversational": 2, "basic": 1}
+
+
+def _asks_level_of(language: str, head: str) -> bool:
+    """Does ``head`` ask how well the person speaks ``language``? The level word
+    sits NEXT to the language ("English level", "proficiency in English"), so
+    "English teacher experience level" is not such a question."""
+    lang = re.escape(language.strip().lower())
+    return any(re.search(p, head) for p in (
+        rf"\b{lang}( language)? (level|proficiency|skills?|fluency|knowledge)\b",
+        rf"\b(level|proficiency|fluency|command|knowledge) (of|in) (the )?{lang}\b",
+        rf"\b(rate|evaluate|assess|describe) your {lang}\b",
+        rf"\bhow (well|good|fluent)\b[^|]*\b{lang}\b",
+        rf"\b(fluent|proficient) in {lang}\b"))
+
+
+def _language_level(head: str, rows: list) -> Optional[str]:
+    """The saved level of the ONE saved language ``head`` asks about ("How would
+    you evaluate your proficiency in English?", a real Personio form). A
+    language the person did not list is not "none": it is left for them. "Are
+    you fluent in English?" is Yes only for a saved Fluent or Native level, and
+    otherwise left."""
+    h = head.lower()
+    listed = [r for r in rows or [] if (r.get("language") or "").strip()]
+    # A question naming two of their languages has no one answer.
+    if sum(1 for r in listed if re.search(rf"\b{re.escape(r['language'].strip().lower())}\b", h)) != 1:
+        return None
+    named = [r for r in listed if _asks_level_of(r["language"], h)]
+    if len(named) != 1:
+        return None
+    level = (named[0].get("proficiency") or "").strip()
+    if not level:
+        return None
+    if re.match(r"^(are|do|can|would) you\b", h):
+        return "Yes" if _LANGUAGE_RUNG.get(level.lower(), 0) >= 4 else None
+    return level
+
+
 _OPTIONAL_RE = re.compile(r"\((optional|required|if applicable|if any)\)")
 # A box that wants an explanation, not a Yes or a No.
 _NOT_YESNO_RE = re.compile(
@@ -673,6 +715,10 @@ def answer_for_label(label: str, data: dict) -> Optional[str]:
         return None
     if data.get("languages") and any(p.search(head) for p in _LANGUAGES_ASK):
         return _languages_text(data["languages"]) or None
+    if data.get("languages"):
+        level = _language_level(head, data["languages"])
+        if level:
+            return level
     if data.get("certifications") and any(p.search(head) for p in _CERTS_ASK):
         names = [c.get("name", "") for c in data["certifications"] if c.get("name")]
         return ", ".join(names) or None

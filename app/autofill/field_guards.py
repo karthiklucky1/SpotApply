@@ -72,9 +72,14 @@ _HEAR_ABOUT_RE = re.compile(
     re.I,
 )
 _WORK_AUTH_RE = re.compile(
-    r"sponsor|authoriz|visa status|work permit|right to work|eligible to work", re.I)
+    r"sponsor|authoriz|visa status|work permit|right to work|eligible to work"
+    # "Are you able to legally work in the region you are applying for?" has
+    # none of the usual words (a real Greenhouse form, 2026-11-15).
+    r"|legally (?:work|be employed|employed)"
+    r"|legal(?:ly)? (?:right|eligible|entitled|permitted|allowed|able) to work|work legally", re.I)
 _DEMOGRAPHIC_RE = re.compile(
-    r"\b(gender|sex|pronouns?|race|racial|ethnic\w*|hispanic|latin[oaex]|veteran|disab\w*"
+    # "sex offender" is a criminal-history question, not self-identification.
+    r"\b(gender|sex(?! offen)|pronouns?|race|racial|ethnic\w*|hispanic|latin[oaex]|veteran|disab\w*"
     r"|sexual orientation|transgender|lgbtq?\w*)\b",
     re.I,
 )

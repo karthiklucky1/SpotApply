@@ -240,7 +240,7 @@ try {
 // write path that is not fillEEOField itself — saved-answer recall, dropdown
 // learning, AI answers — so the opt-out cannot be bypassed by a remembered
 // answer (audit 2026-09-30: recall set Gender while autofill was OFF).
-const _DEMOGRAPHIC_RE = /\b(gender|sex|pronouns?|race|racial|ethnic\w*|hispanic|latin[oaex]|veteran|disab\w*|sexual orientation|transgender|lgbtq?\w*)\b/i;
+const _DEMOGRAPHIC_RE = /\b(gender|sex(?! offen)|pronouns?|race|racial|ethnic\w*|hispanic|latin[oaex]|veteran|disab\w*|sexual orientation|transgender|lgbtq?\w*)\b/i;
 function isDemographicQuestion(text) {
   return _DEMOGRAPHIC_RE.test(deaccent(String(text || '')));
 }
@@ -433,6 +433,36 @@ function fillEEOField(el, value, kind) {
 
 /** The EEO <select>s a page shows, by id or label — run twice on Greenhouse,
  *  whose Race dropdown appears only after "Are you Hispanic/Latino?" = No. */
+/** Self-identification asked as radio buttons (a real Teamtailor form's
+ * Gender): the answer the person saved in their profile, picked by category,
+ * under the same consent rule as every other self-identification field
+ * (fillEEOField). Never a question about an accommodation or a need: having a
+ * disability does not say what someone needs. Returns how many were answered. */
+function answerEEORadioGroups(pack) {
+  let n = 0;
+  const seen = new Set();
+  for (const r of queryAllDeep('input[type="radio"]')) {
+    if (!r.name || seen.has(r.name)) continue;
+    seen.add(r.name);
+    const group = Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(r.name)}"]`));
+    if (group.some((g) => g.checked || g.dataset.spotapplyUserModified === 'true')) continue;
+    const q = deaccent(String(radioGroupQuestion(r) || '')).toLowerCase().slice(0, 200);
+    // ("Required" beside a question is the form's own marker, not a need.)
+    if (!q || /accommodat|assistance|\brequires?\b|\bneeds?\b|able to perform|essential functions/.test(q)) continue;
+    let kind = null;
+    if (/hispanic|latin[oax]?\b/.test(q) && !/\brace\b|ethnic/.test(q)) kind = 'hispanic';
+    else if (/\bgender\b|\bsex\b(?! offen)/.test(q)) kind = 'gender';
+    else if (/\brace\b|racial|ethnic/.test(q)) kind = 'ethnicity';
+    else if (/veteran/.test(q)) kind = 'veteran';
+    else if (/disab/.test(q)) kind = 'disability';
+    if (!kind) continue;
+    const value = eeoValueFor(pack, kind);
+    if (!value) continue;                                    // nothing saved: the person's to answer
+    if (fillEEOField(r, value, kind)) n++;
+  }
+  return n;
+}
+
 function fillEEOSelectsIn(root, pack) {
   let n = 0;
   for (const el of root.querySelectorAll(
@@ -627,6 +657,8 @@ async function pickCustomOption(control, choose) {
   if (!choiceDropdownPicked(control)) { close(); return false; }
   try {
     control.dataset.spotapplyFilled = 'true';
+    // WHAT we picked: a later, different pick is the person's own.
+    control.dataset.spotapplyPicked = choiceDropdownPicked(control);
     if (trigger.dataset) trigger.dataset.spotapplyFilled = 'true';
   } catch (_) {}
   return true;
@@ -692,6 +724,13 @@ async function answerChoiceDropdowns(pack) {
   return answered;
 }
 
+/** A choice question as the key its answer is saved and recalled under: the
+ * same on a form that writes "…?*", "…? ✱" or "…? (required)". */
+function questionKey(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim()
+    .replace(/(?:\s*(?:\*|\u2731|\(required\)))+\s*$/i, '').trim();
+}
+
 /** Which of `texts` IS the saved answer: the one option that says exactly
  * that, or — for a saved Yes / No — the one option that starts with it
  * ("Yes.", "No, I do not"). Two candidates, or none, is no answer: an option
@@ -729,9 +768,9 @@ function savedOptionIndex(texts, answer) {
  */
 async function answerSavedChoices(pack) {
   if (!packBase(pack) || !pack.auth_token) return 0;
-  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const clean = (t) => questionKey(t);
   const skip = (q) => !q || q.length < 3 || q.length > 300 || isDemographicQuestion(q) || isHowHeardQuestion(q) ||
-    /sponsor|authoriz|visa|work permit|right to work/i.test(q);
+    _WORK_AUTH_Q_RE.test(q);
   const open = [];
 
   const seen = new Set();
@@ -763,6 +802,14 @@ async function answerSavedChoices(pack) {
     if (skip(question)) continue;
     open.push({ kind: 'radio', question, group });
   }
+  // Yes/No button pairs (Ashby has no radios for these).
+  for (const g of yesNoButtonGroups(document)) {
+    if (!g.box.getClientRects().length || yesNoChoice(g)) continue;
+    if (g.box.dataset.spotapplyUserModified === 'true') continue;
+    const question = clean(g.question);
+    if (skip(question)) continue;
+    open.push({ kind: 'buttons', question, pair: g });
+  }
   if (!open.length) return 0;
 
   const res = await apiFetch(`${packBase(pack)}/api/recall-answers`, 'POST', pack.auth_token,
@@ -770,42 +817,496 @@ async function answerSavedChoices(pack) {
   const answers = res && res.ok && res.data && res.data.answers;
   if (!answers || Array.isArray(answers)) return 0;
 
+  // The profile's general answer goes first; when this form's list has no such
+  // option, the answer the person gave to this exact question (`fallback`).
+  const fallbacks = (res.data.fallback && !Array.isArray(res.data.fallback)) ? res.data.fallback : {};
   let picked = 0;
   for (const item of open) {
     // The exact question only: a fuzzy match between two questions is how one
     // question's answer lands on another.
-    const answer = answers[item.question];
-    if (typeof answer !== 'string' || !answer.trim() || looksLikeModelOnlyReply(answer)) continue;
-    let ok = false;
-    try {
-      if (item.kind === 'dropdown') {
-        ok = await pickCustomOption(item.control, (texts) => savedOptionIndex(texts, answer));
-      } else {
-        const caption = (r) => {
-          const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
-          return clean((lbl && lbl.textContent) || r.value || '');
-        };
-        const target = item.group[savedOptionIndex(item.group.map(caption), answer)];
-        if (target) {
-          target.click();          // click, not .checked — frameworks listen for it
-          if (!target.checked) {
-            target.checked = true;
-            target.dispatchEvent(new Event('change', { bubbles: true }));
+    const candidates = [answers[item.question], fallbacks[item.question]]
+      .filter((answer) => typeof answer === 'string' && answer.trim() && !looksLikeModelOnlyReply(answer));
+    for (const answer of candidates) {
+      let ok = false;
+      // The one option that says the saved answer; for a saved language level,
+      // the one option on the same rung of a ladder worded differently.
+      const which = (texts) => {
+        const i = savedOptionIndex(texts, answer);
+        return i >= 0 ? i : languageLevelIndex(texts, answer);
+      };
+      try {
+        if (item.kind === 'dropdown') {
+          ok = await pickCustomOption(item.control, which);
+        } else if (item.kind === 'buttons') {
+          const yn = savedOptionIndex(['Yes', 'No'], answer);
+          const btn = yn === 0 ? item.pair.yes : yn === 1 ? item.pair.no : null;
+          if (btn && !btn.disabled) {
+            btn.click();
+            item.pair.box.dataset.spotapplyChoice = yn === 0 ? 'yes' : 'no';
+            item.pair.box.dataset.spotapplyFilled = 'true';
+            ok = true;
           }
-          ok = !!target.checked;
-          if (ok) target.dataset.spotapplyFilled = 'true';
+        } else {
+          const caption = (r) => {
+            const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+            return clean((lbl && lbl.textContent) || r.value || '');
+          };
+          const target = item.group[which(item.group.map(caption))];
+          if (target) {
+            target.click();          // click, not .checked — frameworks listen for it
+            if (!target.checked) {
+              target.checked = true;
+              target.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            ok = !!target.checked;
+            if (ok) target.dataset.spotapplyFilled = 'true';
+          }
         }
+      } catch (e) {
+        console.debug('[SpotApply] saved answer pick failed:', e.message);
       }
-    } catch (e) {
-      console.debug('[SpotApply] saved answer pick failed:', e.message);
-    }
-    if (ok) {
-      picked++;
-      console.log('[SpotApply] Saved answer picked:', answer.slice(0, 30), '—', item.question.slice(0, 70));
+      if (ok) {
+        picked++;
+        console.log('[SpotApply] Saved answer picked:', answer.slice(0, 30), '—', item.question.slice(0, 70));
+        break;
+      }
     }
   }
   if (picked) console.log(`[SpotApply] Picked ${picked} answer(s) you saved in your profile`);
   return picked;
+}
+
+// ── AI answers for the questions nothing else answers ───────────────────────
+// Founder, 2026-11-14. Over 16 real forms, about 80% of the required fields
+// left open were questions only that employer asks ("Have you worked here
+// before?", "Are you local to Austin?"). The profile's own rules answer what
+// they can prove and the saved answers what the person saved; what is still
+// open is sent ONCE to /api/answer-form-questions, which answers only with a
+// line of evidence from the person's own facts (app/autofill/form_answers.py).
+//
+// An AI answer is a SUGGESTION until the person has seen it: the field is
+// marked, the panel lists it with its reason, and a form holding one is not
+// submitted for them (autoSubmitBlocker: 'ai_review') unless the server says
+// otherwise. "These are right" — or submitting the form themselves — saves
+// each as their own answer, which then fills with no AI next time.
+//
+// Never sent to a model, here or on the server: work authorization (one
+// interpreter), self-identification, "how did you hear", an agreement or
+// consent, and the facts only the applicant states (age, criminal history,
+// clearance, an identity number). The two patterns mirror form_answers.py.
+const _AGREEMENT_RE = /\bi (?:hereby |also |further )?(?:agree|consent|certify|acknowledge|attest|authori[sz]e|confirm|understand|declare|accept)\b|\bby (?:checking|clicking|submitting|signing|applying|typing|entering|selecting)\b|\b(?:agree|consent|accept)(?:s|ed|ing|ance|ment)? (?:to|with|of) (?:the|our|this|these|be|receive)\b|\bdo you (?:agree|consent|accept|acknowledge|authori[sz]e|certify)\b|\bterms (?:and|&) conditions\b|\bterms of (?:use|service|employment)\b|\bprivacy (?:policy|notice|statement)\b|\be-?signature\b|\bsignature\b|\bsign(?:ed)? (?:here|below)\b|\barbitration\b|\bnon-?disclosure\b|\bnon-?compete\b|\bbackground (?:check|screen\w*|investigation)\b|\bdrug (?:test|screen)\w*\b|\bpolygraph\b|\b(?:receive|send me|opt.?in to) (?:text|sms|marketing|email|updates|communications)\b/i;
+const _APPLICANT_ONLY_RE = /\b(?:convict\w*|felon\w*|misdemeanou?rs?|criminal|arrest\w*|pending charges|probation|parole|offen[cs]es?|offenders?|abuse|neglect|misconduct|disciplin\w*|investigat\w*|terminated|dismissed|fired|sanction\w*|revoked|suspended|bankrupt\w*|lawsuits?|litigation|date of birth|birth ?date|dob|how old|years? of age|age|over (?:the age of )?(?:16|18|21)|at least (?:16|18|21)|(?:16|18|21) (?:years|or older)|social security|ssn|national (?:id|insurance)\w*|passport|tax (?:id|number)|bank|routing number|pregnan\w*|religio\w*|medical|health condition|accommodations?|marital|citizen\w*|nationality|clearance|related to|relative|family member|conflict of interest)\b/i;
+
+// A question about THIS job or THIS employer ("Have you worked here before?",
+// "Can you work on-site for this role?"): its answer at one employer says
+// nothing about the next, so it is never saved for reuse. It is answered
+// fresh each time, and checked each time.
+const _JOB_RELATIVE_RE = /\b(?:worked|work|employed|interviewed|applied) (?:here|for us|with us|at this)\b|\b(?:this|our|the) (?:company|organi[sz]ation|firm|employer|role|position|job|opening|team|office|location|site|facility|store|branch|hq|headquarters)\b|\b(?:with|for|at|to|join) us\b|\bour (?:employees?|staff|clients?|customers?|products?)\b/i;
+function isJobRelativeQuestion(question) {
+  return _JOB_RELATIVE_RE.test(String(question || ''));
+}
+
+// A work-authorization question, however it is worded: ONE interpreter
+// answers these, never a saved answer and never a model. "Are you able to
+// legally work in the region you are applying for?" has none of the usual
+// words and was offered to both (live test 2026-11-15). Same as the server's
+// field_guards._WORK_AUTH_RE.
+const _WORK_AUTH_Q_RE = /sponsor|authoriz|visa|work permit|right to work|eligible to work|legally (?:work|be employed|employed)|legal(?:ly)? (?:right|eligible|entitled|permitted|allowed|able) to work|work legally/i;
+
+/** May a model be asked this question at all? (The server refuses the same.) */
+function aiMayAnswer(question) {
+  const q = String(question || '').replace(/\s+/g, ' ').trim();
+  if (q.length < 8 || q.length > 300 || q.split(' ').length < 2) return false;
+  if (looksLikeFieldIdentifier(q) || _ANTI_BOT_RE.test(q)) return false;
+  if (isDemographicQuestion(q) || isHowHeardQuestion(q)) return false;
+  if (_WORK_AUTH_Q_RE.test(q)) return false;
+  return !_AGREEMENT_RE.test(q) && !_APPLICANT_ONLY_RE.test(q);
+}
+
+let _aiAsked = new Set();     // questions already sent from this page: asked once
+let _aiAnswers = [];          // {key, question, saveKey, answer, basis, target, read, confirmed}
+
+function _sameAnswer(a, b) {
+  const n = (t) => deaccent(String(t == null ? '' : t)).toLowerCase().replace(/[\s ]+/g, ' ')
+    .replace(/[\s.*:!]+$/g, '').trim();
+  return !!n(a) && n(a) === n(b);
+}
+
+/** AI answers the person has not confirmed and has not changed. */
+function pendingAiAnswers() {
+  return _aiAnswers.filter((a) => {
+    if (a.confirmed) return false;
+    try { return document.contains(a.target) && _sameAnswer(a.read(), a.answer); } catch (_) { return false; }
+  });
+}
+
+function markAiAnswered(target, state) {
+  if (!target || !target.style) return;
+  try {
+    target.dataset.spotapplyAi = state || 'pending';
+    target.style.transition = 'box-shadow 0.3s ease';
+    target.style.boxShadow = state === 'confirmed' ? '0 0 0 2px rgba(16,185,129,0.5)' : '0 0 0 2px rgba(0,119,194,0.75)';
+  } catch (_) {}
+}
+
+/** Open a pick-one dropdown just to READ what it offers, then close it. */
+async function readChoiceOptions(control) {
+  const trigger = (control.querySelector &&
+    control.querySelector('input[role="combobox"], [role="combobox"], input')) || control;
+  const press = (t) => {
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  };
+  try { trigger.focus(); } catch (_) {}
+  press(control);
+  await delay(350);
+  let options = _choiceOptionsFor(control, trigger);
+  if (!options.length) {
+    try { trigger.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); } catch (_) {}
+    press(control);
+    await delay(350);
+    options = _choiceOptionsFor(control, trigger);
+  }
+  const texts = options.map((o) => String(o.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })); } catch (_) {}
+  if (_choiceOptionsFor(control, trigger).length) press(control);      // still open: press it shut
+  await delay(120);
+  if (texts.length) _choiceOptionsSeen.set(control, texts);
+  return texts;
+}
+
+// What each pick-one dropdown offers, once it has been opened and read.
+const _choiceOptionsSeen = new WeakMap();
+
+// ── What a form asked that nothing answered ─────────────────────────────────
+// Founder, 2026-11-15: "what data do we need to take from the user?" The
+// honest answer is on the forms: every REQUIRED question still open after the
+// rules, the saved answers and the AI have had their turn. Each is described
+// as the person would read it (wording, kind, choices; never a value) and
+// sent to the server once per page, where it becomes one line of the
+// dashboard's "Questions to answer once": answered there, it is saved as the
+// person's own answer and fills on every later form that asks the same thing.
+function describeOpenQuestions(audit) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  const seen = new Set();
+  const ynGroups = yesNoButtonGroups(document);
+  const caption = (r) => {
+    const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+    return clean((lbl && lbl.textContent) || r.value || '');
+  };
+  // The wording as the form shows it (labelText lower-cases for matching).
+  const shown = (el) => {
+    let lbl = null;
+    try { lbl = fieldLabelElements(el)[0] || null; } catch (_) {}
+    const t = clean(lbl && lbl.textContent);
+    return t && t.length <= 300 ? t : clean(labelText(el));
+  };
+  for (const el of (audit && audit.needRequiredEls) || []) {
+    if (!el || !el.tagName || el.type === 'file') continue;        // "attach your resume" is not a question
+    let item = null;
+    const yn = ynGroups.find((g) => g.box === el);
+    if (yn) {
+      item = { kind: 'yesno', question: clean(yn.question), options: ['Yes', 'No'], key: questionKey(yn.question) };
+    } else if (el.type === 'radio') {
+      const group = el.name
+        ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)) : [el];
+      const question = clean(radioGroupQuestion(el));
+      item = { kind: 'radio', question, options: group.map(caption).filter(Boolean).slice(0, 30), key: questionKey(question) };
+    } else if (el.type === 'checkbox') {
+      const many = checkboxGroupOf(el);
+      if (many) {
+        // "Which of these do you hold?": one question, its boxes are the choices.
+        item = { kind: 'multi', question: clean(many.question), options: many.captions.slice(0, 30),
+                 key: questionKey(many.question) };
+      } else {
+        const lbl = (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) || el.closest('label');
+        const own = clean((lbl && lbl.textContent) || labelText(el));
+        // Lever prints the statement ABOVE a box captioned "Submit Application"
+        // (and the statement quotes that caption); a caption long enough to
+        // be the statement itself stands alone (Pinpoint).
+        const above = questionKey(radioGroupQuestion(el));
+        const question = !own ? above
+          : (!above || above === own || own.length >= 25) ? own
+          : `${above} [${own}]`;
+        item = { kind: 'checkbox', question, options: [], key: questionKey(question) };
+      }
+    } else if (isChoiceDropdownInput(el)) {
+      const control = choiceDropdownControl(el);
+      item = { kind: 'dropdown', question: shown(el), options: (_choiceOptionsSeen.get(control) || []).slice(0, 30),
+               key: questionKey(labelText(el)) };
+    } else if (el.tagName === 'SELECT') {
+      const opts = Array.from(el.options).filter((o) => o.value !== '' && !_hhIsPlaceholder(o.text));
+      item = { kind: 'select', question: shown(el), options: opts.map((o) => clean(o.text)).slice(0, 30),
+               key: getFieldSignature(el) };
+    } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON') {
+      item = { kind: el.tagName === 'TEXTAREA' ? 'textarea' : (el.tagName === 'BUTTON' ? 'dropdown' : 'text'),
+               question: shown(el), options: [], key: getFieldSignature(el) };
+    }
+    if (!item || !item.key || seen.has(item.key)) continue;
+    // A field with no wording a person could read (an id used as its label)
+    // cannot be asked of anyone; it is counted, not listed.
+    if (item.question.length < 3 || looksLikeFieldIdentifier(item.question) || isAntiBotField(el)) continue;
+    seen.add(item.key);
+    item.question = item.question.slice(0, 300);
+    item.key = item.key.slice(0, 300);
+    out.push(item);
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+
+let _openQuestionsSent = '';
+/** Tell the server which required questions this form still needs the person
+ * for: once per page and per set, and only when the server asked for it. A
+ * dropdown whose choices were never read is opened once to read them, so the
+ * person can pick from the same list the form offers. */
+async function reportOpenQuestions(pack, audit) {
+  const cfg = pack && pack.open_questions;
+  if (!cfg || cfg.enabled !== true || !packBase(pack) || !pack.auth_token || !pack.app_id) return 0;
+  let opened = 0;
+  for (const el of (audit && audit.needRequiredEls) || []) {
+    if (opened >= 12 || !isChoiceDropdownInput(el)) continue;
+    const control = choiceDropdownControl(el);
+    if (!control || _choiceOptionsSeen.has(control) || choiceDropdownPicked(control)) continue;
+    if (el.dataset.spotapplyUserModified === 'true' || control.dataset.spotapplyUserModified === 'true') continue;
+    opened++;
+    try { await readChoiceOptions(control); } catch (_) {}
+  }
+  const questions = describeOpenQuestions(audit);
+  const stamp = location.pathname + '|' + questions.map((q) => q.key + ':' + q.options.length).join('|');
+  if (stamp === _openQuestionsSent) return 0;
+  _openQuestionsSent = stamp;
+  apiFetch(`${packBase(pack)}/api/open-questions`, 'POST', pack.auth_token,
+           { app_id: pack.app_id, host: location.hostname, questions });
+  return questions.length;
+}
+
+/** The open questions a model may be asked, each with how to write its answer. */
+async function collectOpenQuestions(pack) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  const add = (item) => {
+    if (!aiMayAnswer(item.question)) return;
+    item.key = location.pathname + '|' + item.kind + '|' + item.question.toLowerCase();
+    if (out.some((o) => o.key === item.key)) return;
+    item.id = 'q' + (out.length + 1);
+    out.push(item);
+  };
+  const userTouched = (el) => !!(el && el.dataset && el.dataset.spotapplyUserModified === 'true');
+  const ynGroups = yesNoButtonGroups(document).filter((g) => g.box.getClientRects().length);
+
+  // Yes/No button pairs (Ashby).
+  for (const g of ynGroups) {
+    if (yesNoChoice(g) || userTouched(g.box)) continue;
+    add({ kind: 'yesno', question: clean(g.question), options: ['Yes', 'No'], target: g.box,
+          saveKey: questionKey(g.question), read: () => yesNoChoice(g) || '',
+          apply: async (a) => {
+            const btn = a.option_index === 0 ? g.yes : g.no;
+            if (!btn || btn.disabled) return false;
+            btn.click();
+            g.box.dataset.spotapplyChoice = a.option_index === 0 ? 'yes' : 'no';
+            g.box.dataset.spotapplyFilled = 'true';
+            return true;
+          } });
+  }
+
+  // Radio groups.
+  const byGroup = new Map();
+  for (const r of queryAllDeep('input[type="radio"]')) {
+    if (ynGroups.some((g) => (g.entry || g.box).contains(r))) continue;
+    const key = r.name || (r.closest('fieldset, [role="radiogroup"]') || {}).id || '';
+    if (!key) continue;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(r);
+  }
+  const caption = (r) => {
+    const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+    return clean((lbl && lbl.textContent) || r.value || '');
+  };
+  for (const [, group] of byGroup) {
+    if (group.length < 2 || group.length > 12) continue;
+    if (group.some((r) => r.checked || r.disabled || userTouched(r) || isAntiBotField(r))) continue;
+    const question = clean(radioGroupQuestion(group[0]));
+    const options = group.map(caption);
+    if (options.some((o) => !o)) continue;
+    add({ kind: 'radio', question, options, target: group[0].closest('fieldset, [role="radiogroup"], ul, div') || group[0],
+          saveKey: questionKey(question), read: () => { const c = group.find((r) => r.checked); return c ? caption(c) : ''; },
+          apply: async (a) => {
+            const t = group[a.option_index];
+            if (!t) return false;
+            t.click();
+            if (!t.checked) { t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); }
+            if (t.checked) t.dataset.spotapplyFilled = 'true';
+            return !!t.checked;
+          } });
+  }
+
+  // Pick-one dropdowns: their options are read by opening them once.
+  const seen = new Set();
+  let opened = 0;
+  for (const raw of queryAllDeep('[class*="select__control"], input[id^="react-select-"]')) {
+    const control = choiceDropdownControl(raw) || raw;
+    if (seen.has(control) || opened >= 12) continue;
+    seen.add(control);
+    if (!control.offsetParent && !(control.getClientRects && control.getClientRects().length)) continue;
+    const input = (control.querySelector && control.querySelector('input')) || raw;
+    if (isAntiBotField(input) || choiceDropdownPicked(control) || userTouched(input) || userTouched(control)) continue;
+    const question = clean(labelText(input));
+    if (!aiMayAnswer(question) || eeoKindOf(control)) continue;
+    if (_aiAsked.has(location.pathname + '|dropdown|' + question.toLowerCase())) continue;
+    opened++;
+    let options = [];
+    try { options = await readChoiceOptions(control); } catch (_) {}
+    if (options.length < 2 || options.length > 30) continue;      // a search box, or a country-sized list
+    add({ kind: 'dropdown', question, options, target: control, saveKey: questionKey(question),
+          read: () => choiceDropdownPicked(control),
+          apply: (a) => pickCustomOption(control, (texts) => savedOptionIndex(texts, a.answer)) });
+  }
+
+  // Native <select>s.
+  for (const el of queryAllDeep('select')) {
+    if (!el.offsetParent || !canFillField(el) || _selectHasChoice(el) || userTouched(el) || eeoKindOf(el)) continue;
+    const question = clean(labelText(el));
+    const opts = Array.from(el.options).filter((o) => o.value !== '' && !_hhIsPlaceholder(o.text));
+    if (opts.length < 2 || opts.length > 30) continue;
+    add({ kind: 'select', question, options: opts.map((o) => clean(o.text)), target: el,
+          saveKey: getFieldSignature(el),
+          read: () => { const o = el.options[el.selectedIndex]; return o && o.value !== '' ? clean(o.text) : ''; },
+          apply: async (a) => {
+            const o = opts[a.option_index];
+            if (!o) return false;
+            el.value = o.value;
+            el.dataset.spotapplyFilled = 'true';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return el.value === o.value;
+          } });
+  }
+
+  // Required one-line text questions ("What is your desired compensation?").
+  // A plain field ("Street address") is not a question: it is empty because
+  // the profile has no value for it, and a model has none either.
+  for (const el of queryAllDeep('input[type="text"], input:not([type]), input[type="number"]')) {
+    if (!el.offsetParent || !canFillField(el) || String(el.value || '').trim() || userTouched(el)) continue;
+    if (isAutocompleteInput(el) || isChoiceDropdownInput(el) || !isFieldRequired(el)) continue;
+    const question = clean(labelText(el));
+    if (!/\?/.test(question) && !/^(what|which|where|when|who|how|please|list|describe|if)\b/i.test(question)) continue;
+    if (/first.?name|last.?name|full.?name|e-?mail|phone|mobile|address|street|zip|postal|postcode|linkedin|github|website|\burl\b|password|\bdate\b|\bmm\b|yyyy/i.test(question)) continue;
+    add({ kind: 'text', question, options: [], target: el, saveKey: getFieldSignature(el),
+          read: () => String(el.value || '').trim(),
+          apply: async (a) => fillInput(el, a.answer) });
+  }
+  return out;
+}
+
+/**
+ * Ask the server about every question still open, once, and write the answers
+ * it could support from the person's own facts. Returns how many it wrote.
+ */
+async function answerOpenQuestionsWithAI(pack) {
+  const cfg = pack && pack.ai_form_answers;
+  if (!cfg || cfg.enabled !== true || !packBase(pack) || !pack.auth_token || !pack.app_id) return 0;
+  const limit = Math.max(1, Math.min(60, Number(cfg.max_questions) || 30));
+  const batch = (await collectOpenQuestions(pack)).filter((it) => !_aiAsked.has(it.key)).slice(0, limit);
+  if (!batch.length) return 0;
+  batch.forEach((it) => _aiAsked.add(it.key));
+  const res = await apiFetch(`${packBase(pack)}/api/answer-form-questions`, 'POST', pack.auth_token, {
+    app_id: pack.app_id,
+    questions: batch.map((it) => ({ id: it.id, kind: it.kind, question: it.question, options: it.options })),
+  });
+  const answers = res && res.ok && res.data && res.data.answers;
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return 0;
+  let written = 0;
+  for (const it of batch) {
+    const a = answers[it.id];
+    if (!a || typeof a.answer !== 'string' || !a.answer.trim() || looksLikeMetaReply(a.answer)) continue;
+    // An option answer must be one of the options WE read off the page.
+    if (it.options.length) {
+      const idx = savedOptionIndex(it.options, a.answer);
+      if (idx < 0) continue;
+      a.option_index = idx;
+    }
+    let ok = false;
+    try { ok = !!(await it.apply(a)); } catch (e) { console.debug('[SpotApply] AI answer not written:', e.message); }
+    if (!ok) continue;
+    written++;
+    _aiAnswers.push({ key: it.key, question: it.question, saveKey: it.saveKey, answer: a.answer,
+                      basis: String(a.basis || '').slice(0, 200), target: it.target, read: it.read, confirmed: false });
+    markAiAnswered(it.target, 'pending');
+    console.log('[SpotApply] AI answered from your profile:', a.answer.slice(0, 30), '—', it.question.slice(0, 70));
+  }
+  if (written) console.log(`[SpotApply] AI answered ${written} question(s): check them once`);
+  return written;
+}
+
+/**
+ * The person looked: each AI answer still standing becomes THEIR saved answer
+ * (AnswerMemory), which fills this question without a model from now on.
+ */
+function confirmAiAnswers(pack, how) {
+  const pending = pendingAiAnswers();
+  for (const a of pending) {
+    a.confirmed = true;
+    markAiAnswered(a.target, 'confirmed');
+    // An answer about this job or this employer is right HERE only.
+    if (isJobRelativeQuestion(a.question)) continue;
+    if (packBase(pack) && pack.auth_token && a.saveKey) {
+      apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token,
+               { question: a.saveKey, answer: a.answer, app_id: pack.app_id || null });
+    }
+  }
+  if (pending.length) console.log(`[SpotApply] ${pending.length} AI answer(s) confirmed (${how}) and saved as yours`);
+  return pending.length;
+}
+
+/**
+ * The person pressed Submit themselves: what they chose on a radio question
+ * or a pick-one dropdown is their answer to it, remembered for the next form
+ * (only typed text was learned before, so these were asked again every time).
+ * Never an answer a profile rule wrote, and never one of the guarded questions.
+ */
+function learnChoicesOnSubmit(pack) {
+  if (!packBase(pack) || !pack.auth_token) return 0;
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const ours = (el) => !!(el && el.dataset && el.dataset.spotapplyFilled === 'true');
+  const learned = [];
+  const byGroup = new Map();
+  for (const r of queryAllDeep('input[type="radio"]')) {
+    const key = r.name || (r.closest('fieldset, [role="radiogroup"]') || {}).id || '';
+    if (!key) continue;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(r);
+  }
+  for (const [, group] of byGroup) {
+    const picked = group.find((r) => r.checked);
+    if (!picked || ours(picked)) continue;
+    const lbl = (picked.id && document.querySelector(`label[for="${CSS.escape(picked.id)}"]`)) || picked.closest('label');
+    learned.push([questionKey(radioGroupQuestion(group[0])), clean((lbl && lbl.textContent) || picked.value || '')]);
+  }
+  const seen = new Set();
+  for (const raw of queryAllDeep('[class*="select__control"], input[id^="react-select-"]')) {
+    const control = choiceDropdownControl(raw) || raw;
+    if (seen.has(control)) continue;
+    seen.add(control);
+    const input = (control.querySelector && control.querySelector('input')) || raw;
+    const picked = choiceDropdownPicked(control);
+    if (!picked || eeoKindOf(control)) continue;
+    // Still showing what WE picked = ours (a rule's answer, or an AI answer
+    // confirmAiAnswers has just saved); anything else is the person's choice.
+    if ((ours(control) || ours(input)) && control.dataset.spotapplyPicked === picked) continue;
+    learned.push([questionKey(labelText(input)), picked]);
+  }
+  let saved = 0;
+  for (const [question, answer] of learned) {
+    if (!answer || answer.length > 160 || !aiMayAnswer(question) || isJobRelativeQuestion(question)) continue;
+    apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token,
+             { question, answer, app_id: pack.app_id || null });
+    saved++;
+  }
+  if (saved) console.log(`[SpotApply] Remembered ${saved} answer(s) you chose on this form`);
+  return saved;
 }
 
 // ── Essay prompts vs field labels ────────────────────────────────────────────
@@ -816,6 +1317,38 @@ async function answerSavedChoices(pack) {
 // Read-back verification cannot catch this: the value landed, it just doesn't
 // belong. The shape of the LABEL is the signal — a real field label is a short
 // noun phrase; an essay prompt is a sentence.
+// "Where are you currently located?" has neither "location" nor "based".
+const _WHERE_LOCATED_RE = /where are you\b[^?]{0,40}\b(?:located|residing|living)\b/i;
+
+/** A one-line box whose question about pay is short, however long the note
+ * beside it ("What are your compensation expectations? This is a fully
+ * remote, full-time role." on a real Rippling form): a number answers it. */
+function shortPayQuestion(label, el) {
+  if (!el || el.tagName !== 'INPUT') return false;
+  const asked = askingSentence(label, /salary|compensation|expected.?pay|desired.?pay/i);
+  return asked.split(/\s+/).length < 12 &&
+    !/\b(describe|explain|why|history|previous|last|current|currently)\b/i.test(asked);
+}
+
+/** A <select> whose options are the US states. */
+function isUsStateSelect(el) {
+  if (!el || el.tagName !== 'SELECT' || el.options.length < 45 || el.options.length > 70) return false;
+  const have = new Set(Array.from(el.options).map((o) => String(o.text || '').trim().toLowerCase()));
+  return ['california', 'texas', 'new york', 'ohio', 'florida'].every((x) => have.has(x)) ||
+         ['ca', 'tx', 'ny', 'oh', 'fl'].every((x) => have.has(x));
+}
+
+/** Does the label ask which state the applicant lives in or will work from?
+ * Not where a licence was issued, a school is, or an employer was. */
+function asksHomeState(label) {
+  const t = String(label || '').toLowerCase();
+  if (/licen[cs]|school|universit|college|degree|born|birth|issued|convict|registered|incorporat/.test(t)) return false;
+  return /^\W*state\W*$/.test(t) ||
+    /\bstate\b[^.?]{0,80}\b(?:located|reside|residing|residence|live|living|based|work(?:ing)? from)\b/.test(t) ||
+    /\b(?:located|reside|residing|live|living|based)\b[^.?]{0,40}\bstate\b/.test(t) ||
+    /\bstate of residence\b|\bhome state\b/.test(t);
+}
+
 function looksLikeEssayPrompt(labelText, el) {
   const t = String(labelText || '').trim();
   if (!t) return false;
@@ -887,6 +1420,17 @@ function fillPhoneField(el, raw) {
     return digits.endsWith(wantDigits) && digits.length <= wantE164Digits.length;
   };
 
+  // The WHOLE number, country code included, is in the field under a "+".
+  // Then a country selector that moved has only followed the number: a widget
+  // that starts on Ireland and shows "+1 415-555-0199 / United States" has it
+  // right. Treating that move as a failure cleared a correct number on a real
+  // Teamtailor form (live test 2026-11-15). The Peru case is not this: there
+  // the digits themselves were re-partitioned, so they no longer match.
+  const exact = () => {
+    const v = String(el.value || '');
+    return v.includes('+') && v.replace(/\D/g, '') === wantE164Digits;
+  };
+
   const write = (value) => {
     try {
       const proto = Object.getOwnPropertyDescriptor(
@@ -902,18 +1446,18 @@ function fillPhoneField(el, raw) {
   //    country didn't move, there was no widget to worry about and the form
   //    keeps its own formatting.
   write(want);
-  if (landed() && !countryChanged(el, beforeCountry)) return markPhoneFilled(el, want);
+  if (landed() && (exact() || !countryChanged(el, beforeCountry))) return markPhoneFilled(el, want);
 
   // 2. Something re-parsed it. E.164 states the country explicitly instead of
   //    letting the widget carve a country code out of the leading digits.
   write(toE164(want));
-  if (landed() && !countryChanged(el, beforeCountry)) return markPhoneFilled(el, want);
+  if (landed() && (exact() || !countryChanged(el, beforeCountry))) return markPhoneFilled(el, want);
 
   // 3. Some widgets own the "+" and reject it in the text box. Set the country
   //    selector explicitly, then write only the national digits.
   const set = setIntlTelCountry(el, 'us');
   write(wantDigits);
-  if (landed() && (set || !countryChanged(el, beforeCountry))) return markPhoneFilled(el, want);
+  if (landed() && (exact() || set || !countryChanged(el, beforeCountry))) return markPhoneFilled(el, want);
 
   // 4. Still wrong — do NOT leave a mangled number in a field that gets
   //    submitted. Clear it and let the user type it.
@@ -1029,7 +1573,7 @@ function classifyScreeningQuestion(q, pack) {
   if (/gender|race|ethnic|veteran|disab|hispanic|latino/.test(t)) return null;
 
   // Sponsorship / work authorization — ONE interpreter for every control type.
-  if (/sponsor|immigration (case|petition|filing)|employment-based (immigration|visa)|authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit/.test(t)) {
+  if (/sponsor|immigration (case|petition|filing)|employment-based (immigration|visa)|authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit|legally work|work legally|legal(?:ly)? (?:right|eligible|entitled) to work/.test(t)) {
     return interpretWorkAuthQuestion(t, pack);
   }
 
@@ -1279,7 +1823,7 @@ function interpretWorkAuthQuestion(q, pack) {
   // example, H-1B…)?" is the sponsorship question without the word (Lever,
   // live test 2026-11-14).
   const asksSponsor = /sponsor|immigration (case|petition|filing)|employment-based (immigration|visa)/.test(t);
-  const asksAuth = /authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit|permitted to work/.test(t);
+  const asksAuth = /authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit|permitted to work|legally work|work legally|legal(?:ly)? (?:right|eligible|entitled) to work/.test(t);
   // "without sponsorship", "not require sponsorship", "no sponsorship needed"
   // "…without the need for visa sponsorship…" is the same question as
   // "…without sponsorship?": a Lever form answered Yes for a profile that needs
@@ -1290,8 +1834,18 @@ function interpretWorkAuthQuestion(q, pack) {
   const facts = workAuthFacts(pack);
   const qCountry = _countryIn(t);
   // A question about another country than the one the status covers: unknown.
-  const authorized = (qCountry && facts.country && qCountry !== facts.country)
+  let authorized = (qCountry && facts.country && qCountry !== facts.country)
     ? null : facts.authorized;
+  // "…in the country this job is in", "…the region you are applying for": the
+  // JOB's country, as the server read it from the posting (pack.job_country).
+  // It answers only when that is the country the status covers; a job
+  // somewhere else, or nowhere the posting states, is the applicant's to
+  // answer. (An older server sends no job_country: the old reading stands.)
+  const jobRelative = !qCountry && /\b(?:the|this) (?:country|region|location|state|area|jurisdiction)\b|\bwhere (?:this|the) (?:job|role|position) is\b|\b(?:you are|you're) applying\b|\bcountry of (?:employment|the (?:job|role|position))\b/.test(t);
+  if (jobRelative && Object.prototype.hasOwnProperty.call(pack, 'job_country')) {
+    const jobCountry = _normCountry(pack.job_country);
+    if (!jobCountry || (facts.country && jobCountry !== facts.country)) authorized = null;
+  }
 
   if (withoutSponsor && (asksAuth || asksSponsor)) {
     // Combined: "authorized to work WITHOUT sponsorship?" — the applicant
@@ -1308,7 +1862,33 @@ function interpretWorkAuthQuestion(q, pack) {
   return null;
 }
 
-/** Text of the question a radio group belongs to. */
+/** The boxes of a "pick every one that applies" question, or null. Boxes are
+ * ONE question when they share a name inside one fieldset / group that has a
+ * question of its own, and none of them is a statement to accept ("I agree…",
+ * "I confirm…": each of those is required on its own). */
+function checkboxGroupOf(el) {
+  if (!el || el.type !== 'checkbox' || !el.name) return null;
+  const box = el.closest('fieldset, [role="group"]');
+  if (!box) return null;
+  const group = Array.from(box.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(el.name)}"]`));
+  if (group.length < 2) return null;
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const captions = group.map((c) => {
+    const lbl = (c.id && document.querySelector(`label[for="${CSS.escape(c.id)}"]`)) || c.closest('label');
+    return clean(lbl && lbl.textContent);
+  });
+  if (captions.some((t) => !t || _AGREEMENT_RE.test(t))) return null;
+  const legend = box.querySelector('legend');
+  let question = clean(legend && legend.textContent);
+  if (!question) {
+    question = clean((box.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+      .map((id) => { const n = document.getElementById(id); return n ? n.textContent : ''; }).join(' '));
+  }
+  if (question.length < 6 || captions.includes(question)) return null;
+  return { box, group, captions, question };
+}
+
+/** Text of the question a radio group (or a lone checkbox) belongs to. */
 function radioGroupQuestion(el) {
   const fs = el.closest('fieldset');
   const legend = fs && fs.querySelector('legend');
@@ -1318,24 +1898,51 @@ function radioGroupQuestion(el) {
     const src = document.getElementById(labelledby);
     if (src && src.textContent.trim()) return src.textContent.trim();
   }
-  // The question is the text around the options, minus their captions. It is
+  // The question is the text around the options that is not an option. It is
   // not always in the options' own box: Lever puts it in a SIBLING of the
   // list (li.application-question > .application-label + .application-field),
   // so the nearest <div> held "Yes. No." and nothing else — every required
   // work-authorization radio on a real Lever form went unanswered (live test,
   // 2026-11-14). Climb while the box still belongs to this one question: stop
   // before a box that holds another question's control.
+  //
+  // What counts as "an option" is decided by STRUCTURE (each radio's own
+  // label), never by subtracting caption text: captions were only subtracted
+  // when shorter than 25 characters, so on a real Ashby form the "question"
+  // of the right-to-work group was its first option ("I am a British or
+  // Irish Citizen"), and a short caption can sit inside the question's own
+  // words ("No" in "Notice period?").
+  const kind = el.type === 'checkbox' ? 'checkbox' : 'radio';
   const own = new Set(el.name
-    ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`))
+    ? Array.from(document.querySelectorAll(`input[type="${kind}"][name="${CSS.escape(el.name)}"]`))
     : [el]);
   const foreign = (box) => Array.from(box.querySelectorAll('input, select, textarea'))
     .some((c) => c.type !== 'hidden' && !own.has(c));
-  let node = el.closest('[role="radiogroup"], .form-group, .field, div') || el.parentElement;
-  for (let depth = 0; node && depth < 6 && !foreign(node); depth++, node = node.parentElement) {
-    const optionText = Array.from(node.querySelectorAll('label')).map((l) => l.textContent.trim());
-    let text = (node.textContent || '').trim();
-    optionText.forEach((o) => { if (o && o.length < 25) text = text.replace(o, ' '); });
-    text = text.replace(/\s+/g, ' ').trim();
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  const labelOf = (r) => (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+  const optionEls = Array.from(own).map(labelOf).filter(Boolean);
+  const bare = Array.from(own).filter((r) => !labelOf(r)).map((r) => clean(r.value)).filter(Boolean);
+  const outsideOptions = (node) => {
+    let out = '';
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (optionEls.some((o) => o.contains(t))) continue;
+      out += ' ' + t.nodeValue;
+    }
+    out = clean(out);
+    // A caption with no label of its own (bare text beside the radio) can
+    // only be taken out as text: from the END, where options sit.
+    for (const c of bare) {
+      const i = out.lastIndexOf(c);
+      if (i >= 0) out = clean(out.slice(0, i) + ' ' + out.slice(i + c.length));
+    }
+    return out;
+  };
+  let node = el.parentElement;
+  for (let depth = 0; node && depth < 7 && !foreign(node); depth++, node = node.parentElement) {
+    // A box that does not hold the whole group yet is one option's wrapper.
+    if (Array.from(own).some((r) => !node.contains(r))) continue;
+    const text = outsideOptions(node);
     if (text.replace(/[^a-z0-9]/gi, '').length >= 6) return text.slice(0, 300);
   }
   return '';
@@ -2328,10 +2935,22 @@ document.addEventListener('click', (e) => {
       const hasFields = form
         ? form.querySelectorAll('input, textarea, select').length > 1
         : document.querySelectorAll('input[type="file"], textarea').length > 0;
-      if (hasFields) noteSubmitAttempt('click');
+      if (hasFields) { rememberOnOwnSubmit(); noteSubmitAttempt('click'); }
     }
   }
 }, { capture: true, passive: true });
+
+/** The person submitted the form themselves: an AI answer they left standing
+ * is confirmed, and what they chose is remembered. Once per page. */
+let _rememberedOnSubmit = null;
+function rememberOnOwnSubmit() {
+  const pack = _copilotPack;
+  // Our own one-click press is not the person's review of anything.
+  if (!pack || _autoSubmitPressing || _rememberedOnSubmit === location.href) return;
+  _rememberedOnSubmit = location.href;
+  try { confirmAiAnswers(pack, 'submitted by you'); } catch (_) {}
+  try { learnChoicesOnSubmit(pack); } catch (_) {}
+}
 
 // The form's own submit event: fires only once browser validation passed.
 // Same gates: an ungated listener reported ANY form anywhere (an ATS login
@@ -2341,6 +2960,7 @@ document.addEventListener('submit', (e) => {
   const form = e.target;
   if (!form || isLoginForm(form)) return;
   if (!formLooksLikeApplication(form)) return;
+  rememberOnOwnSubmit();
   noteSubmitAttempt('submit');
 }, { capture: true, passive: true });
 
@@ -2702,6 +3322,53 @@ function answerWorkAuthField(el, pack, label) {
   return false;
 }
 
+/** An option's text with its dress set aside: case, apostrophes, a trailing
+ * "degree" / "diploma" and a plural "s". "Bachelor's degree" and "Bachelors"
+ * are the same key; "Master" and "Bachelor" are not. */
+function looseOptionKey(text) {
+  return String(text || '').toLowerCase().replace(/[\u2019'`.]/g, '')
+    .replace(/\b(degree|diploma|level)\b/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/s$/, '');
+}
+
+/** A language level's place on the common ladder, 1 (basic) to 5 (native), or
+ * 0 when the text is not a level: CEFR codes and the usual words. An option
+ * naming two different rungs ("B1/B2") is no rung. */
+function languageLevelRank(text) {
+  const t = deaccent(String(text == null ? '' : text)).toLowerCase();
+  const codes = t.match(/\b[abc][12]\b/g);
+  if (codes) {
+    const rung = { a1: 1, a2: 1, b1: 2, b2: 3, c1: 4, c2: 5 };
+    const rungs = Array.from(new Set(codes.map((c) => rung[c])));
+    return rungs.length === 1 ? rungs[0] : 0;
+  }
+  if (/\bnative\b|mother ?tongue|\bbilingual\b|first language/.test(t)) return 5;
+  if (/\bfluent\b|full professional|\bproficient\b/.test(t)) return 4;
+  if (/professional|upper.?intermediate|\badvanced\b|\bbusiness\b/.test(t)) return 3;
+  if (/conversational|\bintermediate\b|limited working/.test(t)) return 2;
+  if (/\bbasic\b|\bbeginner\b|\belementary\b/.test(t)) return 1;
+  return 0;
+}
+
+// The profile's own level names (autofill_fields.LANGUAGE_LEVELS, pinned equal).
+const _SAVED_LANGUAGE_LEVELS = ['native or bilingual', 'fluent', 'professional', 'conversational', 'basic'];
+
+/** Which of `texts` is the SAVED language level `answer` on a form that words
+ * its levels differently ("Native or bilingual" is "C2 (It is my mother
+ * tongue)" on a real Personio form). Only for an answer that is one of the
+ * profile's own level names, only on a list that is a ladder (two or more
+ * rungs), and only when exactly ONE option sits on the same rung. */
+function languageLevelIndex(texts, answer) {
+  const want = String(answer == null ? '' : answer).toLowerCase().trim();
+  if (!_SAVED_LANGUAGE_LEVELS.includes(want)) return -1;
+  const rung = languageLevelRank(want);
+  const rungs = (texts || []).map(languageLevelRank);
+  if (rungs.filter((r) => r > 0).length < 2) return -1;
+  const hits = [];
+  rungs.forEach((r, i) => { if (r === rung) hits.push(i); });
+  return hits.length === 1 ? hits[0] : -1;
+}
+
 function selectOption(el, value) {
   if (!el || !value) return false;
   // A choice the user made by hand is theirs — no writer may change it back.
@@ -2721,7 +3388,23 @@ function selectOption(el, value) {
   const exact = opts.find(o => norm(o.text) === lower || norm(o.value) === lower);
   const starts = opts.find(o => norm(o.text).startsWith(lower) || norm(o.value).startsWith(lower));
   const contains = opts.find(o => norm(o.text).includes(lower) || norm(o.value).includes(lower));
-  const match = exact || starts || contains;
+  // The same answer in other dress: "Bachelor's degree" is the option
+  // "Bachelors" (a real Lever form left it blank). Only when exactly ONE
+  // option reads the same once apostrophes, a trailing "degree" and a plural
+  // "s" are set aside.
+  let loose = null;
+  if (!exact && !starts && !contains) {
+    const want = looseOptionKey(lower);
+    const hits = want ? opts.filter(o => looseOptionKey(o.text) === want) : [];
+    if (hits.length === 1) loose = hits[0];
+  }
+  // A saved language level on a ladder worded differently.
+  let level = null;
+  if (!exact && !starts && !contains && !loose) {
+    const i = languageLevelIndex(opts.map((o) => o.text), value);
+    if (i >= 0) level = opts[i];
+  }
+  const match = exact || starts || contains || loose || level;
   if (match) {
     el.value = match.value;
     try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
@@ -2783,6 +3466,41 @@ function waitFor(selector, timeout = 8000, root = document) {
   });
 }
 
+// A placeholder that says HOW to answer, not WHAT is asked.
+const _FILLER_PLACEHOLDER_RE = /^(type|enter|write|add|your (answer|response|text)|answer|response|please|select|choose|start typing|search|n\/a|e\.g\.|ex[.:]|\+?[\d\s().-]{6,}$|…|\.\.\.)/i;
+// Text beside a field that is a message about it, not its label.
+const _NOT_A_LABEL_RE = /^(this field is required|required|is required|invalid|error\b|please (enter|fill|complete|select|provide|choose)|optional$|no results|loading)/i;
+
+/** The question written in the box around a field that has no label element:
+ * the nearest ancestor that holds this field and no other, read without the
+ * field's own text. '' when there is none, or it reads as a message. */
+function fieldBoxQuestion(el) {
+  if (!el || !el.parentElement) return '';
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  // Another field's control, or a section with buttons of its own ("Add
+  // position", "Add education" on Breezy): past that, the box is no longer
+  // this one field's.
+  const foreign = (box) => Array.from(box.querySelectorAll('input, select, textarea'))
+    .some((c) => c !== el && c.type !== 'hidden' && !(c.getAttribute('aria-hidden') === 'true' && c.tabIndex === -1)) ||
+    box.querySelectorAll('button, a[href], [role="button"]').length > 1;
+  let node = el.parentElement;
+  for (let depth = 0; node && depth < 5 && node !== document.body && !foreign(node); depth++, node = node.parentElement) {
+    let out = '';
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (el.contains(t)) continue;                         // a <select>'s own options
+      const host = t.parentElement;
+      if (host && host.closest('[role="listbox"], [role="option"], [class*="select__menu"], [class*="select__single-value"], [class*="select__placeholder"], script, style')) continue;
+      out += ' ' + t.nodeValue;
+    }
+    out = clean(out);
+    if (out.replace(/[^a-z0-9]/gi, '').length < 3) continue;
+    if (out.length > 300 || _NOT_A_LABEL_RE.test(out)) return '';
+    return out;
+  }
+  return '';
+}
+
 function labelText(el) {
   if (!el) return "";
   let label = "";
@@ -2826,10 +3544,18 @@ function labelText(el) {
 
   if (!label) {
     try {
-      label = el.getAttribute("aria-label") ||
-        el.getAttribute("placeholder") ||
-        el.getAttribute("name") ||
-        el.id || "";
+      // A field with no label of its own. A real placeholder ("First name") is
+      // its label; a filler one ("Type your response") or a generated name
+      // ("cards[…][field0]", "ctxPIbX6mM") is not, and the question a person
+      // reads sits in the box around the field: Lever's custom text questions
+      // were all "type your response" and Rippling's had a random name, so
+      // nothing could answer them (live test 2026-11-15).
+      const aria = el.getAttribute("aria-label") || "";
+      const ph = el.getAttribute("placeholder") || "";
+      const named = aria && !/^(textbox|search|input|text|select|combobox)$/i.test(aria.trim()) ? aria : "";
+      if (named) label = named;
+      else if (ph && !_FILLER_PLACEHOLDER_RE.test(ph.trim())) label = ph;
+      else label = fieldBoxQuestion(el) || aria || ph || el.getAttribute("name") || el.id || "";
     } catch (e) {}
   }
 
@@ -2960,7 +3686,7 @@ async function fillGreenhouse(pack) {
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillPhoneField(inp, pack.phone);
     // An autocomplete is left to fillUniversal, which picks a suggestion.
-    else if (/city|location|where.*based|where.*live/i.test(lbl) && !yesNoQ) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
+    else if ((/city|location|where.*based|where.*live/i.test(lbl) || _WHERE_LOCATED_RE.test(lbl)) && !yesNoQ) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website|personal.*url/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -3907,6 +4633,13 @@ async function fillUniversal(pack) {
     } else if (/website|web.?site|homepage/i.test(signals) && !/linkedin|github/i.test(signals)) {
       fillInput(inp, pack.portfolio_url || '');
 
+    // ── The applicant's state, asked in a sentence over a list of US states ──
+    // "Please list the state that you plan to be physically located in while
+    // employed … in the United States" (a real Lever form): the State rule
+    // below steps aside for anything that says "united".
+    } else if (isUsStateSelect(inp) && asksHomeState(labelOnly)) {
+      matched = !!(selectOption(inp, loc.state) || selectOption(inp, loc.abbr));
+
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
     } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !yesNoQ && !/country/i.test(signals)
                && !_yesNoOptionsOf(inp)) {
@@ -3918,8 +4651,8 @@ async function fillUniversal(pack) {
     // "relocation" contains it, and so does "commute to the location the role
     // is based in?" — both took this branch and got the home address typed at
     // them (Loft Orbital, live test 2026-11-03).
-    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !yesNoQ && !/country/i.test(signals)
-               && !_yesNoOptionsOf(inp)) {
+    } else if ((/location|where.*based|where.*live|current.?city/i.test(signals) || _WHERE_LOCATED_RE.test(signals))
+               && !essayPrompt && !yesNoQ && !/country/i.test(signals) && !_yesNoOptionsOf(inp)) {
       if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
       else fillInput(inp, pack.location || '');
 
@@ -3972,7 +4705,8 @@ async function fillUniversal(pack) {
     } else if (/company|employer|organization/i.test(signals) && !essayPrompt && !yesNoQ
                && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
       fillInput(inp, currentEmployer(pack));
-    } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals) && !essayPrompt && !yesNoQ) {
+    } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals)
+               && (!essayPrompt || shortPayQuestion(labelOnly, inp)) && !yesNoQ) {
       fillInput(inp, String(pack.salary_min || ''));
     } else if (/\bcountry\b/i.test(signals) && inp.tagName === 'SELECT') {
       // Residence country, stated by the user — never assumed (a Toronto
@@ -4140,6 +4874,7 @@ async function recallFromMemory(root, pack) {
 
   let recalled = 0;
   const answers = res.data.answers; // { "label": "value", ... }
+  const fallbacks = (res.data.fallback && !Array.isArray(res.data.fallback)) ? res.data.fallback : {};
 
   for (const el of emptyFields) {
     const sig = getFieldSignature(el);
@@ -4155,7 +4890,7 @@ async function recallFromMemory(root, pack) {
     // Work authorization / sponsorship have ONE interpreter, fed by the
     // current profile — an answer remembered from another form (or another
     // visa status) must not override it.
-    if (/sponsor|authoriz|visa|work permit|right to work/i.test(fullLabel)) continue;
+    if (_WORK_AUTH_Q_RE.test(fullLabel)) continue;
     // How the applicant heard about THIS job: their saved profile answer only
     // (fillUniversal), never one remembered from another form.
     if (isHowHeardQuestion(fullLabel)) continue;
@@ -4176,6 +4911,13 @@ async function recallFromMemory(root, pack) {
         continue;
       }
       fillInput(el, answer);
+      // A list without the profile's wording: the answer the person gave to
+      // this exact question, when they gave one.
+      const alt = fallbacks[sig];
+      if (el.tagName === 'SELECT' && !String(el.value || '').trim() && typeof alt === 'string' && alt.trim()
+          && !looksLikeModelOnlyReply(alt)) {
+        fillInput(el, alt);
+      }
       console.log('[SpotApply] Recalled from memory:', sig.slice(0, 50), '->', answer.slice(0, 30));
       recalled++;
     }
@@ -5633,6 +6375,12 @@ async function runCopilotStep() {
   const queued = queueSignalForFill(pack, autoSubmit);
   if (queued) queueSignal(pack, queued.kind, queued.reason);
 
+  // What this form still needs the person for goes to their "Questions to
+  // answer once" list (never when the form was just submitted).
+  if (!(autoSubmit && autoSubmit.attempted)) {
+    try { await reportOpenQuestions(pack, finalResult || auditPageFields(pack, false)); } catch (_) {}
+  }
+
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
   return summarizeStep(finalResult, autoSubmit);
@@ -5679,6 +6427,7 @@ const AUTO_SUBMIT_BLOCK_TEXT = {
   login_wall: 'the site asks you to sign in',
   captcha: 'the site shows a CAPTCHA',
   fields_need_you: 'some fields still need your answer',
+  ai_review: 'AI answered some questions from your profile, and they are yours to check once',
   no_submit_button: 'no Submit button was found on this page',
   submit_disabled: 'the Submit button is disabled',
   validation: 'the site rejected a field',
@@ -5686,6 +6435,7 @@ const AUTO_SUBMIT_BLOCK_TEXT = {
   already_attempted: 'it was already submitted from this tab',
 };
 const _autoSubmitDone = new Set();
+let _autoSubmitPressing = false;
 
 /** A challenge the one-click gate must stop at. isCaptcha() is page-level and
  * answers false whenever an application form is present, so it cannot see a
@@ -5781,6 +6531,13 @@ function autoSubmitBlocker(pack, audit, opts) {
       !fileInputs.some((fi) => (fi.files && fi.files.length) || fi.dataset.spotapplyUpload === 'accepted')) {
     return { reason: 'fields_need_you', detail: 'resume not attached' };
   }
+  // An AI answer is the person's to check ONCE before it is sent under their
+  // name; after that it is their saved answer and no longer holds anything.
+  // The server alone can lift this (pack.ai_form_answers.auto_submit).
+  const aiPending = pendingAiAnswers().length;
+  if (aiPending && !(pack.ai_form_answers && pack.ai_form_answers.auto_submit === true)) {
+    return { reason: 'ai_review', detail: aiPending + ' AI answer' + (aiPending === 1 ? '' : 's') + ' to check' };
+  }
   const btn = findSubmitControl();
   if (!btn) return { reason: 'no_submit_button' };
   if (btn.disabled) return { reason: 'submit_disabled' };
@@ -5797,6 +6554,13 @@ async function maybeAutoSubmit(pack, audit) {
       reportTelemetry(pack, 'auto_submit_attempted', { host: location.hostname });
     } else {
       reportTelemetry(pack, 'auto_submit_blocked', Object.assign({ reason }, extra || {}));
+      if (reason === 'ai_review') {
+        // The panel that lists each AI answer with the line it rests on, and
+        // the button that accepts them, IS the message here.
+        try { showStepOverlay(audit || auditPageFields(pack, false), pack); } catch (_) {}
+        console.log('[SpotApply] One-click submit held back:', reason);
+        return out;
+      }
       const why = AUTO_SUBMIT_BLOCK_TEXT[reason] || reason;
       const list = (audit && audit.problems || []).slice(0, 4).map((p) => '<li>' + escapeHtml(p) + '</li>').join('');
       showOverlay('✋ <b>Filled, but not submitted:</b> ' + escapeHtml(why) + '.<br>' +
@@ -5825,7 +6589,8 @@ async function maybeAutoSubmit(pack, audit) {
               '<small>SpotApply marks it Submitted only when the site confirms.</small>', [], false);
   noteSubmitAttempt('one_click');          // SUBMIT_ATTEMPTED + the confirmation watch
   try { btn.scrollIntoView({ block: 'center' }); } catch (_) {}
-  btn.click();
+  _autoSubmitPressing = true;              // this press is ours, not the person's review
+  try { btn.click(); } finally { setTimeout(() => { _autoSubmitPressing = false; }, 1500); }
   return done(true, 'clicked');
 }
 
@@ -6046,6 +6811,13 @@ async function fillCurrentPage(pack) {
   } catch (e) {
     console.warn('[SpotApply] screening radio error:', e.message);
   }
+  // Self-identification asked as radios: the saved profile answer only.
+  try {
+    const eeoRadios = answerEEORadioGroups(pack);
+    if (eeoRadios) console.log('[SpotApply] Answered', eeoRadios, 'self-identification question(s) from your profile');
+  } catch (e) {
+    console.warn('[SpotApply] self-identification radio error:', e.message);
+  }
   // Same rules for Yes/No BUTTON pairs (Ashby has no radios for these).
   try {
     answerYesNoButtons(pack);
@@ -6077,6 +6849,15 @@ async function fillCurrentPage(pack) {
 
   // Step 4: Fill essay questions via AI
   await fillEssayQuestions(document, pack);
+
+  // Step 4b: what is STILL open after every rule and every saved answer is
+  // asked of the server once: an answer only with evidence from the profile,
+  // marked for the person to check.
+  try {
+    await answerOpenQuestionsWithAI(pack);
+  } catch (e) {
+    console.warn('[SpotApply] AI answers error:', e.message);
+  }
 
   // Step 5: Audit all form fields — classify as filled / unfilled / unknown
   return auditPageFields(pack, platformFilled);
@@ -6152,6 +6933,7 @@ function auditPageFields(pack, platformFilled) {
         !/sponsor/i.test(question || '') && !notes.includes(msg)) notes.push(msg);
   };
   const seenRadioGroups = new Set();
+  const seenCheckGroups = new Set();
   const nameOf = (el) => (labelText(el) || el.getAttribute('aria-label') || el.name || el.id || 'a field')
     .replace(/\s+/g, ' ').trim().slice(0, 60);
   const flag = (el, why) => {
@@ -6197,8 +6979,21 @@ function auditPageFields(pack, platformFilled) {
       continue;
     }
     if (el.type === 'checkbox') {
-      // Checkboxes are NOT a group: two individually required boxes that share
-      // a name ("I agree…", "I confirm…") both have to be ticked.
+      // A "pick every one that applies" question is ONE question, answered
+      // once any box is ticked (a real Greenhouse form: four boxes each
+      // marked required read as four open questions).
+      const many = checkboxGroupOf(el);
+      if (many) {
+        if (seenCheckGroups.has(many.box)) continue;
+        seenCheckGroups.add(many.box);
+        if (many.group.some((c) => c.checked)) { skipped++; continue; }
+        if (many.group.some((c) => c.required || c.getAttribute('aria-required') === 'true')) {
+          needUser++; needRequired++; needUserEls.push(el); needRequiredEls.push(el); highlightField(el, 'red');
+        } else { skipped++; }
+        continue;
+      }
+      // Other checkboxes are NOT a group: two individually required boxes that
+      // share a name ("I agree…", "I confirm…") both have to be ticked.
       if (el.checked) { skipped++; continue; }
       if (el.required || el.getAttribute('aria-required') === 'true') {
         needUser++; needRequired++; needUserEls.push(el); needRequiredEls.push(el); highlightField(el, 'red');
@@ -6262,6 +7057,9 @@ function auditPageFields(pack, platformFilled) {
     if (hhRequired) { needRequired++; needRequiredEls.push(g.box); }
     highlightField(g.box, hhRequired ? 'red' : 'yellow');
   }
+
+  // An AI answer keeps its own mark until the person confirms or changes it.
+  for (const a of pendingAiAnswers()) markAiAnswered(a.target, 'pending');
 
   // The résumé's own outcome survives every recount until it changes.
   if (_resumeStatus && ['error', 'failed'].includes(_resumeStatus.state) &&
@@ -6391,7 +7189,26 @@ function showStepOverlay(result, pack) {
     ? `<div style="font-size:11px;color:#21455C;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
     : instructions;
 
-  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}`, [], true);
+  // AI answers waiting for the person's one look: the question, the answer and
+  // the line of their profile it rests on.
+  const ai = pendingAiAnswers();
+  const aiHtml = ai.length
+    ? `<div style="font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,119,194,0.25)">` +
+      `<b style="color:#0077C2">AI answered ${ai.length} from your profile. Check ${ai.length === 1 ? 'it' : 'them'}:</b>` +
+      ai.slice(0, 6).map((a) => `<div style="margin-top:4px"><span style="color:#21455C">${esc((a.question.charAt(0).toUpperCase() + a.question.slice(1)).slice(0, 80))}</span><br>` +
+        `<b>${esc(a.answer.slice(0, 60))}</b>${a.basis ? ` <span style="color:#5B7186">(${esc(a.basis.slice(0, 70))})</span>` : ''}</div>`).join('') +
+      (ai.length > 6 ? `<div style="margin-top:4px;color:#5B7186">and ${ai.length - 6} more, outlined in blue</div>` : '') +
+      `<button id="hp-ai-confirm" type="button" style="margin-top:8px;background:#0077C2;color:#fff;border:0;border-radius:8px;` +
+      `padding:6px 10px;font:600 12px system-ui,sans-serif;cursor:pointer">These are right, remember them</button>` +
+      `<div style="margin-top:4px;color:#5B7186">Change any that is wrong first. Nothing is submitted for you until you have looked.</div></div>`
+    : '';
+
+  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}${aiHtml}`, [], true);
+  if (ai.length) {
+    const host = document.getElementById('hp-copilot-overlay');
+    const btn = host && (host.shadowRoot || host).querySelector('#hp-ai-confirm');
+    if (btn) btn.addEventListener('click', () => { confirmAiAnswers(pack, 'checked by you'); refreshStepOverlay(pack); });
+  }
 }
 
 /** Does this page lead to another step (Next / Continue), or is it the whole form? */
@@ -7050,6 +7867,8 @@ function submitReadiness() {
         verdict: block.reason || 'ready',
         detail: block.detail || '',
         requiredOpen: audit.needRequired,
+        aiToCheck: pendingAiAnswers().length,
+        openQuestions: describeOpenQuestions(audit),
         // The questions behind that number: their kind and label, never a value.
         requiredOpenFields: (audit.needRequiredEls || []).slice(0, 12).map((el) => {
           const kind = (el.tagName === 'INPUT' ? (el.type || 'text') : el.tagName.toLowerCase());

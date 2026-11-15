@@ -1667,6 +1667,7 @@
         <span class="pp-sub" id="pp-af-summary">The answers application forms keep asking for: address, work authorization, availability, screening questions and more.</span>
       </div>
     </div>
+    <p class="pp-hint" id="pp-oq-pill" style="display:none;margin:0 0 10px"></p>
     <button type="button" class="pp-btn pp-btn-primary pp-btn-block" onclick="ppOpenEditor()">Manage auto-fill data &rarr;</button>
   </section>
 
@@ -1925,6 +1926,19 @@
     </div>
     <button type="button" class="pp-btn pp-btn-ghost" onclick="ppToggleAllSections()" id="pp-toggle-all">Expand all</button>
   </div>
+  <!-- Questions to answer once: what recent application forms REQUIRED that
+       nothing could answer (app/autofill/open_questions.py). Answered here, a
+       line is saved as the person's own answer and filled on later forms. -->
+  <section class="pp-card" id="pp-oq" style="display:none;margin-bottom:16px" aria-label="Questions to answer once">
+    <div class="pp-afcard-top">
+      <span class="pp-secicon"><svg class="ic" aria-hidden="true"><use href="#i-zap"/></svg></span>
+      <div class="pp-sectitle">
+        <span class="pp-h2">Questions to answer once</span>
+        <span class="pp-sub" id="pp-oq-sub"></span>
+      </div>
+    </div>
+    <div id="pp-oq-list"></div>
+  </section>
   <div id="pp-af-sections"></div>
 
   <!-- Hand-written fields that carry their own rules. ppBuildEditor() moves each
@@ -7562,6 +7576,85 @@
             document.querySelectorAll('#app-sidebar .sb-btn.active').forEach(b => b.classList.remove('active'));
             const nav = document.getElementById('sb-nav-profile');
             if (nav) nav.classList.add('active');
+            ppLoadOpenQuestions();
+        }
+
+        // ── Questions to answer once ─────────────────────────────────────────
+        // What recent forms required that nothing could answer. One line per
+        // question; a saved answer is the person's own and fills later forms.
+        let _ppOq = null;
+        async function ppLoadOpenQuestions() {
+            try {
+                const r = await fetch('/api/open-questions', { headers: authHeaders() });
+                if (!r.ok) return;
+                _ppOq = await r.json();
+            } catch (_) { return; }
+            ppRenderOpenQuestions();
+        }
+        function _ppOqTitle(q) {
+            const t = String(q.question || '').replace(/\s*[*\u2731]+\s*$/, '').trim();
+            return t.charAt(0).toUpperCase() + t.slice(1);
+        }
+        function ppRenderOpenQuestions() {
+            const data = _ppOq || {};
+            const qs = data.questions || [];
+            const card = document.getElementById('pp-oq');
+            const pill = document.getElementById('pp-oq-pill');
+            if (!card) return;
+            const n = data.to_answer || 0;
+            card.style.display = qs.length ? '' : 'none';
+            if (pill) {
+                pill.style.display = n ? '' : 'none';
+                pill.textContent = n === 1
+                    ? '1 question from a recent application form is waiting for your answer.'
+                    : n + ' questions from recent application forms are waiting for your answer.';
+            }
+            document.getElementById('pp-oq-sub').textContent = n
+                ? 'Recent application forms required ' + (n === 1 ? 'this' : 'these') + ' and SpotApply had no answer. Answer once here and it is filled on every later form that asks the same thing.'
+                : 'These came up on recent forms and are answered on the form itself.';
+            const row = (q, i) => {
+                const who = (q.companies || []).join(', ');
+                const asked = '<p class="pp-hint" style="margin:2px 0 8px">Asked on ' + q.forms + (q.forms === 1 ? ' form' : ' forms')
+                    + (who ? ' (' + _ppE(who) + ')' : '') + '</p>';
+                if (!q.saveable) {
+                    return '<div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-weight:600;color:var(--ink)">'
+                        + _ppE(_ppOqTitle(q)) + '</div>' + asked
+                        + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><p class="pp-hint" style="margin:0;flex:1 1 260px">'
+                        + _ppE(q.where || 'Answered on the form.') + '</p>'
+                        + '<button type="button" class="pp-btn pp-btn-ghost" onclick="ppOqSkip(' + i + ')">Hide</button></div></div>';
+                }
+                const control = (q.options || []).length
+                    ? '<select id="pp-oq-a-' + i + '" class="pp-input" style="max-width:420px" aria-label="Your answer"><option value="">Select…</option>'
+                        + q.options.map(o => '<option value="' + _ppE(o) + '">' + _ppE(o) + '</option>').join('') + '</select>'
+                    : '<input id="pp-oq-a-' + i + '" class="pp-input" style="max-width:420px" maxlength="300" placeholder="Your answer" aria-label="Your answer" />';
+                return '<div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-weight:600;color:var(--ink)">'
+                    + _ppE(_ppOqTitle(q)) + '</div>' + asked
+                    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' + control
+                    + '<button type="button" class="pp-btn pp-btn-primary" onclick="ppOqSave(' + i + ')">Save answer</button>'
+                    + '<button type="button" class="pp-btn pp-btn-ghost" onclick="ppOqSkip(' + i + ')">Skip</button></div></div>';
+            };
+            document.getElementById('pp-oq-list').innerHTML = qs.map(row).join('');
+        }
+        async function ppOqSave(i) {
+            const q = ((_ppOq || {}).questions || [])[i];
+            const el = document.getElementById('pp-oq-a-' + i);
+            const answer = el ? String(el.value || '').trim() : '';
+            if (!q || !answer) { showToast('Choose or type your answer first.', 'info'); return; }
+            try {
+                const r = await fetch('/api/open-questions/answer', { method: 'POST', headers: jsonHeaders(),
+                                                                       body: JSON.stringify({ key: q.key, answer }) });
+                if (!r.ok) { showToast('That answer could not be saved. Answer it on the form instead.', 'error'); return; }
+                showToast('Saved. SpotApply fills this on forms that ask the same question.', 'success');
+            } catch (_) { showToast('Could not reach SpotApply. Try again.', 'error'); return; }
+            ppLoadOpenQuestions();
+        }
+        async function ppOqSkip(i) {
+            const q = ((_ppOq || {}).questions || [])[i];
+            if (!q) return;
+            try {
+                await fetch('/api/open-questions/dismiss', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ key: q.key }) });
+            } catch (_) {}
+            ppLoadOpenQuestions();
         }
         // Called by switchViewTab: any other view takes the screen back.
         function _ppLeave() {

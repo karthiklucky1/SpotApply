@@ -18,6 +18,7 @@
         <option value="us" selected>United States</option>
         <option value="pe">Peru</option>
         <option value="in">India</option>
+        <option value="ie">Ireland</option>
       </select>
       <input type="tel" id="sc-phone" name="candidate[phone]" required>
     </div>
@@ -78,6 +79,11 @@
   (function () {
     const input = document.getElementById('sc-phone');
     const country = document.getElementById('sc-country');
+    // ?country=ie: the widget starts on another country (a Teamtailor form in
+    // Ireland). A US number written whole moves it to United States, which is
+    // the widget getting it RIGHT.
+    const start = (location.search.match(/[?&]country=([a-z]{2})/) || [])[1];
+    if (start) country.value = start;
     const CC = { '1': 'us', '51': 'pe', '91': 'in' };
     input.addEventListener('input', () => {
       const v = input.value;

@@ -2586,12 +2586,17 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
         except Exception as e:
             log.exception("Auto-tailoring failed for application %d: %s", application_id, e)
 
-    # Clear old unanswered pending questions for this app so we get fresh ones
+    # Clear old unanswered pending questions for this app so we get fresh ones.
+    # Only this agent's own: the rows the extension reported ("ext:<kind>",
+    # app/autofill/open_questions.py) are the person's list of questions to
+    # answer once, and are replaced by the extension's next report.
     with get_session() as session:
         old_pqs = session.exec(
             select(PendingQuestion).where(PendingQuestion.application_id == application_id)
         ).all()
         for pq in old_pqs:
+            if (pq.field_type or "").startswith("ext:"):
+                continue
             session.delete(pq)
         session.commit()
 
