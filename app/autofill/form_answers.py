@@ -51,7 +51,56 @@ MAX_OPTION_CHARS = 160
 MAX_TEXT_ANSWER_CHARS = 160
 MAX_RESUME_CHARS = 6000
 CACHE_TTL_SECONDS = 6 * 3600
+CACHE_MAX_ENTRIES = 4000
 KINDS = ("radio", "dropdown", "select", "yesno", "text")
+
+
+class _AnswerCache:
+    """This module's own bounded store (least recently used goes first).
+
+    Not ``app.common.ttl_cache``: that store holds the dashboard's five-minute
+    aggregates and, when full, evicts whatever expires SOONEST. Up to 30
+    six-hour entries per form would fill it and then push out every stats and
+    welcome entry the moment it was written: sign-in back to recomputing its
+    counts on each load, the regression that cache exists to stop."""
+
+    def __init__(self, max_entries: int):
+        import collections
+        import threading
+        self._max = max_entries
+        self._lock = threading.Lock()
+        self._store: "collections.OrderedDict[str, tuple[float, dict]]" = collections.OrderedDict()
+
+    def get(self, key: str) -> Optional[dict]:
+        import time
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            if entry[0] <= time.monotonic():
+                self._store.pop(key, None)
+                return None
+            self._store.move_to_end(key)
+            return entry[1]
+
+    def put(self, key: str, value: dict, ttl: float) -> None:
+        import time
+        with self._lock:
+            self._store[key] = (time.monotonic() + ttl, value)
+            self._store.move_to_end(key)
+            while len(self._store) > self._max:
+                self._store.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+
+_cache = _AnswerCache(CACHE_MAX_ENTRIES)
 
 # An agreement with ONE employer (the auto-fill catalog leaves these out for
 # the same reason): agreeing from a default is agreeing to something the
@@ -72,6 +121,8 @@ _AGREEMENT_RE = re.compile(
 # Facts only the applicant states, and that are never inferred from a resume.
 _SENSITIVE_RE = re.compile(
     r"\b(?:convict\w*|felon\w*|misdemeanou?rs?|criminal|arrest\w*|pending charges|probation|parole"
+    r"|offen[cs]es?|offenders?|abuse|neglect|misconduct|disciplin\w*|investigat\w*|terminated|dismissed|fired"
+    r"|sanction\w*|revoked|suspended|bankrupt\w*|lawsuits?|litigation"
     r"|date of birth|birth ?date|dob|how old|years? of age|age|over (?:the age of )?(?:16|18|21)"
     r"|at least (?:16|18|21)|(?:16|18|21) (?:years|or older)"
     r"|social security|ssn|national (?:id|insurance)\w*|passport|tax (?:id|number)|bank|routing number"
@@ -305,19 +356,26 @@ def _backend() -> Optional[tuple]:
     return None
 
 
-def _call_model(provider: str, model: str, client, user: str) -> tuple:
+def _reply_ceiling(n_questions: int) -> int:
+    """Room for every answer: an answered entry is its id, an answer and an
+    evidence line of up to 240 characters. A fixed 1,400 cut the JSON of a
+    30-question form mid-entry: the call was paid and nothing could be read."""
+    return max(600, min(4000, 300 + 110 * int(n_questions)))
+
+
+def _call_model(provider: str, model: str, client, user: str, max_tokens: int = 1400) -> tuple:
     """(text, usage, served_model). Raises on a provider failure."""
     from app.common.llm import sampling
     from app.matching.reranker import _usage_from_anthropic, _usage_from_openai
     if provider == "openai":
         resp = client.chat.completions.create(
-            model=model, max_tokens=1400, temperature=0,
+            model=model, max_tokens=max_tokens, temperature=0,
             messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}],
             response_format={"type": "json_object"})
         return (resp.choices[0].message.content or "", _usage_from_openai(resp) or {},
                 getattr(resp, "model", None) or model)
     resp = client.messages.create(
-        model=model, max_tokens=1400, system=_SYSTEM,
+        model=model, max_tokens=max_tokens, system=_SYSTEM,
         messages=[{"role": "user", "content": user}], **sampling(model, 0.0))
     return (resp.content[0].text or "", _usage_from_anthropic(resp) or {},
             getattr(resp, "model", None) or model)
@@ -422,7 +480,6 @@ def answer_questions(asked: Iterable[Any], *, application_id: int, user_id: Opti
     Never raises for a provider problem: an answer that cannot be had is a
     question left for the person, exactly as before this module existed.
     """
-    from app.common import ttl_cache
     questions = clean_questions(asked, int(settings.ai_form_answers_max_questions))
     answers: dict = {}
     skipped: dict = {}
@@ -452,7 +509,7 @@ def answer_questions(asked: Iterable[Any], *, application_id: int, user_id: Opti
 
     todo = []
     for q in open_qs:
-        hit = ttl_cache.get(_cache_key(user_id, facts_hash, ctx["job"], q))
+        hit = _cache.get(_cache_key(user_id, facts_hash, ctx["job"], q))
         if isinstance(hit, dict) and hit.get("answer"):
             answers[q["id"]] = dict(hit)
         elif isinstance(hit, dict):
@@ -475,6 +532,12 @@ def answer_questions(asked: Iterable[Any], *, application_id: int, user_id: Opti
     from app.common.daily_counter import reserve
     if not reserve(f"form_answers:user:{user_id or 'local'}", int(settings.ai_form_answers_daily_cap)):
         return leave("daily_cap")
+    # The platform's own total for the day, reserved per call like the geo
+    # verifier's: the lanes' counters never see these calls, so without it the
+    # only bound was 60 x however many people were filling forms.
+    platform_cap = int(settings.ai_form_answers_platform_daily_cap)
+    if platform_cap > 0 and not reserve("form_answers:platform", platform_cap):
+        return leave("platform_budget")
 
     provider, model, client = backend
     user = ("FACTS:\n" + "\n".join(lines) +
@@ -483,19 +546,32 @@ def answer_questions(asked: Iterable[Any], *, application_id: int, user_id: Opti
                 [{"id": q["id"], "question": q["question"], "options": q["options"] or None} for q in todo],
                 ensure_ascii=False) +
             "\n\nReturn the JSON object.")
+    from app.matching.reranker import _is_exhaustion_error, _mark_provider_down, _note_provider_ok
     try:
-        text, usage, served = _call_model(provider, model, client, user)
+        text, usage, served = _call_model(provider, model, client, user, _reply_ceiling(len(todo)))
     except Exception as e:
+        # A billing or daily-quota refusal trips the SHARED breaker, so the next
+        # form (and every lane) stops asking a provider that cannot answer.
+        if _is_exhaustion_error(str(e).lower()):
+            _mark_provider_down(provider, str(e))
         log.warning("form answers: %s call failed (%s) — %d question(s) left for the applicant",
                     provider, type(e).__name__, len(todo))
         return leave("error")
+    _note_provider_ok(provider)
     try:
         from app.analytics.spend import record_llm_spend
         record_llm_spend(user_id, "form_answers", provider=provider, model=served or model, usage=usage)
     except Exception as e:
         log.debug("form answers: spend not recorded (%s)", e)
 
-    by_id = {str(r.get("id")): r for r in _parse(text)}
+    rows = _parse(text)
+    if not rows:
+        # A reply that could not be read (cut off, not JSON) says nothing about
+        # the questions: nothing is cached, so the next fill may ask again.
+        log.warning("form answers: %s reply could not be read — %d question(s) left for the applicant",
+                    provider, len(todo))
+        return leave("error")
+    by_id = {str(r.get("id")): r for r in rows}
     kept = 0
     for q in todo:
         row = by_id.get(q["id"])
@@ -503,11 +579,11 @@ def answer_questions(asked: Iterable[Any], *, application_id: int, user_id: Opti
         key = _cache_key(user_id, facts_hash, ctx["job"], q)
         if found:
             answers[q["id"]] = found
-            ttl_cache.put(key, dict(found), CACHE_TTL_SECONDS)
+            _cache.put(key, dict(found), CACHE_TTL_SECONDS)
             kept += 1
         else:
             skipped[q["id"]] = why
-            ttl_cache.put(key, {"skipped": why}, CACHE_TTL_SECONDS)
+            _cache.put(key, {"skipped": why}, CACHE_TTL_SECONDS)
     log.info("form answers: %d asked, %d answered with evidence, %d left (provider=%s)",
              len(todo), kept, len(todo) - kept, provider)
     return {"answers": answers, "skipped": skipped}

@@ -217,6 +217,12 @@ def test_load_never_hands_out_what_todays_catalog_would_refuse():
     ("Reason for leaving your current employer", "Contract ended"),
     ("Languages spoken", "English (Fluent), Telugu (Native or bilingual)"),
     ("Certifications", "AWS Solutions Architect"),
+    # Real forms, 2026-11-15: the answer was saved and the question not recognised.
+    ("what is your highest attained degree? ✱", "Master's degree"),
+    ("How would you evaluate your proficiency in English?* (required)", "Fluent"),
+    ("English level", "Fluent"), ("Level of English", "Fluent"), ("Telugu proficiency", "Native or bilingual"),
+    ("How well do you speak Telugu?", "Native or bilingual"),
+    ("Are you fluent in English?", "Yes"),
 ])
 def test_a_saved_answer_is_offered_for_the_question_that_asks_it(label, want):
     assert af.answer_for_label(label, af.load(SAVED)) == want
@@ -245,10 +251,27 @@ def test_a_saved_answer_is_offered_for_the_question_that_asks_it(label, want):
     "Are you under 18?",
     "Title",                                        # a job title, not Mr./Ms.
     "First name", "Email", "Phone",                 # the fill pack's own fields
+    # a language level: only for a language they listed, and only when asked
+    "German proficiency",                           # not listed is not "none"
+    "How would you rate your local language?",      # which language?
+    "What is your level of English and Telugu?",    # two languages, no one answer
+    "English teacher experience level",             # the level word is not about the language
+    "Do you speak English?",                        # asks Yes/No, not a level
     "",
 ])
 def test_a_saved_answer_is_never_offered_for_another_question(label):
     assert af.answer_for_label(label, af.load(SAVED)) is None
+
+
+def test_fluent_in_a_language_is_yes_only_for_a_fluent_or_native_level():
+    """"Are you fluent in X?" is Yes for a saved Fluent or Native level and is
+    otherwise left: a Conversational level is not a saved "No"."""
+    data = af.load({"languages": [{"language": "Spanish", "proficiency": "Conversational"},
+                                  {"language": "Hindi"}]})
+    assert af.answer_for_label("Are you fluent in Spanish?", data) is None
+    assert af.answer_for_label("Spanish level", data) == "Conversational"
+    assert af.answer_for_label("Hindi level", data) is None, "a language listed without a level has none to give"
+    assert list(af._LANGUAGE_RUNG) == [l.lower() for l in af.LANGUAGE_LEVELS]
 
 
 def test_an_empty_answer_is_left_for_the_user():
@@ -338,6 +361,37 @@ def test_recall_offers_the_saved_answers_and_refuses_the_guarded_questions(clien
     assert client.put("/api/profile", json={"autofill": {"address_line2": "Apt 4"}}).status_code == 200
     got = client.post("/api/recall-answers", json={"labels": labels}).json()["answers"]
     assert got["address line 1"] == "123 Main St" and got["address line 2"] == "Apt 4"
+
+
+def test_the_persons_answer_to_the_exact_question_stays_on_offer(client, restore):
+    """The profile says clearance "None"; a real Greenhouse list offered
+    "Non-clearable / Clearable / Public Trust…". The person answered THAT
+    question once, and the profile's general answer overrode it on every later
+    form, so it was asked of them for ever. The profile still goes first; their
+    exact answer rides along for a list that has no such option."""
+    from app.autofill.answer_pack import _save_memory
+    assert client.put("/api/profile", json={"autofill": {"security_clearance": "None",
+                                                         "over_18": "Yes"}}).status_code == 200
+    _save_memory("current clearance level", "current clearance level", "Non-clearable", user_id=None)
+    _save_memory("are you at least 18 years of age?", "are you at least 18 years of age?", "yes", user_id=None)
+    try:
+        got = client.post("/api/recall-answers", json={"labels": [
+            "current clearance level", "are you at least 18 years of age?", "middle name"]}).json()
+        assert got["answers"]["current clearance level"] == "None", "the profile goes first"
+        assert got["fallback"] == {"current clearance level": "Non-clearable"}, \
+            "only where the two differ: the same answer in other letter case is not a second answer"
+        # Nothing saved for the exact question: no fallback key at all (old clients see the old reply).
+        only = client.post("/api/recall-answers", json={"labels": ["middle name"]}).json()
+        assert "fallback" not in only
+    finally:
+        from sqlmodel import delete
+
+        from app.db.init_db import get_session
+        from app.db.models import AnswerMemory
+        with get_session() as s:
+            s.exec(delete(AnswerMemory).where(AnswerMemory.label_normalized.in_(
+                ["current clearance level", "are you at least 18 years of age?"])))
+            s.commit()
 
 
 def test_recall_with_nothing_saved_is_unchanged(client, restore):

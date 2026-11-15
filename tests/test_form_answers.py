@@ -59,6 +59,10 @@ FACTS = [
     ("What is your date of birth?", "applicant_only"),
     ("Are you a U.S. citizen?", "applicant_only"),
     ("Are you related to anyone who works here?", "applicant_only"),
+    ("Are you able to legally work in the region you are applying for?", "work_authorization"),
+    ("Does your name appear on any sex offender database in any state or country?", "applicant_only"),
+    ("Have you ever had any indicated finding of child abuse filed in your name?", "applicant_only"),
+    ("Have you ever been terminated or asked to resign from a job?", "applicant_only"),
     ("g-recaptcha-response", "anti_bot_field"),
     ("question_68444493", "field_identifier"),
     ("Phone", "not_a_question"),
@@ -164,12 +168,15 @@ class _Model:
     """Stands in for the provider: answers from a table, records what it saw."""
 
     def __init__(self, table):
-        self.table, self.prompts, self.fail = table, [], False
+        self.table, self.prompts, self.fail, self.ceilings, self.garbled = table, [], False, [], False
 
-    def __call__(self, provider, model, client, user):
+    def __call__(self, provider, model, client, user, max_tokens=1400):
         self.prompts.append(user)
+        self.ceilings.append(max_tokens)
         if self.fail:
-            raise RuntimeError("provider down")
+            raise RuntimeError(self.fail if isinstance(self.fail, str) else "provider down")
+        if self.garbled:
+            return '{"answers": [{"id": "q2", "answer": "No", "evid', {"input": 900, "output": 1400}, "served-model"
         asked = json.loads(user.split("QUESTIONS:\n", 1)[1].split("\n\nReturn", 1)[0])
         rows = []
         for q in asked:
@@ -200,6 +207,7 @@ def wired(monkeypatch):
                         lambda name, cap, day=None: (seen.reserved.append((name, cap)), seen.reserve_ok)[1])
     monkeypatch.setattr(spend, "record_llm_spend", lambda user_id, kind, calls=1, **kw: seen.spend.append((user_id, kind, kw)))
     monkeypatch.setattr(settings, "ai_form_answers_enabled", True)
+    fa._cache.clear()
     return seen
 
 
@@ -235,7 +243,8 @@ def test_answers_come_with_evidence_or_not_at_all(wired):
     assert "legally authorized" not in sent and "privacy policy" not in sent
     assert "FACTS:\nHome location: Cincinnati, OH" in sent and '"company": "Neo4j"' in sent
     # ...and it was paid for like every other call.
-    assert wired.reserved == [(f"form_answers:user:{wired.uid}", int(settings.ai_form_answers_daily_cap))]
+    assert wired.reserved == [(f"form_answers:user:{wired.uid}", int(settings.ai_form_answers_daily_cap)),
+                              ("form_answers:platform", int(settings.ai_form_answers_platform_daily_cap))]
     assert [(u, k) for u, k, _ in wired.spend] == [(wired.uid, "form_answers")]
     assert wired.spend[0][2]["provider"] == "anthropic" and wired.spend[0][2]["model"] == "served-model"
 
@@ -269,7 +278,8 @@ def test_a_question_is_bought_once(wired):
     first = fa.answer_questions(QUESTIONS[1:2] + QUESTIONS[4:5], application_id=1, user_id=wired.uid)
     again = fa.answer_questions(QUESTIONS[1:2] + QUESTIONS[4:5], application_id=1, user_id=wired.uid)
     assert first == again and first["answers"]["q2"]["answer"] == "No." and first["skipped"] == {"q5": "no_evidence"}
-    assert len(wired.model.prompts) == 1 and len(wired.reserved) == 1, "the copilot re-runs a page many times"
+    assert len(wired.model.prompts) == 1, "the copilot re-runs a page many times"
+    assert [name for name, _cap in wired.reserved] == [f"form_answers:user:{wired.uid}", "form_answers:platform"]
 
 
 def test_an_answer_about_one_employer_is_never_served_for_another(wired, monkeypatch):
@@ -313,6 +323,81 @@ def test_every_paid_call_control_can_stop_it(wired, monkeypatch):
     wired.model.fail = False
     out = fa.answer_questions(q, application_id=1, user_id=wired.uid)
     assert out["answers"]["q2"]["answer"] == "No.", "a failure is not remembered as 'no answer'"
+
+
+def test_the_platform_has_its_own_daily_total(wired, monkeypatch):
+    """The lanes' finals counters never see these calls: without a total of
+    their own the only bound was 60 x however many people were filling forms."""
+    from app.common import daily_counter
+    q = [QUESTIONS[1]]
+    wired.model.table["local to austin"] = ("No", "Home location: Cincinnati, OH")
+    monkeypatch.setattr(settings, "ai_form_answers_platform_daily_cap", 7)
+    monkeypatch.setattr(daily_counter, "reserve", lambda name, cap, day=None: (
+        wired.reserved.append((name, cap)), name != "form_answers:platform")[1])
+    assert fa.answer_questions(q, application_id=1, user_id=wired.uid)["skipped"] == {"q2": "platform_budget"}
+    assert wired.reserved[-1] == ("form_answers:platform", 7) and not wired.model.prompts
+    monkeypatch.setattr(settings, "ai_form_answers_platform_daily_cap", 0)      # 0 = no platform ceiling
+    assert fa.answer_questions(q, application_id=1, user_id=wired.uid)["answers"]["q2"]["answer"] == "No."
+    assert [n for n, _ in wired.reserved].count("form_answers:platform") == 1
+
+
+def test_a_billing_refusal_trips_the_shared_breaker(wired, monkeypatch):
+    """A provider that refuses on credit or quota is marked down for everyone,
+    as the lanes and the grounding check do: the next form does not pay 25
+    seconds to hear the same refusal."""
+    from app.matching import reranker
+    down, ok = [], []
+    monkeypatch.setattr(reranker, "_mark_provider_down", lambda name, error=None: down.append(name))
+    monkeypatch.setattr(reranker, "_note_provider_ok", lambda name: ok.append(name))
+    q = [QUESTIONS[1]]
+    wired.model.table["local to austin"] = ("No", "Home location: Cincinnati, OH")
+    wired.model.fail = "Your credit balance is too low to access the Anthropic API"
+    assert fa.answer_questions(q, application_id=1, user_id=wired.uid)["skipped"] == {"q2": "error"}
+    assert down == ["anthropic"] and not ok
+    wired.model.fail = "connection reset by peer"                          # a blip is not an outage
+    fa.answer_questions(q, application_id=1, user_id=wired.uid)
+    assert down == ["anthropic"]
+    wired.model.fail = False
+    fa.answer_questions(q, application_id=1, user_id=wired.uid)
+    assert ok == ["anthropic"], "an answer ends the outage"
+
+
+def test_a_reply_that_cannot_be_read_is_not_remembered(wired):
+    """A cut-off reply says nothing about the questions. Remembering it as "no
+    evidence" held all of a form's questions back for six hours."""
+    q = [QUESTIONS[1]]
+    wired.model.table["local to austin"] = ("No", "Home location: Cincinnati, OH")
+    wired.model.garbled = True
+    assert fa.answer_questions(q, application_id=1, user_id=wired.uid)["skipped"] == {"q2": "error"}
+    assert len(fa._cache) == 0 and len(wired.spend) == 1, "the call was paid and is booked"
+    wired.model.garbled = False
+    assert fa.answer_questions(q, application_id=1, user_id=wired.uid)["answers"]["q2"]["answer"] == "No."
+
+
+def test_the_reply_has_room_for_every_question(wired):
+    many = [{"id": f"q{i}", "question": f"Is option number {i} right for you today?", "kind": "radio",
+             "options": ["Yes", "No"]} for i in range(30)]
+    fa.answer_questions(many, application_id=1, user_id=wired.uid)
+    fa.answer_questions([QUESTIONS[1]], application_id=1, user_id=wired.uid)
+    big, small = wired.model.ceilings
+    assert big >= 30 * 100 and small < big and fa._reply_ceiling(500) <= 4000
+
+
+def test_answers_never_crowd_the_dashboards_cache(wired):
+    """app.common.ttl_cache holds the dashboard's five-minute aggregates and
+    evicts what expires soonest: six-hour answers there would push every stats
+    entry out as it was written."""
+    from app.common import ttl_cache
+    before = ttl_cache.size()
+    wired.model.table["local to austin"] = ("No", "Home location: Cincinnati, OH")
+    fa.answer_questions(QUESTIONS[1:2] + QUESTIONS[4:5], application_id=1, user_id=wired.uid)
+    assert ttl_cache.size() == before and len(fa._cache) == 2
+    small = fa._AnswerCache(3)
+    for i in range(5):
+        small.put(f"k{i}", {"answer": str(i)}, 60)
+    assert len(small) == 3 and small.get("k0") is None and small.get("k4") == {"answer": "4"}
+    small.put("old", {"answer": "x"}, -1)
+    assert small.get("old") is None, "an expired entry is not served"
 
 
 def test_the_caller_cannot_flood_it(wired, monkeypatch):

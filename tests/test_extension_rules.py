@@ -49,7 +49,8 @@ FUNCTIONS = [
     "answerYesNoSelect", "selectOption", "answerWorkAuthField",
     "queueSignalForFill",
     "looksLikeYesNoQuestion", "countryOptionIndex", "isApplyWording", "savedOptionIndex",
-    "aiMayAnswer", "questionKey", "isJobRelativeQuestion",
+    "aiMayAnswer", "questionKey", "isJobRelativeQuestion", "looseOptionKey",
+    "languageLevelRank", "languageLevelIndex", "shortPayQuestion", "asksHomeState",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "AUTO_SUBMIT_BLOCK_TEXT", "QUEUE_FILL_ONLY_REASONS", "QUEUE_HANDOFF_REASON",
@@ -58,7 +59,8 @@ CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFF
           "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
           "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES",
           "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS", "_HH_ASKED", "_HOW_HEARD_FILL_RE",
-          "_SPECIFY_RE", "_APPLY_WORDS_RE", "_AGREEMENT_RE", "_APPLICANT_ONLY_RE", "_JOB_RELATIVE_RE"]
+          "_SPECIFY_RE", "_APPLY_WORDS_RE", "_AGREEMENT_RE", "_APPLICANT_ONLY_RE", "_JOB_RELATIVE_RE", "_WORK_AUTH_Q_RE",
+          "_WHERE_LOCATED_RE", "_SAVED_LANGUAGE_LEVELS"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -1584,14 +1586,24 @@ def test_saved_answers_reach_dropdowns_and_radios_and_never_the_guarded_question
     person already answered or changed."""
     fn = _function(CONTENT, "answerSavedChoices")
     for guard in ("isDemographicQuestion(q)", "isHowHeardQuestion(q)",
-                  "/sponsor|authoriz|visa|work permit|right to work/i.test(q)",
+                  "_WORK_AUTH_Q_RE.test(q)",
                   "isAntiBotField(input) || choiceDropdownPicked(control)", "eeoKindOf(control)",
                   "spotapplyUserModified === 'true'", "r.checked || r.disabled",
                   "looksLikeModelOnlyReply(answer)"):
         assert guard in fn, guard
     assert "/api/recall-answers" in fn
     assert "answers[item.question]" in fn and "keywordOverlap" not in fn, "the exact question only, never a fuzzy match"
-    assert fn.count("savedOptionIndex(") == 3, "dropdown, radio and Yes/No buttons all pick by the one option that says it"
+    assert fn.count("savedOptionIndex(") == 2 and "pickCustomOption(item.control, which)" in fn \
+        and "item.group[which(item.group.map(caption))]" in fn, \
+        "dropdown, radio and Yes/No buttons all pick by the one option that says it"
+    assert fn.index("savedOptionIndex(texts, answer)") < fn.index("languageLevelIndex(texts, answer)"), \
+        "a language level on another ladder only when no option says the saved answer"
+    # The profile's general answer first; the person's answer to this exact
+    # question when the form's list has no such option.
+    assert "[answers[item.question], fallbacks[item.question]]" in fn and "for (const answer of candidates)" in fn
+    assert "fallbacks[" not in fn.replace("fallbacks[item.question]", ""), "the exact question only, for the fallback too"
+    recall = _function(CONTENT, "recallFromMemory")
+    assert "const alt = fallbacks[sig];" in recall and "el.tagName === 'SELECT' && !String(el.value || '').trim()" in recall
     assert "ai_answers" not in fn and "answer-question" not in fn, "never a model's answer"
     page = _function(CONTENT, "fillCurrentPage")
     assert page.index("answerScreeningRadios(pack)") < page.index("await answerChoiceDropdowns(pack)") \
@@ -1608,7 +1620,11 @@ def test_a_radio_groups_question_is_found_above_the_group():
     sibling of the box that holds them; the radios' own labels say "Yes."."""
     fn = _function(CONTENT, "radioGroupQuestion")
     assert "foreign(" in fn, "the climb stops at a box that holds another question's controls"
-    assert re.search(r"depth\s*<\s*6|<\s*6;", fn), "bounded climb"
+    assert re.search(r"depth\s*<\s*7", fn), "bounded climb"
+    # An option is an option by STRUCTURE (its own label), never by its length:
+    # a real Ashby group's "question" was its first, 31-character option.
+    assert "optionEls.some((o) => o.contains(t))" in fn and "o.length < 25" not in fn
+    assert "!node.contains(r)" in fn, "one option's own wrapper is not the group's box"
 
 
 # ── AI answers for the questions nothing else answers (2026-11-14) ───────────
@@ -1629,6 +1645,10 @@ _AI_TABLE = [
     "Do you hold an active TS/SCI clearance?",
     "Are you a U.S. citizen?",
     "Are you related to anyone who works here?",
+    "Are you able to legally work in the region you are applying for?",
+    "Does your name appear on any sex offender database in any state or country?",
+    "Have you ever had any indicated finding of child abuse filed in your name?",
+    "Have you ever been terminated or asked to resign from a job?",
     "g-recaptcha-response",
     "question_68444493",
     "Phone",
@@ -1732,3 +1752,209 @@ def test_job_relative_answers_are_confirmed_but_never_saved():
     assert confirm.index("a.confirmed = true") < confirm.index("isJobRelativeQuestion(a.question)") \
         < confirm.index("/api/save-answer"), "checked here, not carried to another employer"
     assert "isJobRelativeQuestion(question)" in _function(CONTENT, "learnChoicesOnSubmit")
+
+
+# ── Questions to answer once (2026-11-15) ────────────────────────────────────
+
+def test_the_extension_and_the_server_agree_on_what_depends_on_the_job():
+    """A job-specific answer is never saved for the next employer: by the
+    extension (confirm / learn) or by the server ("Questions to answer once")."""
+    from app.autofill import open_questions as oq
+    table = ["Have you worked here before?", "Have you ever worked for us?", "Did a current employee refer you to this position?",
+             "Can you commute to this location?", "Are you able to work on-site at our office 3 days a week?",
+             "Do you know any of our employees?", "Why do you want to join us?",
+             "Are you local to Austin, TX?", "Have you worked at Neo4j before?", "Are you willing to travel up to 25%?",
+             "Do you have a valid driver's license?", "Which programming language do you use most?", ""]
+    got = run_js([["isJobRelativeQuestion", q] for q in table])
+    for question, js in zip(table, got):
+        assert js is oq.is_job_relative(question), question
+
+
+def test_what_a_form_still_needs_is_reported_as_wording_and_choices_never_values():
+    describe = _function(CONTENT, "describeOpenQuestions")
+    assert "audit.needRequiredEls" in describe, "only what the form REQUIRES and still lacks"
+    assert "el.type === 'file'" in describe, "attaching a resume is not a question"
+    assert "looksLikeFieldIdentifier(item.question) || isAntiBotField(el)" in describe
+    assert ".value" not in describe.replace("r.value", "").replace("o.value", ""), "never what the person typed"
+    report = _function(CONTENT, "reportOpenQuestions")
+    assert "cfg.enabled !== true" in report and "/api/open-questions" in report
+    assert "_openQuestionsSent" in report, "once per page and per set"
+    assert "readChoiceOptions(control)" in report and "choiceDropdownPicked(control)" in report
+    step = _function(CONTENT, "runCopilotStep")
+    assert "autoSubmit && autoSubmit.attempted" in step[step.index("reportOpenQuestions(") - 200:step.index("reportOpenQuestions(")], \
+        "nothing is reported for a form that was just submitted"
+
+
+# ── What the second real-form run showed (2026-11-15) ────────────────────────
+
+_CITIZEN = dict(work_authorization="US Citizen", requires_sponsorship=False, preferred_country="United States")
+
+
+@pytest.mark.parametrize("question,pack,want", [
+    # "…the region you are applying for" has none of the usual words: it is a
+    # work-authorization question, answered from the JOB's country.
+    ("Are you able to legally work in the region you are applying for?", dict(_CITIZEN, job_country="United States"), True),
+    ("Are you able to legally work in the region you are applying for?", dict(_CITIZEN, job_country="United Kingdom"), None),
+    ("Are you able to legally work in the region you are applying for?", dict(_CITIZEN, job_country=""), None),
+    ("Are you legally authorized to work in the country in which this job is located?",
+     dict(_CITIZEN, job_country="United States"), True),
+    ("Are you legally authorized to work in the country in which this job is located?",
+     dict(_CITIZEN, job_country="Germany"), None),          # was a blind Yes
+    # A question that NAMES its country is about that country, wherever the job is.
+    ("Are you legally authorized to work in the United States?", dict(_CITIZEN, job_country="Germany"), True),
+    # An older server sends no job_country: the old reading stands.
+    ("Are you legally authorized to work in the country in which this job is located?", _CITIZEN, True),
+    ("Are you able to legally work in the region you are applying for?",
+     dict(work_authorization="F-1 OPT", requires_sponsorship=True, authorized_now=None, job_country="United States"), None),
+])
+def test_authorized_where_the_job_is_needs_the_jobs_country(question, pack, want):
+    assert run_js([["classifyScreeningQuestion", question, pack]])[0] is want
+
+
+@pytest.mark.parametrize("a,b,same", [
+    ("Bachelor's degree", "Bachelors", True),
+    ("Bachelor\u2019s Degree", "bachelor", True),
+    ("Master's degree", "Masters", True),
+    ("Associate degree", "Associates", True),
+    ("Master's degree", "Bachelors", False),
+    ("Doctorate (PhD)", "Doctorate", False),               # a different string: left for an exact or contains match
+    ("", "Bachelors", False),
+])
+def test_the_same_answer_in_other_dress_is_the_same_option(a, b, same):
+    ka, kb = run_js([["looseOptionKey", a], ["looseOptionKey", b]])
+    assert (bool(ka) and ka == kb) is same
+
+
+@pytest.mark.parametrize("text,rung", [
+    ("C2 (It is my mother tongue)", 5), ("C1", 4), ("B2", 3), ("B1", 2), ("A2/A1", 1),
+    ("It`s my own mothertongue (C2)", 5), ("I mastered the language after some intense years (C1)", 4),
+    ("Native or bilingual", 5), ("Fluent", 4), ("Professional", 3), ("Conversational", 2), ("Basic", 1),
+    ("Full professional proficiency", 4), ("Professional working proficiency", 3), ("Limited working proficiency", 2),
+    ("Elementary proficiency", 1), ("Upper-intermediate", 3), ("Intermediate", 2), ("Beginner", 1),
+    ("B1/B2", 0),                                       # two rungs is no rung
+    ("Yes", 0), ("No", 0), ("", 0), ("Select...", 0),
+])
+def test_a_language_level_has_one_place_on_the_ladder(text, rung):
+    assert run_js([["languageLevelRank", text]])[0] == rung
+
+
+@pytest.mark.parametrize("options,answer,want", [
+    # A real Personio form: the profile says "Native or bilingual".
+    (["C2 (It is my mother tongue)", "C1", "B2", "B1", "A2/A1"], "Native or bilingual", 0),
+    (["I have acquired first levels in easy communications (A1, A2)", "I am somewhat able to easy communications (B1)",
+      "In my day to day communications I can manage an OK conversation (B2)",
+      "I mastered the language after some intense years (C1)", "It`s my own mothertongue (C2)"], "Conversational", 1),
+    (["Beginner", "Intermediate", "Advanced", "Native"], "Professional", 2),
+    (["Beginner", "Intermediate", "Advanced", "Native"], "Fluent", -1),        # no option on that rung: left
+    (["Fluent", "Proficient", "Basic"], "Fluent", -1),                          # two options on the rung: left
+    (["Yes", "No"], "Fluent", -1),                                              # not a ladder
+    (["C2", "C1", "B2"], "Bachelor's degree", -1),                              # not a saved language level
+    (["C2", "C1", "B2"], "Yes", -1),
+])
+def test_a_saved_language_level_finds_its_rung_on_another_ladder(options, answer, want):
+    assert run_js([["languageLevelIndex", options, answer]])[0] == want
+
+
+def test_the_extensions_level_names_are_the_catalogs():
+    from app.autofill import autofill_fields as af
+    names = re.search(r"const _SAVED_LANGUAGE_LEVELS = \[([^\]]+)\]", CONTENT).group(1)
+    assert [n.strip().strip("'") for n in names.split(",")] == [l.lower() for l in af.LANGUAGE_LEVELS]
+    assert list(af._LANGUAGE_RUNG) == [l.lower() for l in af.LANGUAGE_LEVELS]
+    for level, rung in af._LANGUAGE_RUNG.items():
+        assert run_js([["languageLevelRank", level]])[0] == rung
+    sel = _function(CONTENT, "selectOption")
+    assert sel.index("looseOptionKey(lower)") < sel.index("languageLevelIndex(") \
+        and "!exact && !starts && !contains && !loose" in sel, "only when nothing says the saved answer itself"
+
+
+@pytest.mark.parametrize("label,tag,want", [
+    # A real Rippling form: the note beside the question made it an "essay".
+    ("what are your compensation expectations? this is a fully remote, full-time role.", "INPUT", True),
+    ("What are your salary expectations?", "INPUT", True),
+    ("what are your compensation expectations? this is a fully remote, full-time role.", "TEXTAREA", False),
+    ("Please describe your compensation history and what you are looking for in your next role and why", "INPUT", False),
+    ("What was your last salary? We ask this of every candidate in this region.", "INPUT", False),
+])
+def test_a_short_pay_question_takes_a_number_whatever_the_note_beside_it(label, tag, want):
+    assert run_js([["shortPayQuestion", label, {"tagName": tag}]])[0] is want
+    uni = _function(CONTENT, "fillUniversal")
+    assert "(!essayPrompt || shortPayQuestion(labelOnly, inp)) && !yesNoQ" in uni
+
+
+@pytest.mark.parametrize("label,want", [
+    # A real Lever form: the State rule stepped aside because the note says "United States".
+    ("please list the state that you plan to be physically located in while employed with our company? "
+     "for employment eligibility in the united states", True),
+    ("State", True), ("State of residence", True), ("Which state do you currently live in?", True),
+    ("In which state are you based?", True),
+    ("State where your nursing license was issued", False),
+    ("State of the university you attended", False),
+    ("State in which you were born", False),
+    ("Describe the current state of your project", False),
+])
+def test_a_list_of_us_states_takes_the_applicants_own_state(label, want):
+    assert run_js([["asksHomeState", label]])[0] is want
+    uni = _function(CONTENT, "fillUniversal")
+    assert uni.index("isUsStateSelect(inp) && asksHomeState(labelOnly)") < uni.index("// ── City (parsed from location"), \
+        "before any rule that reads the long sentence for something else"
+    states = _function(CONTENT, "isUsStateSelect")
+    assert "el.options.length < 45" in states and "'california', 'texas', 'new york'" in states
+
+
+def test_where_are_you_located_is_the_home_location():
+    hits = run_js([["(t) => _WHERE_LOCATED_RE.test(t)", t] for t in (
+        "where are you currently located? * a response is required", "Where are you located?",
+        "Where are you living right now?",
+        "Where is the role located?", "Are you located in the US?", "Where did you hear about us?")])
+    assert hits == [True, True, True, False, False, False]
+    uni = _function(CONTENT, "fillUniversal")
+    assert "_WHERE_LOCATED_RE.test(signals)" in uni and "!yesNoQ" in uni
+
+
+def test_boxes_that_are_one_question_are_counted_and_listed_once():
+    """A real Greenhouse form: "Do you have a security license?" with four
+    boxes, each marked required, read as four open questions and was listed
+    as four agreements. Boxes sharing a name under one question are ONE
+    pick-many question; statements to accept stay one each."""
+    group = _function(CONTENT, "checkboxGroupOf")
+    assert "el.closest('fieldset, [role=\"group\"]')" in group and "group.length < 2" in group
+    assert "_AGREEMENT_RE.test(t)" in group, "\"I agree…\" boxes are each required on their own"
+    assert "captions.includes(question)" in group, "a box's own caption is not the group's question"
+    audit = _function(CONTENT, "auditPageFields")
+    assert audit.index("checkboxGroupOf(el)") < audit.index("Other checkboxes are NOT a group")
+    assert "seenCheckGroups.has(many.box)" in audit and "many.group.some((c) => c.checked)" in audit
+    desc = _function(CONTENT, "describeOpenQuestions")
+    assert "kind: 'multi'" in desc and "options: many.captions.slice(0, 30)" in desc
+    assert "`${above} [${own}]`" in desc, "a lone box is listed with the statement printed above it"
+    assert "own.length >= 25" in desc and "above.includes(own)" not in desc, \
+        "a statement that QUOTES the caption (\"By clicking 'Submit Application' I agree…\") is still the statement"
+    from app.autofill import open_questions as oq
+    assert "multi" in oq.KINDS and oq.classify("Do you have a security license? Please fill out which type below:",
+                                               "multi") == (False, "pick_many")
+    assert _function(CONTENT, "radioGroupQuestion").count('input[type="${kind}"]') == 1
+
+
+def test_self_identification_radios_take_the_saved_answer_only():
+    fn = _function(CONTENT, "answerEEORadioGroups")
+    assert "fillEEOField(r, value, kind)" in fn, "the one consent rule every self-identification field goes through"
+    assert "if (!value) continue;" in fn, "nothing saved is nothing answered (never a default decline)"
+    assert "g.checked || g.dataset.spotapplyUserModified === 'true'" in fn
+    assert "accommodat" in fn and "essential functions" in fn, "a need is not an identity"
+    assert "\\bsex\\b(?! offen)" in fn
+    page = _function(CONTENT, "fillCurrentPage")
+    assert page.index("answerScreeningRadios(pack)") < page.index("answerEEORadioGroups(pack)") \
+        < page.index("await answerSavedChoices(pack)")
+
+
+def test_a_field_with_no_label_is_read_from_the_box_around_it():
+    """Lever's custom text questions all read "type your response" and
+    Rippling's had a generated name, so no rule, saved answer or model could
+    tell what was asked. The question is the text in the box around the field:
+    a box that holds this field and no other, without the field's own text."""
+    box = _function(CONTENT, "fieldBoxQuestion")
+    assert "c !== el && c.type !== 'hidden'" in box, "stops at a box that holds another field"
+    assert "querySelectorAll('button, a[href], [role=\"button\"]').length > 1" in box, "…or a section with its own buttons"
+    assert "_NOT_A_LABEL_RE.test(out)" in box and "out.length > 300" in box, "a message or a paragraph is not a label"
+    label = _function(CONTENT, "labelText")
+    assert "_FILLER_PLACEHOLDER_RE.test(ph.trim())" in label, "a real placeholder (\"First name\") stays the label"
+    assert label.index("el.labels") < label.index("fieldBoxQuestion(el)"), "a real label always wins"

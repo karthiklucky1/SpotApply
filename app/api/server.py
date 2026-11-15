@@ -387,6 +387,10 @@ _PASSIVE_WRITE_PATHS = frozenset({
     # its next item, on a timer, long after the person approved the list and
     # walked away. The approval itself (POST /api/apply-queue) is the action.
     "/api/apply-queue/next",
+    # extension/content.js reportOpenQuestions(), after every fill: which
+    # required questions the form still needs the person for. Bookkeeping about
+    # a form; answering one (/api/open-questions/answer) is the action.
+    "/api/open-questions",
     # extension/background.js queueTellServer(): the same worker saying it has
     # paused or stopped, so the person gets one notification.
     "/api/apply-queue/summary",
@@ -6110,6 +6114,10 @@ def get_fill_pack(application_id: int, request: Request, submit: bool = False) -
         "job_title": job.title if job else "",
         "company": job.company if job else "",
         "apply_url": application.apply_url or (job.url if job else ""),
+        # The country the JOB is in, or "" when nothing says. "Are you
+        # authorized to work in the country this job is in?" is answered only
+        # when it is the country the profile's status covers (_job_country).
+        "job_country": _job_country(job, p),
         # The job board this link opens on, or None for the employer's page /
         # an ATS. Read by the dashboard's toast only; extensions ignore it.
         "opens_on": _aggregator_host(application.apply_url or (job.url if job else "")),
@@ -6211,6 +6219,9 @@ def get_fill_pack(application_id: int, request: Request, submit: bool = False) -
             "max_questions": int(settings.ai_form_answers_max_questions),
             "auto_submit": bool(settings.ai_form_answers_auto_submit),
         },
+        # Whether the extension reports the required questions a form still
+        # needs the person for (-> "Questions to answer once").
+        "open_questions": {"enabled": bool(settings.open_questions_enabled)},
     }
 
     # Add AI-generated essay answers
@@ -6277,6 +6288,27 @@ def _skill_evidence_for_pack(uid: str | None, key_skills: str) -> dict:
             log.debug("skill months unavailable: %s", e)
             return {"dated": {}, "role": {}}
     return ttl_cache.get_or_compute(f"skill-months:{uid}:{hash(tuple(skills))}", 600, _build)
+
+
+def _job_country(job, profile) -> str:
+    """Title-cased country a job is in, or '' when unknown.
+
+    What the posting's own location says; failing that, the user's search
+    country when the location gate VERIFIED the posting as open to them
+    (``Job.eligibility == "eligible"``). Never a guess: '' leaves "are you
+    authorized to work where this job is?" for the applicant."""
+    if not job:
+        return ""
+    country = ""
+    try:
+        from app.common.geo import detect_country
+        country = detect_country(getattr(job, "location", "") or "")
+        if not country and (getattr(job, "eligibility", "") or "") == "eligible":
+            from app.common.tenant_prefs import effective_country
+            country = (effective_country(profile) or "").lower()
+    except Exception:
+        country = ""
+    return " ".join(w.capitalize() for w in country.split()) if country else ""
 
 
 def _residence_country(profile) -> str:
@@ -8244,6 +8276,7 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
     # Map normalized label -> original label so we can return by the caller's key
     norm_to_orig = {l.lower().strip(): l for l in labels}
     answers: dict[str, str] = {}
+    fallback: dict[str, str] = {}
     with get_session() as session:
         q = select(AnswerMemory).where(
             AnswerMemory.label_normalized.in_(list(norm_to_orig.keys()))
@@ -8280,8 +8313,20 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
                 from_profile[l] = a
         from_profile = _af.drop_borrowable(
             from_profile, labels, other_answered=[l for l in answers if l not in from_profile])
+        # The answer the person gave to this EXACT question stays on offer when
+        # the profile's general answer differs. A form's list may not have the
+        # profile's wording at all ("None" on a list that says "Non-clearable":
+        # a real Greenhouse form, 2026-11-15), and then their own answer to
+        # that very question is the one that fits. The profile still goes first.
+        for l, a in from_profile.items():
+            mine = answers.get(l)
+            if mine and mine.strip().casefold() != str(a).strip().casefold():
+                fallback[l] = mine
         answers.update(from_profile)
-    return {"answers": answers}
+    out: dict = {"answers": answers}
+    if fallback:
+        out["fallback"] = fallback
+    return out
 
 
 class AskQuestionBody(BaseModel):
@@ -8345,6 +8390,59 @@ def answer_form_questions_endpoint(request: Request, body: AnswerFormQuestionsBo
     return _fa.answer_questions(
         [q.model_dump() for q in (body.questions or [])[:60]],
         application_id=body.app_id, user_id=uid if uid != "local" else None)
+
+
+class OpenQuestionsReportBody(BaseModel):
+    app_id: int
+    host: _Opt[str] = None
+    questions: list = []
+
+
+class OpenQuestionAnswerBody(BaseModel):
+    key: str
+    answer: _Opt[str] = None
+
+
+@app.post("/api/open-questions")
+def report_open_questions(request: Request, body: OpenQuestionsReportBody) -> dict:
+    """The extension reports which REQUIRED questions a form still needs the
+    person for (wording, kind and choices; never a value). They become lines of
+    "Questions to answer once" (app/autofill/open_questions.py)."""
+    uid = _require_user(request)
+    _require_owned_application(request, body.app_id)
+    if not settings.open_questions_enabled:
+        return {"ok": True, "kept": 0}
+    from app.autofill import open_questions as _oq
+    return {"ok": True, "kept": _oq.record(body.app_id, (body.questions or [])[:60])}
+
+
+@app.get("/api/open-questions")
+def list_open_questions(request: Request) -> dict:
+    """What forms required that nothing could answer: one line per question,
+    with how many forms asked it and whether an answer may be saved."""
+    uid = _require_user(request)
+    from app.autofill import open_questions as _oq
+    return _oq.listing(uid if uid != "local" else None)
+
+
+@app.post("/api/open-questions/answer")
+def answer_open_question(request: Request, body: OpenQuestionAnswerBody) -> dict:
+    """Save the person's answer to one listed question as their own; it then
+    fills on every later form that asks the same thing."""
+    uid = _require_user(request)
+    from app.autofill import open_questions as _oq
+    out = _oq.answer(uid if uid != "local" else None, body.key, body.answer or "")
+    if not out.get("ok"):
+        raise HTTPException(status_code=404 if out.get("reason") == "not_found" else 422,
+                            detail=out.get("reason") or "not saved")
+    return out
+
+
+@app.post("/api/open-questions/dismiss")
+def dismiss_open_question(request: Request, body: OpenQuestionAnswerBody) -> dict:
+    uid = _require_user(request)
+    from app.autofill import open_questions as _oq
+    return _oq.dismiss(uid if uid != "local" else None, body.key)
 
 
 @app.get("/api/extension/download")

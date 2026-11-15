@@ -489,11 +489,18 @@ class Settings(BaseSettings):
     ai_form_answers_enabled: bool = True                  # AI_FORM_ANSWERS_ENABLED (kill switch)
     ai_form_answers_max_questions: int = 30               # AI_FORM_ANSWERS_MAX_QUESTIONS per call
     ai_form_answers_daily_cap: int = 60                   # AI_FORM_ANSWERS_DAILY_CAP model calls per user per day
+    # The whole platform's calls per day, reserved per call (0 = no platform
+    # ceiling): the lanes' finals counters never see these calls.
+    ai_form_answers_platform_daily_cap: int = 3000        # AI_FORM_ANSWERS_PLATFORM_DAILY_CAP
     ai_form_answers_timeout_seconds: float = 25.0         # AI_FORM_ANSWERS_TIMEOUT_SECONDS
     # An AI answer is shown to the person ONCE before it is trusted: until they
     # confirm it (or submit the form themselves) a form holding one is never
     # submitted for them. 1 = submit without that look (not recommended).
     ai_form_answers_auto_submit: bool = False             # AI_FORM_ANSWERS_AUTO_SUBMIT
+    # "Questions to answer once" (app/autofill/open_questions.py): the extension
+    # reports each required question a form still needs the person for, and the
+    # dashboard lists them to be answered once and reused.
+    open_questions_enabled: bool = True                   # OPEN_QUESTIONS_ENABLED
     # "This job is no longer available" (POST /application/{id}/unavailable).
     # The reporter's own copy closes at once; the posting is RE-CHECKED for
     # everyone else, forced past a LIVE verdict younger than

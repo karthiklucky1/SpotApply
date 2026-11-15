@@ -244,8 +244,24 @@ def main():
             check("SA6 a saved answer that matches no radio leaves the question open",
                   page.evaluate(RADIO, "cards[a1][field3]") == "", repr(page.evaluate(RADIO, "cards[a1][field3]")))
             page.close()
+
+            # The profile says "Public Trust"; this form's list has no such
+            # option, and the person answered THIS question once: "Secret".
+            fh.RECALL.clear()
+            fh.RECALL.update({"current clearance level": "Public Trust"})
+            fh.RECALL_FALLBACK.update({"current clearance level": "Secret"})
+            page, logs, reply = fh.drive_fill_reply(ctx, held_url, fh.base_pack(held_url), timeout_ms=60000)
+            check("SA7 when the profile's wording is not on the list, the person's answer to that exact question is picked",
+                  page.evaluate(PICKED, "slot-clearance") == "Secret", repr(page.evaluate(PICKED, "slot-clearance")))
+            page.close()
+            fh.RECALL.update({"current clearance level": "Top Secret"})
+            page, logs, reply = fh.drive_fill_reply(ctx, held_url, fh.base_pack(held_url), timeout_ms=60000)
+            check("SA7b ...and the profile's answer still goes first when the list has it",
+                  page.evaluate(PICKED, "slot-clearance") == "Top Secret", repr(page.evaluate(PICKED, "slot-clearance")))
+            page.close()
         finally:
             fh.RECALL.clear()
+            fh.RECALL_FALLBACK.clear()
 
         # ── AI: the questions nothing else answers ──────────────────────────
         # Founder, 2026-11-14: what is still open after the rules and the saved
@@ -397,6 +413,126 @@ def main():
             fh.AI_ANSWERS.clear()
             del fh.AI_REQUESTS[:]
             del fh.SAVED[:]
+
+        # ── OQ: what a form still needs the person for ──────────────────────
+        # Founder, 2026-11-15: "what data do we need to take from the user?"
+        # Every REQUIRED question still open after a fill is reported once,
+        # as the form words it and with its choices, so the person can answer
+        # it ONCE on their profile. Never a value, never a file upload.
+        print("\nQuestions to answer once (what a form still needs the person for)")
+        try:
+            del fh.OPEN_REPORTS[:]
+            oq_url = f"{BASE}/greenhouse-react.html?clearance=1"
+            oq_pack = dict(fh.base_pack(oq_url), open_questions={"enabled": True})
+            page, logs, reply = fh.drive_fill_reply(ctx, oq_url, oq_pack, timeout_ms=90000)
+            page.wait_for_timeout(1500)
+            reports = [r for r in fh.OPEN_REPORTS if r.get("app_id") == oq_pack["app_id"]]
+            asked = (reports[-1].get("questions") if reports else []) or []
+            clearance = next((q for q in asked if "clearance" in str(q.get("question", "")).lower()), None)
+            check("OQ1 the required question nothing answered is reported, once",
+                  len(reports) == 1 and clearance is not None and len(asked) == 1, json.dumps(asked)[:300])
+            check("OQ2 ...as the form words it, with the choices the form offers",
+                  bool(clearance) and clearance.get("question", "").startswith("Current clearance level")
+                  and clearance.get("kind") == "dropdown"
+                  and clearance.get("options") == ["None", "Secret", "Top Secret", "TS/SCI"], json.dumps(clearance))
+            check("OQ3 ...under the key the saved answer is later recalled by",
+                  bool(clearance) and clearance.get("key") == "current clearance level", json.dumps(clearance))
+            blob = json.dumps(reports)
+            check("OQ4 the report carries no value of the person's",
+                  not any(v in blob for v in ("Alexandra", "Nguyen", "example.com", "415 555", "San Francisco")),
+                  blob[:200])
+            check("OQ5 reading the choices typed nothing and picked nothing",
+                  page.evaluate(PICKED, "slot-clearance") == "" and
+                  not page.evaluate("() => window.__typed").get("question_clearance"))
+            page.close()
+
+            # Radios and a checkbox on a Lever form; a complete form reports nothing.
+            del fh.OPEN_REPORTS[:]
+            lv_url = f"{BASE}/lever-radios.html?local=1"
+            page, logs, reply = fh.drive_fill_reply(ctx, lv_url, dict(fh.base_pack(lv_url), open_questions={"enabled": True}),
+                                                    timeout_ms=90000)
+            page.wait_for_timeout(1500)
+            asked = (fh.OPEN_REPORTS[-1].get("questions") if fh.OPEN_REPORTS else []) or []
+            local = next((q for q in asked if "Austin" in str(q.get("question", ""))), None)
+            check("OQ6 a radio question keeps its wording and both choices",
+                  bool(local) and local.get("kind") == "radio" and local.get("options") == ["Yes.", "No."]
+                  and local.get("key") == "Are you local to Austin, TX?", json.dumps(asked)[:300])
+            check("OQ6b ...and the questions the profile answered are not reported",
+                  not any(re.search(r"authoriz|sponsor", str(q.get("question", "")).lower()) for q in asked),
+                  json.dumps(asked)[:300])
+            page.close()
+
+            del fh.OPEN_REPORTS[:]
+            page, logs, reply = fh.drive_fill_reply(ctx, lv_url, fh.base_pack(lv_url), timeout_ms=90000)
+            page.wait_for_timeout(1000)
+            check("OQ7 without the server's say-so nothing is reported", not fh.OPEN_REPORTS, str(fh.OPEN_REPORTS)[:200])
+            page.close()
+        finally:
+            del fh.OPEN_REPORTS[:]
+
+        # ── RG: required questions the profile already answers ──────────────
+        # Measured on 16 real forms (2026-11-15): each of these was left open
+        # although the profile held the answer, or was miscounted.
+        print("\nRequired questions a profile can answer (shapes from real forms)")
+        try:
+            fh.RECALL.clear()
+            fh.RECALL.update({"highest attained degree": "Bachelor's degree",
+                              "proficiency in english": "Native or bilingual"})
+            del fh.OPEN_REPORTS[:]
+            rg_url = f"{BASE}/required-gaps.html"
+            rg_pack = dict(fh.base_pack(rg_url), eeo_confirmed=True, open_questions={"enabled": True})
+            page, logs, reply = fh.drive_fill_reply(ctx, rg_url, rg_pack, timeout_ms=90000)
+            page.wait_for_timeout(1500)
+            val = lambda name: page.evaluate(
+                "(n) => { const e = document.querySelector('[name=\"' + n + '\"]'); return e ? e.value : null; }", name)
+            sel_text = lambda name: page.evaluate(
+                "(n) => { const e = document.querySelector('select[name=\"' + n + '\"]');"
+                " return e && e.selectedIndex > 0 ? e.options[e.selectedIndex].text : ''; }", name)
+            check("RG1 \"Where are you currently located?\" gets the home location",
+                  val("cards[b1][field0]") == "San Francisco, CA", repr(val("cards[b1][field0]")))
+            check("RG2 a pay question with a note beside it gets the number, not an essay",
+                  val("cards[b1][field1]") == "150000", repr(val("cards[b1][field1]")))
+            check("RG3 a list of US states gets the applicant's state though the note says \"United States\"",
+                  sel_text("cards[b1][field2]") == "California", repr(sel_text("cards[b1][field2]")))
+            check("RG4 the saved \"Bachelor's degree\" is the option \"Bachelors\"",
+                  sel_text("cards[b1][field3]") == "Bachelors", repr(sel_text("cards[b1][field3]")))
+            check("RG5 the saved language level finds its rung on the form's own ladder",
+                  sel_text("english_level") == "C2 (It is my mother tongue)", repr(sel_text("english_level")))
+            check("RG6 Gender asked as radios takes the saved answer (a decline here)",
+                  page.evaluate(RADIO, "gender-q") == "Prefer not to answer", repr(page.evaluate(RADIO, "gender-q")))
+            gate = (diagnostic(ctx, "required-gaps.html").get("submitReadiness") or {}).get("gate") or {}
+            asked = gate.get("openQuestions") or []
+            many = next((q for q in asked if q.get("kind") == "multi"), None)
+            lone = next((q for q in asked if q.get("kind") == "checkbox"), None)
+            check("RG7 four boxes under one question are ONE open question, listed with its choices",
+                  gate.get("requiredOpen") == 2 and bool(many)
+                  and many.get("question", "").startswith("Do you have a security license?")
+                  and many.get("options") == ["Virginia (DCJS)", "DC (DLCP)", "Maryland (Guard Card)", "N/A (no I don't)"],
+                  json.dumps({"open": gate.get("requiredOpen"), "asked": asked})[:400])
+            check("RG8 a lone box is listed with the statement printed above it, never ticked for the person",
+                  bool(lone) and lone.get("question", "").startswith('By clicking "Submit Application" I certify')
+                  and lone.get("question", "").endswith("[Submit Application]")
+                  and not page.evaluate("() => document.querySelector('[name=\"cards[b1][field9]\"]').checked")
+                  and not page.evaluate("() => !!document.querySelector('#q-license input:checked')"),
+                  json.dumps(lone))
+            page.check("#lic-2")
+            page.wait_for_timeout(400)
+            gate = (diagnostic(ctx, "required-gaps.html").get("submitReadiness") or {}).get("gate") or {}
+            check("RG9 ticking one box answers the pick-many question",
+                  gate.get("requiredOpen") == 1 and gate.get("verdict") == "fields_need_you",
+                  json.dumps({"open": gate.get("requiredOpen"), "verdict": gate.get("verdict")}))
+            page.close()
+
+            # Nothing saved for self-identification: the radios stay the person's.
+            bare = dict(fh.base_pack(rg_url), gender="", eeo_confirmed=False)
+            page, logs, reply = fh.drive_fill_reply(ctx, rg_url, bare, timeout_ms=90000)
+            page.wait_for_timeout(800)
+            check("RG10 with no saved answer the Gender radios are left alone",
+                  page.evaluate(RADIO, "gender-q") == "", repr(page.evaluate(RADIO, "gender-q")))
+            page.close()
+        finally:
+            fh.RECALL.clear()
+            del fh.OPEN_REPORTS[:]
 
         # ── LV: Lever radio cards ───────────────────────────────────────────
         print("\nLever radio cards (the question sits two levels above the radios)")
