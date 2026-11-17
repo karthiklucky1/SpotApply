@@ -1170,6 +1170,12 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 "listing_complete": getattr(scraper, "listing_complete", None) is True,
                 "listed_ids": getattr(scraper, "listed_ids", None),
                 "listed_urls": getattr(scraper, "listed_urls", None),
+                # The adapter fetched a detail the pool does not hold yet
+                # (detail_memo): this result must be INGESTED even when the
+                # listing reads unchanged — the listing signature is ids and
+                # titles, and a description arriving for a posting already
+                # listed changes neither.
+                "ingest_required": bool(getattr(scraper, "ingest_required", False)),
                 # When the fetch STARTED: a shared row first seen after this
                 # (another lane inserted it while the result waited to be
                 # consumed) is one this listing could not have named.
@@ -1315,8 +1321,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             # stamping a live Workday board job_count=0 on a bad afternoon
             # would demote it to the 72h zero-yield tier.
             board_count = len(entries) if entries else len(raw)
-            if (raw or entries) and (sig == (board.poll_hash or "")
-                                     or same_volatile):
+            if (raw or entries) and not meta.get("ingest_required") and (
+                    sig == (board.poll_hash or "") or same_volatile):
                 # Unchanged board — zero downstream work. This is the common
                 # case that makes the hourly floor affordable. The one
                 # exception (in memory): a board whose listing collapsed is

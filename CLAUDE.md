@@ -264,12 +264,34 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (HTTP 200 + GraphQL "too many requests" is a throttle, not a changed answer):
   requests are spaced `JOIN_MIN_REQUEST_INTERVAL_SECONDS` (1.0) process-wide, and
   past `JOIN_MAX_PACE_WAIT_SECONDS` (5) a request is NOT sent and reads as a
-  throttle, so join boards never hold the fetch pool. Still open: Rippling refused
-  production 15 h after the fix; Rippling, JOIN and Breezy listings carry NO
-  description (rows scored blind); The Muse 403s every run; the Greenhouse/Lever
-  keyword searches time out at 45 s (redundant with the board lanes); the registry
-  `last_error` is not cleared by a later success, so read `failure_count`.
-  Guards: `test_board_outages`, `test_join_contract`.
+  throttle, so join boards never hold the fetch pool. **A description is fetched
+  ONCE** (2026-11-17, `discovery/detail_memo.py`): Rippling, JOIN and Breezy list
+  postings with NO description (431 of 431 fresh rows a day were stored blank and
+  scored on a title), and a detail request per posting per poll is the load that
+  gets an address refused. The adapter asks `Poll.decide`: a posting the pool holds
+  comes back `RawJob.listing_only` — `_upsert` refreshes `last_seen` and writes
+  NOTHING else (`_touch_listing_only`; an empty description never blanks a real
+  one); a new posting gets its detail from a per-source budget
+  (`DETAIL_FETCH_PER_MINUTE`, `DETAIL_MAX_PER_POLL`), and without budget it is NOT
+  emitted (no blind row) and returns next poll. The memory is written by the SHARED
+  upsert (`_remember_details`), never the adapter, so a result the lane dropped is
+  fetched again; a listing-only row with nothing behind it is forgotten ONCE. A
+  result carrying a new detail sets `ingest_required`, which the pulse lane ingests
+  even when the listing signature is unchanged. Off in the suite (conftest).
+  **More boards** (`registry.seed_registry_from_open_datasets`,
+  `server._refresh_open_dataset`): the open list had ~33,000 companies on systems we
+  already read that the registry never loaded (the seed only ran while it was
+  small). Daily maintenance now adds ≤`OPEN_DATASET_MAX_NEW_PER_RUN` (4,000 per 24 h,
+  counted in the registry), round-robin across systems, each with `next_poll_at`
+  spread over `OPEN_DATASET_SPREAD_HOURS` — a never-scheduled board is polled FIRST,
+  so a batch with no schedule takes every slot from the boards that are posting.
+  Still open: Rippling still refuses production; Workday answers 429 to most boards
+  (floor 60 min since 11-17; its N+1 detail fetch per poll is the real cost, as is
+  SmartRecruiters' and BambooHR's — they are not on the fetch-once path yet); The
+  Muse 403s every run; the Greenhouse/Lever keyword searches time out at 45 s
+  (redundant with the board lanes); the registry `last_error` is not cleared by a
+  later success, so read `failure_count`. Guards: `test_board_outages`,
+  `test_join_contract`, `test_detail_once`, `test_open_list_refresh`.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score
   IS NULL` queue across ALL users with a fixed pool of `scoring_workers` (GPT

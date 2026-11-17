@@ -808,7 +808,11 @@ class Settings(BaseSettings):
     # (watchlist) boards obey the floor too — the site does not know why we are
     # asking. Empty string = no floors. Raising a number is always safe; a
     # lower one is only as safe as that site's tolerance.
-    pulse_ats_min_interval_minutes: str = "rippling=30,join=120,bamboohr=60"
+    # Workday joined the list on 2026-11-17: within a day of its refusals being
+    # recorded at all, 2,022 of 2,099 boards had been answered 429. One Workday
+    # poll is a paged listing PLUS a detail request per posting (up to 100), and
+    # the fast tier repeated it every five minutes.
+    pulse_ats_min_interval_minutes: str = "rippling=30,join=120,bamboohr=60,workday=60"
     # ── Site health (app/discovery/site_health.py) ───────────────────────────
     # When nearly every board of ONE job system fails inside the window, the
     # failure is the system's — blocked, down, or changed — and it is not
@@ -959,6 +963,23 @@ class Settings(BaseSettings):
     doctor_min_human_score: int = 55     # DOCTOR_MIN_HUMAN_SCORE — the anti-fingerprint floor. The audit measured tailored résumés scoring 24-44/100 on our OWN "reads human" check that shipped reported as PASS, because the fingerprint penalty was folded into the same number as ATS coverage and cleared 65 anyway. Now a separate gate: below this the draft is rebuilt with the tells named, and if the rebuild still fails, the résumé is delivered but NOT reported as passing (style is not a fabrication, so it never blocks at ERROR). 55 ≈ at most one minor tell.
     tailor_skip_coverage_pct: float = 0.0   # TAILOR_SKIP_COVERAGE_PCT — 0 (default since 2026-10-08): every tailor is a full rewrite + restructure for the job, the owner's first rule. Set it (e.g. 0.80) to skip the rewrite (L0) and ship the master when it already matches at least this share of the JD's extracted phrases. A full regeneration that cannot add anything honest is pure cost plus a fresh chance to fabricate: the audit measured one pairing at 72% master coverage where tailoring produced +0 phrases for $0.066 and a grounding failure. 0 disables the skip.
     grounding_verify_batch_max: int = 12 # GROUNDING_VERIFY_BATCH_MAX — max changed spans packed into ONE verifier request. Verification used to be one call per bullet, each re-sending the entire master résumé (1,423 input tokens for a 5-token answer); that was 64% of a tailor's bill. Spans are batched with only their own matched source evidence attached.
+    # ── Detail fetched once (app/discovery/detail_memo.py) ────────────────────
+    # Rippling, join.com and Breezy list postings WITHOUT a description; it is
+    # one more request per posting. Every row from them used to be stored with
+    # an empty description and scored on its title. The detail is now fetched
+    # ONCE per posting (a re-sighting only refreshes last_seen), paid from a
+    # per-source budget so a first backfill cannot become a burst.
+    detail_once_enabled: bool = True                  # DETAIL_ONCE_ENABLED — 0 = these adapters go back to listing-only rows (no description)
+    detail_fetch_per_minute: str = "rippling=20,join=20,breezy=30"  # DETAIL_FETCH_PER_MINUTE — detail requests a minute per source, process-wide. A source not named here never fetches details. join.com's also wait their turn in its one-a-second pace.
+    detail_max_per_poll: int = 25                     # DETAIL_MAX_PER_POLL — most details one board may fetch in one poll; the rest come on its next polls
+    # ── Open board list refresh (app/discovery/registry.py) ───────────────────
+    # The open list grows; the registry only loaded it once, so by 2026-11-15
+    # about 33,000 companies on systems we already read were not in it. Each
+    # maintenance run now adds at most this many, each given a first poll time
+    # spread over the hours below — a new board is never due "now", or a batch
+    # of them would take every slot in the polling lane for hours.
+    open_dataset_max_new_per_run: int = 4000          # OPEN_DATASET_MAX_NEW_PER_RUN — 0 = never add boards on a schedule (the admin route still can)
+    open_dataset_spread_hours: int = 24               # OPEN_DATASET_SPREAD_HOURS — window the first polls of newly added boards are spread over
     join_min_request_interval_seconds: float = 1.0  # JOIN_MIN_REQUEST_INTERVAL_SECONDS — least time between two requests this process sends join.com. join.com limits by address and throttles a BURST ("You are doing too many requests to publicJobs"): the pulse lane's thread pool sent a tick's join boards together, and about half of all join polls were throttled at an AVERAGE of three requests a minute. 0 = no pacing.
     join_max_pace_wait_seconds: float = 5.0         # JOIN_MAX_PACE_WAIT_SECONDS — longest a fetch thread waits for its join.com slot. Past it the request is not sent and the board is backed off like a throttle, so join boards can never hold the tick's fetch pool.
     join_page_size: int = 0              # JOIN_PAGE_SIZE — NO LONGER READ (2026-11-14). It sized pages for join.com's REST jobs API (5 a page), which join.com removed; the adapter now lists through the site's GraphQL query at 100 a page (app/discovery/join.py). The field stays only so an environment that still sets JOIN_PAGE_SIZE keeps booting.

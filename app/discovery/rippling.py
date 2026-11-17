@@ -20,12 +20,18 @@ from app.discovery.base import (
     body_hint,
     listing_truncated,
 )
+from app.discovery import detail_memo
 from app.discovery.hiring_context import put
+from app.discovery.title_filter import is_obvious_non_tech
 
 log = logging.getLogger(__name__)
 
 _API = "https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs"
 _HEADERS = {"Accept": "application/json"}
+# The listing carries id, title, department and location — no description and
+# no date. Both are on the posting's own record, fetched ONCE per posting
+# (app/discovery/detail_memo.py).
+_DETAIL = "https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs/{id}"
 
 
 def _strip_html(html: str) -> str:
@@ -39,6 +45,25 @@ def _context(item: dict) -> dict:
     label = dep.get("label") if isinstance(dep, dict) else dep
     put(ctx, "department", label, EVIDENCE_TEAM_OR_DEPARTMENT, "department.label")
     return ctx
+
+
+def _detail_text(detail: dict) -> str:
+    """The posting's description: `description` is {company, role} HTML."""
+    d = detail.get("description")
+    if isinstance(d, dict):
+        parts = [_strip_html(d.get(k) or "") for k in ("role", "company")]
+        return "\n\n".join(p for p in parts if p)
+    return _strip_html(d) if isinstance(d, str) else ""
+
+
+def _detail_date(detail: dict):
+    v = detail.get("createdOn") or detail.get("publishedAt")
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 class RipplingScraper:
@@ -97,10 +122,23 @@ class RipplingScraper:
             raise BoardUnreadableError(
                 "rippling", f"board API answer is not a job list: {body_hint(r.text)}")
         jobs: List[RawJob] = []
+        poll = detail_memo.Poll("rippling")
+        # Every posting the listing named, whatever we do with it below: what
+        # board absence is judged against (app/discovery/base.py).
+        self.listed_ids: set = set()
+        if poll.on:
+            # Listing-phase identity: a detail that fails, or a posting that
+            # waits for budget, must not read as the board having changed.
+            self.signature_entries = []
+            self.signature_stable = True
         for j in items or []:
             ext_id = str(j.get("id") or j.get("uuid") or "").strip()
             if not ext_id:
                 continue
+            self.listed_ids.add(ext_id)
+            title = (j.get("name") or j.get("title") or "").strip()
+            if poll.on and is_obvious_non_tech(title):
+                continue    # nobody is looking for it: no detail request, no row
             loc = j.get("workLocation") or {}
             location = (loc.get("label") or j.get("location") or "").strip() if isinstance(loc, dict) else str(loc)
             # `workplaceType` (REMOTE / HYBRID / ONSITE) and the plural
@@ -133,28 +171,77 @@ class RipplingScraper:
                     break
                 except (ValueError, OSError):
                     pass
+            description = _strip_html(j.get("description") or "")
+            if poll.on:
+                self.signature_entries.append((ext_id, title))
+            action, fp = poll.decide(ext_id, title, location)
+            if action == "skip":
+                continue    # no budget this poll; it comes back on the next
+            if action == "fetch":
+                detail = self._detail(ext_id)
+                if detail is None:
+                    poll.failed()
+                    continue
+                poll.fetched()
+                description = _detail_text(detail) or description
+                posted_dt = _detail_date(detail) or posted_dt
+                for extra in (detail.get("workLocations") or []):
+                    v = extra.get("label") if isinstance(extra, dict) else extra
+                    if isinstance(v, str) and v.strip() and v.strip() not in sites:
+                        sites.append(v.strip())
+                if sites and geo is not None:
+                    geo.sites = sites
             jobs.append(
                 RawJob(
                     source="rippling",
                     external_id=ext_id,
                     company=(j.get("companyName") or self.board_slug.replace("-", " ").title()).strip(),
-                    title=(j.get("name") or j.get("title") or "").strip(),
+                    title=title,
                     location=location,
                     remote=remote,
                     url=j.get("url") or j.get("applyUrl")
                         or f"https://app.rippling.com/jobs/{self.board_slug}/{ext_id}",
-                    description=_strip_html(j.get("description") or ""),
+                    description="" if action == "known" else description,
                     posted_at=posted_dt,
                     origin="rippling",
                     geo=geo,
                     context=_context(j),
+                    listing_only=action == "known",
+                    listing_fp=fp if action == "fetch" else None,
                 )
             )
         # A bare array is the whole board; an envelope is whole only when it
         # carried a list we read and says nothing about further pages.
-        self.fetch_complete = isinstance(payload, list) or (
+        self.listing_complete = isinstance(payload, list) or (
             isinstance(payload, dict) and isinstance(items, list)
             and ("items" in payload or "jobs" in payload)
             and not listing_truncated(payload, len(items)))
-        log.info("Rippling[%s]: %d jobs", self.board_slug, len(jobs))
+        # Whole only when every posting we wanted is in the list we return: one
+        # that is still waiting for its detail is listed, not parsed.
+        self.fetch_complete = self.listing_complete and poll.n_skipped == 0
+        self.ingest_required = poll.ingest_required
+        log.info("Rippling[%s]: %d jobs (%d details fetched, %d waiting)",
+                 self.board_slug, len(jobs), poll.n_fetched, poll.n_skipped)
         return jobs
+
+    def _detail(self, ext_id: str):
+        """One posting's own record, or None when it did not arrive.
+
+        A refusal here is the same refusal as on the listing — the same host —
+        and stops the poll: asking for the next posting's detail after being
+        told no is how a rate limit becomes a block.
+        """
+        try:
+            r = httpx.get(_DETAIL.format(slug=self.board_slug, id=ext_id), timeout=20.0,
+                          follow_redirects=True, headers=_HEADERS)
+        except httpx.HTTPError:
+            return None
+        if r.status_code in (403, 429):
+            raise BoardBlockedError("rippling", r.status_code, "job detail")
+        if r.status_code != 200:
+            return None
+        try:
+            data = r.json()
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None

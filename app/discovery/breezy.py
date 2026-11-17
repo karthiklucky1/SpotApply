@@ -13,7 +13,9 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
+from app.discovery import detail_memo
 from app.discovery.base import (
+    BoardBlockedError,
     BoardUnreadableError,
     GeoEvidence,
     RawJob,
@@ -21,6 +23,8 @@ from app.discovery.base import (
     listing_truncated,
     swallowed,
 )
+
+from app.discovery.title_filter import is_obvious_non_tech  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +39,17 @@ def _text(val) -> str:
     if isinstance(val, dict):
         val = val.get("name") or val.get("label") or ""
     return str(val or "").strip()
+
+
+def _description_from_page(html: str) -> str:
+    """The posting body on a Breezy position page: `<div class="description">`.
+
+    `/json` lists every position WITHOUT its description; the page is
+    server-rendered HTML, fetched ONCE per posting (app/discovery/detail_memo.py).
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    node = soup.select_one("div.description")
+    return node.get_text(separator="\n").strip() if node else ""
 
 
 class BreezyScraper:
@@ -75,10 +90,21 @@ class BreezyScraper:
                 "breezy", f"board did not send JSON: {body_hint(r.text)}") from e
         items = payload if isinstance(payload, list) else payload.get("positions", [])
         jobs: List[RawJob] = []
+        poll = detail_memo.Poll("breezy")
+        # Every position the listing named, whatever we do with it below: what
+        # board absence is judged against (app/discovery/base.py).
+        self.listed_ids: set = set()
+        if poll.on:
+            self.signature_entries = []
+            self.signature_stable = True
         for j in items or []:
             ext_id = str(j.get("_id") or j.get("id") or "").strip()
             if not ext_id:
                 continue
+            self.listed_ids.add(ext_id)
+            title = _text(j.get("name"))
+            if poll.on and is_obvious_non_tech(title):
+                continue    # nobody is looking for it: no page fetch, no row
             loc = j.get("location") or {}
             country = ""
             if isinstance(loc, dict):
@@ -107,23 +133,59 @@ class BreezyScraper:
                     posted_dt = datetime.fromisoformat(str(published).replace("Z", "+00:00"))
                 except ValueError:
                     pass
+            job_url = j.get("url") or f"https://{self.board_slug}.breezy.hr/p/{ext_id}"
+            description = _strip_html(j.get("description") or "")
+            if poll.on:
+                self.signature_entries.append((ext_id, title))
+            action, fp = poll.decide(ext_id, title, location)
+            if action == "skip":
+                continue    # no budget this poll; it comes back on the next
+            if action == "fetch":
+                text = self._detail(job_url, poll)
+                if not text:
+                    poll.failed()
+                    continue
+                poll.fetched()
+                description = text
             jobs.append(
                 RawJob(
                     source="breezy",
                     external_id=ext_id,
                     company=self.board_slug.replace("-", " ").title(),
-                    title=(j.get("name") or "").strip(),
+                    title=title,
                     location=location,
                     remote=remote,
-                    url=j.get("url") or f"https://{self.board_slug}.breezy.hr/p/{ext_id}",
-                    description=_strip_html(j.get("description") or ""),
+                    url=job_url,
+                    description="" if action == "known" else description,
                     posted_at=posted_dt,
                     origin="breezy",
                     geo=geo,
+                    listing_only=action == "known",
+                    listing_fp=fp if action == "fetch" else None,
                 )
             )
-        self.fetch_complete = isinstance(payload, list) or (
+        self.listing_complete = isinstance(payload, list) or (
             isinstance(payload, dict) and isinstance(items, list)
             and "positions" in payload and not listing_truncated(payload, len(items)))
-        log.info("Breezy[%s]: %d jobs", self.board_slug, len(jobs))
+        # Whole only when every position we wanted is in the list we return.
+        self.fetch_complete = self.listing_complete and poll.n_skipped == 0
+        self.ingest_required = poll.ingest_required
+        log.info("Breezy[%s]: %d jobs (%d descriptions fetched, %d waiting)",
+                 self.board_slug, len(jobs), poll.n_fetched, poll.n_skipped)
         return jobs
+
+    def _detail(self, url: str, poll) -> str:
+        """A position's description from its own page, or "" when it did not
+        arrive. Being refused or throttled stops the poll (the board is backed
+        off); a page that will not load turns detail requests off for the rest
+        of this poll."""
+        try:
+            r = httpx.get(url, timeout=20.0, follow_redirects=True)
+        except httpx.HTTPError:
+            poll.off = True
+            return ""
+        if r.status_code == 429:
+            raise BoardBlockedError("breezy", 429, "position page")
+        if r.status_code != 200:
+            return ""
+        return _description_from_page(r.text)

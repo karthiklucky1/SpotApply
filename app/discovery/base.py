@@ -99,6 +99,15 @@ class RawJob:
     # "$160-200K" on the page and nothing on the card because the salary lived
     # only in this field, which nobody read.
     salary_text: Optional[str] = None
+    # ── detail fetched once (app/discovery/detail_memo.py) ──
+    # `listing_only` = a re-sighting of a posting whose description the pool
+    # already holds: the adapter did NOT fetch its detail again, so this row
+    # carries no description and must never be written — the upsert refreshes
+    # `last_seen` on the stored row and does nothing else. `listing_fp` rides on
+    # a row that DOES carry its detail, so the upsert can record that the pool
+    # now holds it.
+    listing_only: bool = False
+    listing_fp: Optional[str] = None
     # ── hiring context read straight out of the response, zero extra calls ──
     # Keys are JobHiringContext column names: department, team, division,
     # hiring_entity, recruiting_agency, requisition_id, reporting_title,

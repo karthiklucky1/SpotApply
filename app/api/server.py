@@ -929,6 +929,43 @@ def _seed_missing_ats_datasets() -> int:
     return added
 
 
+def _refresh_open_dataset() -> int:
+    """Add the boards the open list has gained since the registry was seeded.
+
+    `_seed_missing_ats_datasets` only runs while the registry is small or a
+    system has no boards at all, so a list that keeps growing was never read
+    again: by 2026-11-15 about 33,000 companies on systems we already scrape
+    were in the list and not in the registry. This adds at most
+    `OPEN_DATASET_MAX_NEW_PER_RUN` boards per 24 HOURS (counted in the
+    registry, so several deploys in a day do not each add a batch), with
+    their first polls spread over `OPEN_DATASET_SPREAD_HOURS`. Synchronous —
+    call via asyncio.to_thread. Returns boards added."""
+    import logging
+    from datetime import datetime, timedelta
+    _log = logging.getLogger("registry")
+    cap = int(getattr(settings, "open_dataset_max_new_per_run", 0) or 0)
+    if not settings.open_dataset_seed_enabled or cap <= 0:
+        return 0
+    from sqlalchemy import func as _func
+    from app.db.models import CompanyRegistry
+    from app.discovery.registry import seed_registry_from_open_datasets
+    with get_session() as session:
+        recent = session.exec(
+            select(_func.count(CompanyRegistry.id)).where(
+                CompanyRegistry.source == "open_dataset",
+                CompanyRegistry.first_seen >= datetime.utcnow() - timedelta(hours=24))
+        ).one()
+    recent = recent[0] if isinstance(recent, tuple) else recent
+    room = cap - int(recent or 0)
+    if room <= 0:
+        _log.info("Open-list refresh: %d boards already added in the last 24h (cap %d)", recent, cap)
+        return 0
+    added = seed_registry_from_open_datasets(
+        max_new=room, spread_hours=float(getattr(settings, "open_dataset_spread_hours", 24) or 0))
+    _log.info("Open-list refresh: added %d boards (cap %d per 24h)", added, cap)
+    return added
+
+
 async def _boot_seed_missing_ats() -> None:
     """Fast one-shot after boot: seed missing-ATS boards within ~1 min of a
     deploy instead of waiting for the 5-min registry-maintenance cycle, so new
@@ -961,6 +998,12 @@ async def _registry_maintenance_once(cycle: int) -> None:
         await asyncio.to_thread(seed_registry)
     # Bulk expansion: pull the open ats-scrapers slug dataset (~62K companies).
     await asyncio.to_thread(_seed_missing_ats_datasets)
+    # …and keep reading the list as it grows (bounded per day, first polls
+    # spread out). A failure here never ends maintenance.
+    try:
+        await asyncio.to_thread(_refresh_open_dataset)
+    except Exception as e:
+        _log.warning("Open-list refresh failed: %s", e)
     validated = await run_validation_loop(limit=150)
     _log.info("Registry maintenance: validated %d boards", validated)
     # Retention, in order: close shared rows, close per-user rows, blank the JD
@@ -9757,7 +9800,9 @@ def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
     or shell. Idempotent; runs in the background."""
     _require_admin_user(request)
     from app.discovery.registry import seed_registry_from_open_datasets
-    bg.add_task(seed_registry_from_open_datasets)
+    # First polls spread over two days: boards inserted with no schedule are
+    # all due at once and take every polling slot from the ones posting.
+    bg.add_task(seed_registry_from_open_datasets, None, None, 48.0)
     return {"started": True,
             "note": "Seeding ~62K companies across all ATSes in the background. "
                     "New boards appear in the registry over the next few minutes; "

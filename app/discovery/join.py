@@ -47,6 +47,9 @@ from typing import List, Optional
 
 import httpx
 
+from bs4 import BeautifulSoup
+
+from app.discovery import detail_memo
 from app.discovery.base import (
     BoardBlockedError,
     BoardUnreadableError,
@@ -54,6 +57,7 @@ from app.discovery.base import (
     RawJob,
     body_hint,
 )
+from app.discovery.title_filter import is_obvious_non_tech
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +92,26 @@ _HEADERS = {"content-language": "en-us"}
 _TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 _WORK_MODES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
+
+# The listing has no description. It is on the posting's own page, in the
+# schema.org JobPosting block — fetched ONCE per posting (detail_memo).
+_JSON_LD_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]+?)</script>', re.IGNORECASE)
+
+
+def _description_from_page(html: str) -> str:
+    """The JobPosting description on a join.com job page, as plain text."""
+    for block in _JSON_LD_RE.findall(html or ""):
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        for node in (data if isinstance(data, list) else [data]):
+            if isinstance(node, dict) and node.get("@type") == "JobPosting":
+                text = node.get("description")
+                if isinstance(text, str) and text.strip():
+                    return BeautifulSoup(text, "html.parser").get_text(separator="\n").strip()
+    return ""
 
 # slug → company id, process-wide. The id never changes, and resolving it is a
 # ~115 KB page per board: paying that on every poll doubled the requests we
@@ -313,6 +337,25 @@ class JoinScraper:
             geo=geo,
         )
 
+    def _detail(self, client: httpx.Client, url: str, poll) -> str:
+        """The posting's description from its own page, or "" when it did not
+        arrive. A throttle — join.com's, or our own pace being full — turns
+        detail requests off for the rest of this poll."""
+        try:
+            _take_turn()
+            r = client.get(url)
+        except JoinTransientError:
+            poll.off = True
+            return ""
+        except httpx.HTTPError:
+            return ""
+        if r.status_code in (401, 403, 429):
+            poll.off = True
+            return ""
+        if r.status_code != 200:
+            return ""
+        return _description_from_page(r.text)
+
     def fetch(self) -> List[RawJob]:
         try:
             return self._fetch()
@@ -329,6 +372,10 @@ class JoinScraper:
         seen: set[str] = set()
         self.signature_entries = []
         self.fetch_complete = True
+        self.listed_ids: set = seen     # every posting the listing named
+        self.listing_complete = True
+        self.ingest_required = False
+        poll = detail_memo.Poll("join")
         partial = False
         row_count: Optional[int] = None
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
@@ -401,7 +448,22 @@ class JoinScraper:
                     if job.external_id in seen:
                         continue
                     seen.add(job.external_id)
+                    if poll.on and is_obvious_non_tech(job.title):
+                        continue    # nobody is looking for it: no page fetch, no row
                     self.signature_entries.append((job.external_id, job.title))
+                    action, fp = poll.decide(job.external_id, job.title, job.location)
+                    if action == "skip":
+                        continue    # no budget this poll; it comes back on the next
+                    if action == "fetch":
+                        text = self._detail(client, job.url, poll)
+                        if not text:
+                            poll.failed()
+                            continue
+                        poll.fetched()
+                        job.description = text
+                        job.listing_fp = fp
+                    elif action == "known":
+                        job.listing_only = True
                     jobs.append(job)
 
                 if page >= page_count:
@@ -421,12 +483,16 @@ class JoinScraper:
                     break
                 page += 1
 
-        if row_count and not jobs and not partial:
+        if row_count and not seen and not partial:
             raise BoardUnreadableError(
                 "join", f"publicJobs reported {row_count} postings and returned none we could read")
         # Whole only when the walk finished AND we hold as many postings as the
         # envelope counted (null index entries make the two differ).
-        self.fetch_complete = not partial and (row_count is None or len(jobs) >= row_count)
+        self.listing_complete = not partial and (row_count is None or len(seen) >= row_count)
+        # ...and every posting we wanted is in the list we return: one still
+        # waiting for its description is listed, not parsed.
+        self.fetch_complete = self.listing_complete and poll.n_skipped == 0
+        self.ingest_required = poll.ingest_required
         log.info("Join[%s]: %d jobs (complete=%s)",
                  self.board_slug, len(jobs), self.fetch_complete)
         return jobs

@@ -37,6 +37,10 @@ os.environ.setdefault("WELCOME_BOOST_MINUTES", "0")
 # join.com requests are spaced a second apart in production (app/discovery/join.py).
 # Off in the suite — a mocked request must not sleep; the pacing tests turn it on.
 os.environ.setdefault("JOIN_MIN_REQUEST_INTERVAL_SECONDS", "0")
+# Rippling / join.com / Breezy fetch each posting's description once, from a
+# per-source budget (app/discovery/detail_memo.py). No budget in the suite, so
+# those adapters behave as plain listing readers unless a test turns it on.
+os.environ.setdefault("DETAIL_FETCH_PER_MINUTE", "")
 
 import importlib.util
 import sys
@@ -186,6 +190,8 @@ def _reset_process_globals():
         _sh.reset()
         _join._reset_company_ids()
         _join._reset_pace()
+        from app.discovery import detail_memo as _dm
+        _dm.reset()
     except ImportError:
         pass
 

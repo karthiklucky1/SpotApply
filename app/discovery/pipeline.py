@@ -557,6 +557,77 @@ def _geography_for_user_door(candidates: List["RawJob"]) -> dict:
     return out
 
 
+def _touch_listing_only(rows: List[RawJob], user_id: str | None) -> None:
+    """Refresh ``last_seen`` for postings an adapter re-saw WITHOUT refetching
+    their detail (``RawJob.listing_only``, app/discovery/detail_memo.py).
+
+    These rows carry no description, so they must never reach the write path:
+    an empty description there is a content change, and it would blank the
+    stored text and force a re-embed. One indexed read per source tells us
+    which rows exist and which are stale; only the stale ones are written.
+    At the shared door a row that is MISSING is forgotten, so the adapter
+    fetches that posting's detail again instead of re-sending a row with
+    nothing behind it. Best-effort: bookkeeping never fails an upsert.
+    """
+    if not rows:
+        return
+    from datetime import datetime as _dt, timedelta as _td
+    from sqlalchemy import update as _update
+    from app.discovery import detail_memo
+    by_source: dict = {}
+    for r in rows:
+        if r.external_id:
+            by_source.setdefault(r.source, set()).add(str(r.external_id))
+    now = _dt.utcnow()
+    cutoff = now - _td(seconds=_LAST_SEEN_REFRESH_SECONDS)
+    shared = user_id == SHARED_POOL_USER
+    try:
+        with get_session() as session:
+            for source, ids in by_source.items():
+                try:
+                    src = JobSource(source)
+                except ValueError:
+                    continue
+                id_list = sorted(ids)
+                found: set = set()
+                stale: List[int] = []
+                for start in range(0, len(id_list), _DEDUPE_PREFETCH_CHUNK):
+                    chunk = id_list[start:start + _DEDUPE_PREFETCH_CHUNK]
+                    for jid, ext, seen in session.exec(
+                            select(Job.id, Job.external_id, Job.last_seen).where(
+                                Job.user_id == user_id, Job.source == src,
+                                Job.external_id.in_(chunk))).all():
+                        found.add(str(ext))
+                        if seen is None or seen < cutoff:
+                            stale.append(jid)
+                stale.sort()
+                for start in range(0, len(stale), _DEDUPE_PREFETCH_CHUNK):
+                    session.execute(
+                        _update(Job.__table__)
+                        .where(Job.__table__.c.id.in_(stale[start:start + _DEDUPE_PREFETCH_CHUNK]))
+                        .values(last_seen=now))
+                if shared and len(found) < len(ids):
+                    detail_memo.forget(source, ids - found)
+            session.commit()
+    except Exception as e:
+        log.warning("Listing-only touch failed for user %s: %s", user_id, e)
+
+
+def _remember_details(rows: List[RawJob]) -> None:
+    """Record which postings the SHARED pool was just handed with their detail,
+    so the adapter does not fetch it again on the next poll. Written here and
+    not in the adapter because only the upsert knows the row arrived: a fetch
+    the lane then dropped never got this far, and must be fetched again."""
+    try:
+        from app.discovery import detail_memo
+        for r in rows:
+            fp = getattr(r, "listing_fp", None)
+            if fp and r.external_id:
+                detail_memo.remember(r.source, str(r.external_id), fp)
+    except Exception as e:
+        log.debug("detail memo update skipped: %s", e)
+
+
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             preferred_country: str | None = None, remote_ok: bool = True,
             user_keywords: List[str] | None = None,
@@ -585,6 +656,15 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     from app.discovery.hiring_context import capture as _capture_context
     from datetime import datetime
     inserted = 0
+
+    # Re-sightings whose detail the pool already holds (detail_memo): they
+    # carry no description and take a touch-only path — never the gates, the
+    # context capture or the write path below.
+    if any(getattr(r, "listing_only", False) for r in raw_jobs):
+        _touch_listing_only([r for r in raw_jobs if getattr(r, "listing_only", False)], user_id)
+        raw_jobs = [r for r in raw_jobs if not getattr(r, "listing_only", False)]
+    if user_id == SHARED_POOL_USER:
+        _remember_details(raw_jobs)
 
     # Cheap in-process gates first (no DB).
     pre_gate: List[RawJob] = []

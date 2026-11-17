@@ -86,30 +86,44 @@ _OPEN_DATASET_FILES: dict[JobSource, str] = {
 # ATS and register its csv here — one line each.
 
 
-def seed_registry_from_open_datasets(per_ats_limit: int | None = None) -> int:
-    """Bulk-seed CompanyRegistry from the open ats-scrapers slug dataset.
+def seed_registry_from_open_datasets(per_ats_limit: int | None = None,
+                                     max_new: int | None = None,
+                                     spread_hours: float = 0.0) -> int:
+    """Add boards from the open ats-scrapers slug dataset to CompanyRegistry.
 
     Downloads one ``name,slug,url`` CSV per supported ATS from
     ``settings.open_slug_dataset_base`` and inserts unseen (slug, ats) rows with
-    source="open_dataset". Board rotation (max_boards_per_run, least-recently-
-    seen first) already caps per-run scrape cost, so a large registry is safe.
-    Returns the number of newly inserted rows.
+    source="open_dataset". Returns the number of newly inserted rows.
+
+    ``max_new`` bounds one call, shared ROUND-ROBIN across the ATSes so the
+    biggest file cannot take the whole batch. ``spread_hours`` gives every new
+    board a first poll time spread over that window. Both exist because of how
+    the pulse lane picks boards: one that was never scheduled goes FIRST, so a
+    few thousand boards inserted with no schedule are all due at once and take
+    every polling slot for hours — from the boards that are actually posting.
+    The list had also outgrown the registry: on 2026-11-15 about 33,000
+    companies on systems we already read were in the list and not in the
+    registry, because the seed only ever ran while the registry was small.
     """
     import csv
     import io
+    import random
+    from datetime import datetime, timedelta
 
     base = (getattr(settings, "open_slug_dataset_base", "") or "").rstrip("/")
     if not base:
         log.info("open_slug_dataset_base unset — skipping open-dataset seed")
         return 0
 
+    # Two small columns, not 56K whole rows: this runs inside the web process.
     with get_session() as session:
         existing = {
-            (r.slug, r.ats)
-            for r in session.exec(select(CompanyRegistry)).all()
+            (slug, ats) for slug, ats in
+            session.exec(select(CompanyRegistry.slug, CompanyRegistry.ats)).all()
         }
 
-    inserted = 0
+    # Unseen boards per ATS, in the list's own order.
+    fresh: dict = {}
     with httpx.Client(timeout=30, follow_redirects=True) as client:
         for ats, filename in _OPEN_DATASET_FILES.items():
             url = f"{base}/{filename}"
@@ -122,25 +136,50 @@ def seed_registry_from_open_datasets(per_ats_limit: int | None = None) -> int:
             except Exception as e:
                 log.warning("Open dataset %s failed: %s", url, e)
                 continue
-
-            batch = []
+            picked = []
             for row in rows[:per_ats_limit] if per_ats_limit else rows:
                 slug = (row.get("slug") or "").strip().lower()
                 if not slug or (slug, ats) in existing:
                     continue
                 existing.add((slug, ats))
-                batch.append(CompanyRegistry(
-                    slug=slug, ats=ats,
-                    company_name=(row.get("name") or "").strip() or None,
-                    career_url=(row.get("url") or "").strip() or None,
-                    source="open_dataset",
-                ))
-            if batch:
-                with get_session() as session:
-                    session.add_all(batch)
-                    session.commit()
-                inserted += len(batch)
-                log.info("Open dataset: +%d %s boards", len(batch), ats.value)
+                picked.append(row)
+            if picked:
+                fresh[ats] = picked
+
+    # Round-robin up to max_new, so every system grows a little each run.
+    if max_new is not None and max_new >= 0:
+        left = max_new
+        taken = {ats: [] for ats in fresh}
+        while left > 0 and any(fresh.values()):
+            for ats in list(fresh):
+                if left <= 0:
+                    break
+                if fresh[ats]:
+                    taken[ats].append(fresh[ats].pop(0))
+                    left -= 1
+        fresh = {ats: rows for ats, rows in taken.items() if rows}
+
+    now = datetime.utcnow()
+    inserted = 0
+    for ats, rows in fresh.items():
+        batch = []
+        for row in rows:
+            slug = (row.get("slug") or "").strip().lower()
+            batch.append(CompanyRegistry(
+                slug=slug, ats=ats,
+                company_name=(row.get("name") or "").strip() or None,
+                career_url=(row.get("url") or "").strip() or None,
+                source="open_dataset",
+                # Never "due now": see the docstring.
+                next_poll_at=(now + timedelta(hours=random.uniform(0.0, spread_hours))
+                              if spread_hours and spread_hours > 0 else None),
+            ))
+        if batch:
+            with get_session() as session:
+                session.add_all(batch)
+                session.commit()
+            inserted += len(batch)
+            log.info("Open dataset: +%d %s boards", len(batch), ats.value)
 
     log.info("Open-dataset seed complete: %d new boards registered.", inserted)
     return inserted
