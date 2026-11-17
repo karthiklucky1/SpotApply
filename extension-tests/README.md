@@ -10,12 +10,12 @@ folder recursively, so anything inside it ships to every user.
 ```bash
 pip install playwright && playwright install chromium   # once
 python3 extension-tests/test_extension_live.py          #  13 checks — plumbing
-python3 extension-tests/test_extension_forms.py         # 153 checks — real fills
+python3 extension-tests/test_extension_forms.py         # 154 checks — real fills
 python3 extension-tests/test_extension_payload.py       #  12 checks — payload + EEO
 python3 extension-tests/test_extension_security.py      #  11 checks — gates
 python3 extension-tests/test_extension_audit.py         #  45 checks — the 2026-09-30 audit
 python3 extension-tests/test_extension_queue.py         #  24 checks — the apply queue
-python3 extension-tests/test_extension_boards.py        #  46 checks — real board shapes
+python3 extension-tests/test_extension_boards.py        #  83 checks — real board shapes, saved + AI answers, open questions
 ```
 
 **test_extension_boards.py** — the shapes found on 22 REAL postings (2026-11-14;
@@ -27,6 +27,9 @@ nothing submitted, no account made, no CAPTCHA touched), rebuilt as fixtures:
 | `lever-radios.html` | the question sits two levels above its "Yes." / "No." radios | authorization and both sponsorship wordings ("commence an immigration case") are answered; "Are you local to Austin, TX?" is not guessed and holds a submit |
 | `ashby-upload.html` | the site reads the resume, then empties the upload box and shows the file's name | the resume counts as attached (it read as a required field still missing); removing the file opens the field again |
 | the same two forms, with saved answers | the profile's auto-fill data reached text boxes and `<select>`s only; one answer was written into a dropdown's hidden bookkeeping input | a saved answer is PICKED in a pick-one dropdown and CHECKED on a radio question when exactly one option says it; no near match, never a work-authorization question, never the hidden input |
+| `greenhouse-react.html?ai=1`, `lever-radios.html?local=1` | questions only that employer asks stayed blank | they are asked of `/api/answer-form-questions` once; refused questions are never sent; an answer is picked only if it is one of the form's options; AI answers are marked and hold an automatic submit until the person has looked; "These are right" or their own Submit saves them; what the person chose themselves is remembered |
+| `greenhouse-react.html?clearance=1`, `lever-radios.html?local=1` | nobody knew which required questions a form still needed | each is reported once to `/api/open-questions` as the form words it, with its choices and the key its saved answer is recalled by; never a value; nothing without the server's say-so |
+| `required-gaps.html` | required questions real forms left open although the profile held the answer (2026-11-15): "Where are you currently located?", a pay question with a note beside it, a list of US states under a sentence saying "United States", "highest attained degree" / "Bachelors", a language level on the CEFR ladder, Gender as radio buttons; and four boxes that are ONE question counted as four | each is answered from the profile or the saved answers; the pick-many question is one open question listed with its choices; a lone box is listed with the statement above it and never ticked |
 | `teamtailor-job.html` | the page's only email box is the employer's staff sign-in | it is not an application form; "Apply for this job" is pressed and the real form filled |
 | `smartrecruiters-job.html` | the apply control says "I'm interested" | pressed; "Apply with LinkedIn" never |
 | `join-job.html` | "Jetzt bewerben" builds the form on the page | pressed once, the form filled |

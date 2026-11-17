@@ -1148,6 +1148,80 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   profile's own rules; `canFillField` refuses a widget's hidden bookkeeping input.
   Guard: `extension-tests/test_extension_boards.py`.
 
+- **AI answers what nothing else answers, with evidence, and is checked once**
+  (founder 2026-11-14, `app/autofill/form_answers.py`, `docs/AUTO_APPLY_RESEARCH.md`
+  §10). Order on a form: the profile's rules → saved answers → ONE call to
+  `POST /api/answer-form-questions` for what is still open (radios, pick-one
+  dropdowns, `<select>`s, Yes/No buttons, required one-line questions). `refusal`
+  runs BEFORE any model (work authorization, self-identification, how-heard,
+  agreements/consents, age, criminal history, clearance, citizenship, identity
+  numbers; the extension's `aiMayAnswer` is the same list, pinned equal). An answer
+  needs ONE verbatim line of the FACTS (`supported_by`), an option answer is one of
+  the form's options (`option_index` = `savedOptionIndex`), a text answer is COPIED
+  from its line (`text_supported`). Facts carry no name, email, phone, street
+  address, work-auth status or EEO answer. Same breaker, platform budget, spend
+  ledger (kind `form_answers`) and a per-user daily cap
+  (`AI_FORM_ANSWERS_DAILY_CAP`, `form_answers:user:<uid>`); cached 6 h per
+  question. **A suggestion until the person looks**: the field is outlined, the
+  panel lists answer + evidence, and `autoSubmitBlocker` holds the form
+  (`ai_review`) unless `AI_FORM_ANSWERS_AUTO_SUBMIT` (default off). "These are
+  right" or the person's own Submit saves each as THEIR answer (`/api/save-answer`,
+  key `questionKey`), which `answerSavedChoices` fills without a model next time;
+  `learnChoicesOnSubmit` remembers what they chose themselves on radios and
+  dropdowns (only typed text was learned before). Answers are cached in the
+  module's OWN bounded store (the dashboard's `ttl_cache` evicts what expires
+  soonest: six-hour answers there pushed out every stats entry), a platform total
+  is reserved per call (`AI_FORM_ANSWERS_PLATFORM_DAILY_CAP` 3,000), a billing
+  refusal trips the shared breaker, an unreadable reply is never remembered.
+  Extension 1.3.1 (shipped as 1.3.2 with the next bullet). Guards:
+  `test_form_answers`, the AI block of `test_extension_rules`, boards AI1-AI11.
+
+- **Questions to answer once: the forms say what data is missing** (founder
+  2026-11-15, `app/autofill/open_questions.py`, `docs/AUTO_APPLY_RESEARCH.md` §11).
+  After every fill the extension reports each REQUIRED question still open
+  (`describeOpenQuestions`: the form's wording, kind and choices, NEVER a value;
+  `POST /api/open-questions`, a passive write) into the existing `PendingQuestion`
+  table (`field_type` `ext:<kind>`; the server-side agent's rows are untouched). The
+  profile's "Auto-fill data" page lists one line per question with how many forms
+  asked it; an answer is saved to `AnswerMemory` under the key the extension recalls
+  by and fills every later form. `classify` decides what may be SAVED: never work
+  authorization / self-identification / how-heard (their own place in the profile),
+  never an acceptance or a checkbox (accepted on its own form: "we do not sign or
+  accept agreements" stands), never an identity number, never a question about THIS
+  job (`is_job_relative` = the extension's `isJobRelativeQuestion`, pinned equal).
+  A contact detail the profile holds, a cover letter and a pick-many question are
+  listed with a pointer, never asked for again; the list shows the question
+  without the form's decoration (`display`) while the KEY keeps the exact wording.
+  **A question must be READ to be answered**: `radioGroupQuestion` finds options by
+  structure (a 31-character Ashby option was being read as the question),
+  `labelText` falls back to `fieldBoxQuestion` (the text in the box around a field
+  with no label: Lever's "type your response", Rippling's generated names) before a
+  filler placeholder or a name. "Authorized to work where this job is?" needs
+  `pack.job_country` (`_job_country`: what the posting says, else the verified
+  search country, else '') to match the status's country. `fillPhoneField` keeps a
+  whole "+…" number when the widget's country follows it. Boxes sharing a name
+  under one question are ONE pick-many question (`checkboxGroupOf`; four required
+  boxes read as four open questions), statements to accept stay one each.
+  **Answers the profile already held** (each left open on a real form): "Where are
+  you currently located?", a pay question with a note beside it
+  (`shortPayQuestion`), a list of US states under a sentence saying "United
+  States" (`isUsStateSelect` + `asksHomeState`), "highest attained degree" →
+  "Bachelors" (`looseOptionKey`), a saved language level on the form's own ladder
+  (`languageLevelIndex`; server `_language_level`: only the ONE language named,
+  never "none" for one not listed), self-identification asked as radios
+  (`answerEEORadioGroups`: the saved answer, same consent rule, never an
+  accommodation question). Measured on the same 15 real forms, synthetic
+  applicant, no model, nothing submitted: fields answered 8.4 → 11.9 per form,
+  REQUIRED left open 74 → 48; then, with the list's 27 questions answered once
+  through the real route and every form filled again, 48 → 22 and 5 forms with
+  nothing required open (4 forms have a required consent box, which nothing
+  ticks). **The profile first, the person's exact answer second**:
+  `/api/recall-answers` sends `fallback` (their answer to that exact question,
+  when it differs from the profile's) and the extension tries it only when the
+  form's list has no option for the profile's wording ("None" vs
+  "Non-clearable"). Extension 1.3.2. Guards: `test_open_questions`, boards
+  OQ1-OQ7 + RG1-RG10 + SA7, forms S3b.
+
 - **My profile is a PAGE, and auto-fill data is ONE catalog** (2026-11-14, founder:
   "not popup", "remove trust profile", "collect all data to help autofill").
   `openProfileModal()` (name kept: settings rows, tour and setup call it) shows

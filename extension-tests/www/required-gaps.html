@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html><head><title>Data Analyst — application (required questions a profile can answer)</title></head>
+<body>
+  <h1>Data Analyst</h1>
+  <!-- Synthetic copies of REQUIRED questions that real forms left open on
+       2026-11-15 although the profile held the answer (16 real forms, nothing
+       submitted). Each one is a shape, not a site:
+         Breezy      "Where are you currently located?"  (neither "location" nor "based")
+         Rippling    a pay question with a note beside it (read as an essay prompt)
+         Lever       a list of US states under a sentence that says "United States"
+         Lever       "highest attained degree" with the option "Bachelors"
+         Personio    a language level on the CEFR ladder
+         Teamtailor  Gender asked as radio buttons
+         Greenhouse  four boxes, each marked required, that are ONE question
+         Lever       a lone box captioned "Submit Application" under its statement -->
+  <form id="application-form" action="/thanks.html" method="get">
+    <ul>
+      <li class="application-question">
+        <label><div class="application-label">Full name<span class="required">✱</span></div>
+          <div class="application-field"><input type="text" name="name" required></div></label>
+      </li>
+      <li class="application-question">
+        <label><div class="application-label">Email<span class="required">✱</span></div>
+          <div class="application-field"><input type="email" name="email" required></div></label>
+      </li>
+      <li class="application-question resume">
+        <label><div class="application-label">Resume/CV<span class="required">✱</span></div>
+          <div class="application-field"><input type="file" id="resume-upload-input" name="resume" required>
+            <span class="filename"></span></div></label>
+      </li>
+    </ul>
+    <ul>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width"><div class="text">Where are you currently located?<span class="required">✱</span></div></div>
+        <div class="application-field full-width required-field">
+          <input type="text" name="cards[b1][field0]" placeholder="Type your response" required></div>
+      </div></li>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width"><div class="text">What are your compensation expectations? This is a fully remote, full-time role.<span class="required">✱</span></div></div>
+        <div class="application-field full-width required-field">
+          <input type="text" name="cards[b1][field1]" placeholder="Type your response" required></div>
+      </div></li>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width"><div class="text">Please list the state that you plan to be physically located in while employed with our company? For employment eligibility in the United States.<span class="required">✱</span></div></div>
+        <div class="application-field full-width required-field"><div class="application-dropdown">
+          <select name="cards[b1][field2]" id="state-select" required><option value="">Select...</option></select></div></div>
+      </div></li>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width"><div class="text">What is your highest attained degree?<span class="required">✱</span></div></div>
+        <div class="application-field full-width required-field"><div class="application-dropdown">
+          <select name="cards[b1][field3]" required><option value="">Select...</option>
+            <option>High School or GED</option><option>Associates</option><option>Bachelors</option>
+            <option>Masters</option><option>Doctorate</option></select></div></div>
+      </div></li>
+    </ul>
+    <div class="form-group">
+      <label for="lang-en">How would you evaluate your proficiency in English?*</label>
+      <select id="lang-en" name="english_level" required><option value="">Please select</option>
+        <option>C2 (It is my mother tongue)</option><option>C1</option><option>B2</option><option>B1</option>
+        <option>A2/A1</option></select>
+    </div>
+    <div class="question-block">
+      <label class="question-title">Gender<abbr>*</abbr><span>Required</span></label>
+      <p>We collect this information to support our commitment to diversity and inclusion.</p>
+      <div class="choices">
+        <label><input type="radio" name="gender-q" value="Male" required> Male</label>
+        <label><input type="radio" name="gender-q" value="Female"> Female</label>
+        <label><input type="radio" name="gender-q" value="Non-Binary"> Non-Binary</label>
+        <label><input type="radio" name="gender-q" value="Prefer not to answer"> Prefer not to answer</label>
+      </div>
+    </div>
+    <div class="field-wrapper">
+      <fieldset class="checkbox" id="q-license">
+        <legend>Do you have a security license? Please fill out which type below: *</legend>
+        <div class="checkbox__wrapper"><div class="checkbox__input"><input type="checkbox" id="lic-1" name="question_7[]" value="1" required></div><label for="lic-1">Virginia (DCJS)</label></div>
+        <div class="checkbox__wrapper"><div class="checkbox__input"><input type="checkbox" id="lic-2" name="question_7[]" value="2" required></div><label for="lic-2">DC (DLCP)</label></div>
+        <div class="checkbox__wrapper"><div class="checkbox__input"><input type="checkbox" id="lic-3" name="question_7[]" value="3" required></div><label for="lic-3">Maryland (Guard Card)</label></div>
+        <div class="checkbox__wrapper"><div class="checkbox__input"><input type="checkbox" id="lic-4" name="question_7[]" value="4" required></div><label for="lic-4">N/A (no I don't)</label></div>
+      </fieldset>
+    </div>
+    <ul>
+      <li class="application-question custom-question"><div>
+        <div class="application-label full-width"><div class="text">By clicking "Submit Application" I certify that the information in this application is true and complete.<span class="required">✱</span></div></div>
+        <div class="application-field full-width required-field">
+          <ul data-qa="checkboxes">
+            <li><label><input type="checkbox" name="cards[b1][field9]" value="Submit Application" required><span class="application-answer-alternative">Submit Application</span></label></li>
+          </ul>
+        </div>
+      </div></li>
+    </ul>
+    <button type="submit" id="btn-submit" class="postings-btn template-btn-submit">Submit application</button>
+  </form>
+  <script>
+    // Greenhouse drops "required" from a pick-many question's boxes once one is ticked.
+    document.querySelectorAll('#q-license input').forEach((box) => box.addEventListener('change', () => {
+      const any = !!document.querySelector('#q-license input:checked');
+      document.querySelectorAll('#q-license input').forEach((b) => { b.required = !any; });
+    }));
+    (function () {
+      const states = ['Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut','Delaware','Florida','Georgia',
+        'Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan',
+        'Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico','New York',
+        'North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota',
+        'Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia','Wisconsin','Wyoming','District of Columbia'];
+      const sel = document.getElementById('state-select');
+      for (const s of states) { const o = document.createElement('option'); o.textContent = s; sel.appendChild(o); }
+    })();
+  </script>
+</body></html>

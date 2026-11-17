@@ -510,3 +510,244 @@ SmartRecruiters do past the pages this server could not load. Guards:
 `extension-tests/test_extension_boards.py` (37 checks, fixtures that mirror
 each real shape), the 2026-11-14 block of `tests/test_extension_rules.py`,
 T1–T8 of `test_extension_forms.py`.
+
+## 10. AI answers for the questions nothing else answers (2026-11-14)
+
+§9 measured it: on 16 real forms the fill answered 7.6 of 16.4 fields, about
+56% of the required ones, and of the 74 required fields left open roughly 80%
+were questions only that employer asks (27 radio questions, 16 dropdowns, 12
+one-line questions). The founder's decision the same day: let AI answer those
+from the profile, and work through the skipped kinds the same way.
+
+**Three sources, in this order, each taking only what is still open:**
+
+1. the profile's own rules (work authorization, sponsorship, years, a degree,
+   the country) — unchanged, and still the only source for those questions;
+2. the answers the person saved: the profile's auto-fill data and what they
+   answered on earlier forms (`/api/recall-answers`, `answerSavedChoices`);
+3. one call to `POST /api/answer-form-questions` for the rest
+   (`app/autofill/form_answers.py`).
+
+**What keeps a wrong answer off an employer's form:**
+
+- *Refused before any model sees it* (`refusal`; the extension's `aiMayAnswer`
+  holds the same list and does not even send them): work authorization and
+  sponsorship, self-identification, "how did you hear", an agreement, consent
+  or signature, a background check or drug test, age, criminal history,
+  security clearance, citizenship, an identity or bank number.
+- *Evidence or nothing*: every answer carries one line copied word for word
+  from the facts the model was shown; the server checks the line exists
+  (`supported_by`). An option answer must be exactly one of the form's own
+  options. A free-text answer must be made of that line's own words
+  (`text_supported`): "Cincinnati, OH" from "Home location: Cincinnati, OH",
+  never a composed sentence. A missing fact is not evidence, except for a list
+  the facts call complete (the employers worked for).
+- *Checked once by the person*: an AI answer is outlined on the form and
+  listed in the panel with the line it rests on. A form holding one that has
+  not been looked at is not submitted for them (`ai_review`; the queue parks
+  it with that reason). "These are right", or pressing Submit themselves,
+  saves each as their own answer; from then on it fills from memory with no
+  model and no hold. `AI_FORM_ANSWERS_AUTO_SUBMIT=1` lifts the hold and is off.
+
+**What the model is shown**: home city, job history (title, employer, dates),
+the complete employer list, education, skills, work arrangements wanted,
+relocation, salary, notice period, the saved auto-fill answers that are not
+contact details or refused questions, and the resume text without its name
+and contact lines. Not shown: name, email, phone, street address and ZIP,
+work-authorization status, self-identification answers.
+
+**Cost**: one call per form at most (questions are batched and each is asked
+once per page; answers and non-answers are cached six hours), the cheap
+model, the same provider breaker and platform budget as every other call, a
+per-user daily cap (`AI_FORM_ANSWERS_DAILY_CAP`, 60), booked in the spend
+ledger as `form_answers`.
+
+**Also fixed here**: the extension only remembered answers typed into text
+boxes. What a person picks on a radio question or a pick-one dropdown is now
+remembered when they submit the form (`learnChoicesOnSubmit`), so the same
+question is not asked of them twice; saved answers also reach Ashby's Yes/No
+buttons.
+
+**Checked** (nothing submitted to any employer): `tests/test_form_answers.py`
+(55 tests: refusals, evidence, options, the facts, every paid-call control);
+`extension-tests/test_extension_boards.py` AI1-AI11 with the real extension;
+and one run through the REAL route with a stand-in for the provider, which on
+a form of nine employer questions answered three with evidence ("worked here
+before" twice, "local to Austin"), dropped one whose evidence it had invented
+and one that was not an option, and never received the felony, agreement or
+work-authorization questions.
+
+**Not known until real use**: how often the real model finds evidence on real
+forms (the stand-in only proves the plumbing and the checks), and how many of
+those answers people change when they look. Both will show in
+`form_answers` spend and in the share of queue items parked as `ai_review`.
+
+## 11. Required questions: what the profile must hold, and what the forms say is missing (2026-11-15)
+
+The founder's question: how do we fill every REQUIRED field correctly, and
+what data must we take from the user to do it?
+
+**Measured, not estimated.** The same 15 real application forms (9 boards;
+Greenhouse, Lever, Ashby, Rippling, Recruitee, Breezy, Teamtailor, Pinpoint,
+Personio), a synthetic applicant, the real extension, no model, nothing
+submitted, no account, no CAPTCHA touched. "Required open" is the
+extension's own count (`autoSubmitBlocker`), the number that holds a submit.
+
+| Build | Fields answered per form (of 18.6) | Required questions left open |
+|---|---|---|
+| 1.3.1, profile with name / contact / resume only | 8.4 (45%) | 74 (4.9 per form) |
+| + every answer the profile's "Auto-fill data" can hold | 9.7 (52%) | 67 |
+| + questions READ correctly (below) | 11.3 (61%) | 60 |
+| + phone widgets, options worded differently | 11.5 (62%) | 57 |
+| + answers the profile already held, boxes that are one question (1.3.2) | 11.9 (64%) | 48 (3.2 per form) |
+
+**What the open questions are** (the last run's 47 that could be read, each
+classified by `open_questions.classify`):
+
+| What it is | Count | Who answers it |
+|---|---|---|
+| The employer's own question, the person's answer is reusable ("Are you local to Austin, TX?", "Current clearance level") | 27 | the person, ONCE, on the list below; a model may suggest 21 of them with evidence (§10) |
+| About this job or this employer ("Are you able to be in the office 3 days per week?") | 8 | on each form; a model may suggest 7 |
+| A consent, an acknowledgement, a required box | 4 | the person, on the form |
+| Work authorization for a country the saved status is not for | 3 | the person, on the form |
+| Several boxes may apply ("Do you have a security license?") | 1 | the person, on the form |
+| Self-identification with no option matching the saved answer | 1 | the person |
+| Test artefacts (a cover letter the test never tailored; a how-heard question naming another employer; an address autocomplete that did not answer here) | 3 | not real gaps |
+
+So more profile fields were never the answer: a catalog written in advance
+cannot list "Are you related to a student who attends school at a Menta
+location?". Three things were.
+
+### 11.1 The form says what is missing: questions to answer once
+
+After every fill the extension reports each REQUIRED question still open:
+its wording, its kind and its choices, never a value
+(`describeOpenQuestions` → `POST /api/open-questions`, a passive write, only
+when the fill pack says `open_questions.enabled`). The server keeps them in
+the existing `PendingQuestion` table (`field_type` `ext:<kind>`) and the
+profile's "Auto-fill data" page lists one line per distinct question with
+how many forms asked it and who (`app/autofill/open_questions.py`).
+Answering a line saves it as the person's own answer under the key the
+extension recalls by, so the next form that asks the same thing is filled
+with no model and no review hold.
+
+What may be saved is decided by `classify`, and each refusal has words for
+the person:
+
+- work authorization, self-identification, "how did you hear": their own
+  place in the profile, never a second answer here;
+- an acceptance (a consent, "I certify…", a signature, any lone checkbox):
+  accepted on its own form;
+- a date of birth, an identity or bank number: not stored at all;
+- a question about THIS job or THIS employer: asked on each form;
+- a contact detail the profile already holds, a cover letter: not missing
+  data (the form's own field did not take it);
+- boxes of which several may apply: ticked on the form.
+
+The list shows the question, not the form's decoration (`display`:
+"*Required", "A response is required", a character counter), while the key
+keeps the form's exact wording.
+
+**The loop, measured on the same 15 real forms** (two passes in one run:
+fill every form, answer the list through the real route as a person would on
+their profile, fill every form again; nothing submitted either time):
+
+| | Pass 1 | After the list was answered once |
+|---|---|---|
+| Required questions left open | 48 | 22 |
+| Fields answered per form | 11.9 | 13.7 |
+| Forms with nothing required left open | 1 | 5 |
+
+The fills produced a list of 48 lines, 27 of them answerable once; all 27
+were saved, and 26 were picked on the second pass. The one that was not is
+how the next rule was found: the profile said clearance "None", the form's
+list offered "Non-clearable / Clearable / Public Trust…", the person's answer
+to THAT question was "Non-clearable", and the profile's general answer
+overrode it on every form. `/api/recall-answers` now sends the person's
+answer to the exact question as `fallback` whenever it differs from the
+profile's, and the extension tries it when the form's list has no option for
+the profile's wording (boards SA7). The profile still goes first.
+
+What the 22 still open are: 8 about this job or employer (a model may suggest
+most, with evidence), 5 consents or acknowledgements, 3 work-authorization
+questions for another country, 1 pick-many, 1 self-identification with no
+matching option, 3 test artefacts, and the clearance question above.
+
+### 11.2 A question must be READ to be answered
+
+Most of the first gain was not new data. Found on the real pages:
+
+- a radio group's "question" was its first option whenever the option text
+  was long (Ashby's right-to-work group): options are now found by structure;
+- fields with no label (Lever's "type your response", Rippling's generated
+  names) had no question at all: `fieldBoxQuestion` reads the text in the box
+  around the field;
+- "Are you able to legally work in the region you are applying for?" has none
+  of the usual work-authorization words; and a status in one country was
+  answering "authorized where this job is?" for another (`pack.job_country`);
+- four boxes under "Do you have a security license?", each marked required,
+  counted as four open questions and were listed as four agreements:
+  `checkboxGroupOf` makes them one pick-many question;
+- a lone box captioned "Submit Application" was listed by its caption; it is
+  now listed with the statement printed above it.
+
+### 11.3 Answers the profile already held
+
+Each of these was required, was left open on a real form, and is now filled
+from data the person already saved (fixture `required-gaps.html`, RG1-RG10):
+
+| Form asked | Was | Now |
+|---|---|---|
+| "Where are you currently located?" (Breezy) | no rule: neither "location" nor "based" | the home location |
+| "What are your compensation expectations? This is a fully remote…" (Rippling) | read as an essay prompt because of the note | the saved number, for a one-line box whose asking sentence is short |
+| a list of US states under "…the state you plan to be located in … in the United States" (Lever) | the State rule steps aside for "united" | the applicant's state |
+| "What is your highest attained degree?" → "Bachelors" (Lever) | pattern missed "attained"; "Bachelor's degree" ≠ "Bachelors" | matched, and picked as the same answer in other dress |
+| "How would you evaluate your proficiency in English?" → C2 … A1 (Personio) | the saved level is "Native or bilingual" | the saved level of the ONE language named, on the form's own ladder (`languageLevelIndex`) |
+| Gender as radio buttons (Teamtailor) | self-identification reached selects and dropdowns only | the saved answer by category, under the same consent rule; never a question about an accommodation |
+| "+1 415-555-0199" in a phone widget (Teamtailor) | cleared: the widget's country had changed | kept when the whole "+…" number is there |
+
+A language the person did not list is not "none", a level with no rung on the
+form's ladder is not guessed, and "Are you fluent in X?" is Yes only for a
+saved Fluent or Native level.
+
+### 11.4 What we need from the user
+
+1. **The profile's "Auto-fill data", once** (it exists): address, highest
+   education, languages WITH a level, earliest start date, notice period,
+   salary, work arrangement, travel, the yes/no facts (18+, driver's license,
+   non-compete, felony), security clearance.
+2. **Self-identification, saved and confirmed** if they want it filled.
+3. **"How did you hear about us"**, one answer.
+4. **Work authorization status** with its end date; a status is for ONE
+   country, so a form for another country is left for them.
+5. **The questions to answer once**, as forms ask them. This is the part no
+   catalog covers and where most of the open questions are.
+
+### 11.5 Decisions that are the founder's, not built
+
+- **Standing consents.** 4 of the 15 forms have a REQUIRED consent
+  or acknowledgement box. Today nothing ticks one ("we do not sign or accept
+  agreements for you" is in the product copy, the privacy policy and
+  `test_autofill_data`), so those forms always wait for the person. Letting
+  a person give a standing "tick privacy-notice consents for me" permission
+  would make them submittable, and is a change to what the product promises.
+- **AI answers without the one look** (`AI_FORM_ANSWERS_AUTO_SUBMIT`, off).
+- **Work authorization for other countries**: one status per country in the
+  profile, if applicants outside their home country matter.
+
+### 11.6 Also fixed here (found by review of §10's code)
+
+- Form answers had been cached in the dashboard's shared `ttl_cache`, which
+  evicts what expires soonest: two people running a queue would have pushed
+  every stats and welcome entry out as it was written. They have their own
+  bounded store now.
+- A platform-wide daily total (`AI_FORM_ANSWERS_PLATFORM_DAILY_CAP`, 3,000),
+  reserved per call: the lanes' counters never saw these calls.
+- A billing or quota refusal trips the shared provider breaker; a reply that
+  cannot be read is not remembered as "no answer"; the reply ceiling scales
+  with the number of questions (a fixed 1,400 tokens cut a 30-question reply).
+
+**Not reachable from this server** (so not in any number above): Workday,
+Workable, SmartRecruiters, JOIN. **Still open**: Teamtailor's address
+autocomplete (its geocoder did not answer here), Rippling's submit control,
+Breezy's repeating work-history section.

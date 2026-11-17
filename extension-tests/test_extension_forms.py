@@ -54,6 +54,20 @@ CURRENT_PACK: dict = {}
 # case): answer}. Empty = nothing saved, as for a new user. The real route
 # answers by the caller's own label, so this does too.
 RECALL: dict = {}
+# ...and its "fallback": the person's own answer to that exact question, offered
+# when the profile's general answer differs (same substring keys).
+RECALL_FALLBACK: dict = {}
+
+# What /api/answer-form-questions gives back: {substring of the question (lower
+# case): answer}. The real route answers only with evidence from the profile;
+# the stub stands in for "the profile settles this one". AI_REQUESTS keeps the
+# questions each call carried, SAVED every /api/save-answer body.
+AI_ANSWERS: dict = {}
+AI_REQUESTS: list = []
+SAVED: list = []
+# Every /api/open-questions body: the required questions a form still needs
+# the person for, as the extension reported them.
+OPEN_REPORTS: list = []
 
 # How many resume requests the stub answers "still being written" (409) — the
 # server's answer while Auto-Fill's own tailor runs (live test 2026-11-03).
@@ -162,6 +176,32 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
         REQUESTS.append(("POST", path))
+        if "/api/answer-form-questions" in self.path:
+            try:
+                asked = (json.loads(body.decode("utf-8") or "{}").get("questions")) or []
+            except Exception:
+                asked = []
+            AI_REQUESTS.append(asked)
+            out = {}
+            for q in asked:
+                for needle, answer in AI_ANSWERS.items():
+                    if needle in str(q.get("question", "")).lower():
+                        out[q.get("id")] = {"answer": answer, "option_index": None,
+                                            "basis": "Home location: San Francisco, CA"}
+            return self._json({"answers": out, "skipped": {}})
+        if self.path.split("?")[0].endswith("/api/open-questions"):
+            try:
+                OPEN_REPORTS.append(json.loads(body.decode("utf-8") or "{}"))
+            except Exception:
+                pass
+            return self._json({"ok": True, "kept": 0})
+        if "/api/save-answer" in self.path:
+            try:
+                saved = json.loads(body.decode("utf-8") or "{}")
+                SAVED.append((saved.get("question"), saved.get("answer")))
+            except Exception:
+                pass
+            return self._json({"ok": True})
         if "recall-answers" in self.path:
             try:
                 labels = (json.loads(body.decode("utf-8") or "{}").get("labels")) or []
@@ -172,7 +212,12 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
                 for needle, answer in RECALL.items():
                     if needle in str(label).lower():
                         answers[label] = answer
-            return self._json({"answers": answers})
+            fallback = {}
+            for label in labels:
+                for needle, answer in RECALL_FALLBACK.items():
+                    if needle in str(label).lower():
+                        fallback[label] = answer
+            return self._json({"answers": answers, "fallback": fallback} if fallback else {"answers": answers})
         return self._json({"ok": True})
 
 
@@ -515,6 +560,15 @@ def main():
         digits = "".join(ch for ch in phone if ch.isdigit())
         check("S3 phone recovered intact through the mangling widget",
               digits.endswith("5132763950"), repr(phone))
+        # A widget that STARTS on another country (Teamtailor in Ireland, live
+        # test 2026-11-15): the whole number lands and the selector follows it
+        # to United States. That is correct, and used to be cleared.
+        page_ie, _ = drive_fill(ctx, f"{BASE}/screening.html?country=ie", dict(pack, apply_url=f"{BASE}/screening.html?country=ie"))
+        phone_ie = page_ie.eval_on_selector("#sc-phone", "el => el.value")
+        check("S3b a number written whole is kept when the country selector follows it",
+              "".join(c for c in phone_ie if c.isdigit()) == "15132763950"
+              and page_ie.eval_on_selector("#sc-country", "el => el.value") == "us", repr(phone_ie))
+        page_ie.close()
         # Deterministic screening answers.
         check("S4 sponsorship answered Yes (profile requires it)", checked("q_sponsor") == "yes",
               str(checked("q_sponsor")))
