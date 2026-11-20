@@ -27,7 +27,6 @@ path never loads FAISS or the embedding model).
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -255,8 +254,8 @@ def _signature_from_entries(entries) -> str:
     out of the listing, and production measured that jitter as 93% of ALL
     changed-board events (983 oscillating Workday boards, up/down symmetric),
     each false flip paying the full upsert_shared consumer cost."""
-    keys = sorted(f"{i}|{(t or '')[:80]}" for i, t in entries)
-    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+    from app.discovery.base import listing_signature
+    return listing_signature(entries)
 
 
 def _board_signature(raw: list) -> str:
@@ -1144,6 +1143,14 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
         scraper = scraper_for(board.ats, board.slug, board.career_url)
         if scraper is None:
             return board, None, "unsupported", time.monotonic() - t0, None
+        # What this board's listing looked like when it was last fully
+        # ingested. An adapter that pays a request per posting compares its
+        # listing to it and skips those requests when nothing changed
+        # (app/discovery/base.py `unchanged_since_ingest`).
+        try:
+            scraper.known_signature = board.poll_hash
+        except Exception:
+            pass
         try:
             raw = scraper.fetch()
             # An adapter that swallows HTTP errors reports them here rather than

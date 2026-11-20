@@ -41,6 +41,8 @@ os.environ.setdefault("JOIN_MIN_REQUEST_INTERVAL_SECONDS", "0")
 # per-source budget (app/discovery/detail_memo.py). No budget in the suite, so
 # those adapters behave as plain listing readers unless a test turns it on.
 os.environ.setdefault("DETAIL_FETCH_PER_MINUTE", "")
+# Workday spaces the requests of one poll a second apart; a mocked request must not sleep.
+os.environ.setdefault("WORKDAY_REQUEST_SPACING_SECONDS", "0")
 
 import importlib.util
 import sys

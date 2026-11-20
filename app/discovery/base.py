@@ -1,6 +1,7 @@
 """Base scraper protocol — every source returns a list of normalized Job dicts."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Protocol
@@ -190,6 +191,33 @@ class BoardUnreadableError(RuntimeError):
     def __init__(self, source: str, detail: str = ""):
         tail = f": {detail}" if detail else ""
         super().__init__(f"{source}: {UNREADABLE_MARKER}{tail}")
+
+
+def listing_signature(entries) -> str:
+    """Hash of a board's LISTING: its (stable id, title) pairs.
+
+    The pulse lane stores this for a board once that listing has been fully
+    ingested (`CompanyRegistry.poll_hash`). An adapter that pays a detail
+    request per posting can compute the same hash from the listing alone and,
+    when it equals the stored one, skip every detail request: nothing on the
+    board changed since the poll whose details we already hold.
+    """
+    keys = sorted(f"{i}|{(t or '')[:80]}" for i, t in entries)
+    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+
+
+def unchanged_since_ingest(scraper) -> bool:
+    """True when this adapter's listing is the one the lane already ingested.
+
+    The lane hands the stored hash to the adapter as `known_signature` before
+    the fetch (pulse lane only — the other lanes never set it, and always get
+    the full fetch). Only a STABLE, non-empty listing can match.
+    """
+    known = getattr(scraper, "known_signature", None)
+    entries = getattr(scraper, "signature_entries", None)
+    if not known or not entries or getattr(scraper, "signature_stable", True) is False:
+        return False
+    return listing_signature(entries) == known
 
 
 def swallowed(scraper, source: str, exc: Exception) -> list:

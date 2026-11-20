@@ -5,6 +5,7 @@ Bypasses browser automation by hitting the JSON API directly.
 from __future__ import annotations
 
 import logging
+import time
 import re
 from datetime import datetime
 from typing import List, Tuple
@@ -20,11 +21,30 @@ from app.discovery.base import (
     GeoEvidence,
     RawJob,
     body_hint,
+    unchanged_since_ingest,
 )
+from app.discovery import detail_memo
 from app.discovery.job_identity import scoped_external_id
 from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
+
+
+def _space() -> None:
+    """Leave a gap before the next request to this tenant.
+
+    Measured against a live tenant on 2026-11-20: two listing pages and four
+    detail requests in five seconds, and the seventh request was answered 429.
+    Workday counts requests per address over a few seconds, so a poll that
+    fires its requests back to back is throttled by its own first page.
+    """
+    try:
+        from app.config import settings
+        gap = float(getattr(settings, "workday_request_spacing_seconds", 1.0) or 0.0)
+    except Exception:
+        gap = 1.0
+    if gap > 0:
+        time.sleep(gap)
 
 # Skip the detail fetch for postings nobody on the platform wants. The gate
 # reads the published demand (every user's target roles), so a nurse or
@@ -139,6 +159,8 @@ class WorkdayScraper:
         # `listing_complete` says the walk covered the whole board even when a
         # detail fetch failed; `fetch_complete` additionally needs every detail.
         self.listed_urls: set[str] = set()
+        # Tech postings the listing named, in order: (posting, title, path).
+        pending: list = []
         self.listing_complete = False
         walk_finished = False
         capped = False
@@ -151,6 +173,8 @@ class WorkdayScraper:
                     "offset": offset,
                     "searchText": ""
                 }
+                if offset:
+                    _space()
                 r = httpx.post(url, json=payload, headers=headers, timeout=30.0)
                 if r.status_code != 200:
                     log.warning("Workday fetch failed for %s: HTTP %d", tenant, r.status_code)
@@ -159,7 +183,7 @@ class WorkdayScraper:
                     self.listing_complete = False
                     self.signature_stable = False
                     if offset != 0:
-                        return jobs
+                        break       # keep what the earlier pages listed
                     if r.status_code in (403, 429):
                         # Refused or throttled: backed off, and a strike only
                         # when the rest of Workday is answering (base.py).
@@ -179,7 +203,7 @@ class WorkdayScraper:
                         self.fetch_complete = False
                         self.listing_complete = False
                         self.signature_stable = False
-                        return jobs
+                        break   # keep what the earlier pages listed
                     raise BoardUnreadableError(
                         "workday", f"listing did not send JSON: {body_hint(r.text)}") from e
                 postings = data.get("jobPostings", [])
@@ -215,99 +239,10 @@ class WorkdayScraper:
                     # detail fetch below succeeds.
                     self.signature_entries.append((str(ext_path), title))
 
-                    # Fetch details
-                    path_suffix = ext_path if ext_path.startswith("/job") else f"/job{ext_path}"
-                    detail_url = f"https://{domain}/wday/cxs/{tenant}/{site}{path_suffix}"
-                    try:
-                        dr = httpx.get(detail_url, headers=headers, timeout=15.0)
-                        if dr.status_code != 200:
-                            # Posting is live but missing from the parsed list —
-                            # the result is PARTIAL (SmartRecruiters already
-                            # flags this; Workday silently didn't, so a board
-                            # with one flaky detail endpoint could ghost-close
-                            # live postings in the fresh/full lanes).
-                            self.fetch_complete = False
-                            continue
-                        detail_data = dr.json()
-                    except Exception as e:
-                        log.debug("Workday: failed to fetch job details for %s: %s", ext_path, e)
-                        self.fetch_complete = False
-                        continue
-                        
-                    info = detail_data.get("jobPostingInfo", {})
-                    description = _strip_html(info.get("jobDescription", ""))
-                    
-                    # `or [None]` — bulletFields can come back as an EMPTY list
-                    # (not just missing), and [] [0] raised IndexError, failing
-                    # the whole board over one malformed posting.
-                    req_id = info.get("jobReqId") or (p.get("bulletFields") or [None])[0] or ext_path.split("_")[-1]
-                    location = info.get("location") or p.get("locationsText") or ""  # coerce null → ""
-                    remote = "remote" in location.lower()
-                    # Both fields, not one-or-the-other: `locationsText` names
-                    # EVERY site of a multi-site req ("2 Locations" boards list
-                    # them here), and the detail's `location` is the primary.
-                    # `remoteType`, when a tenant emits it, is the work mode.
-                    sites = []
-                    for v in (info.get("location"), p.get("locationsText"),
-                              info.get("additionalLocations")):
-                        for part in (v if isinstance(v, list) else [v]):
-                            if isinstance(part, str) and part.strip() and part.strip() not in sites:
-                                sites.append(part.strip())
-                    rt = str(info.get("remoteType") or p.get("remoteType") or "").strip().lower()
-                    work_mode = ("remote" if "remote" in rt and "hybrid" not in rt else "hybrid" if "hybrid" in rt
-                                 else "onsite" if ("site" in rt or "office" in rt) else "")
-                    geo = GeoEvidence(
-                        sites=sites, sites_field="jobPostingInfo.location+locationsText",
-                        work_mode=work_mode, work_mode_field="remoteType" if work_mode else "",
-                    ) if (sites or work_mode) else None
-                    
-                    posted = info.get("startDate")
-                    posted_dt = None
-                    if posted:
-                        try:
-                            posted_dt = datetime.strptime(posted, "%Y-%m-%d")
-                        except Exception:
-                            posted_dt = None
-                            
-                    apply_url = f"https://{domain}/{site}{ext_path}"
-                    
-                    # `hiringOrganization` is documented for schema.org job
-                    # postings but was NOT confirmed present in a live CXS
-                    # response, so it is read defensively and simply absent
-                    # when the tenant does not send it. Nothing depends on it.
-                    ctx: dict = {}
-                    hiring_org = info.get("hiringOrganization")
-                    if isinstance(hiring_org, dict):
-                        hiring_org = hiring_org.get("name")
-                    put(ctx, "hiring_entity", hiring_org, EVIDENCE_ORG_ENTITY,
-                        "jobPostingInfo.hiringOrganization.name")
-                    # The requisition is kept as its own evidenced field
-                    # because `external_id` is no longer the bare req id: a
-                    # Workday req id is unique per TENANT, so it is qualified
-                    # (job_identity.scoped_external_id) to stop two employers
-                    # sharing `R29845` from merging into one posting.
-                    put(ctx, "requisition_id", info.get("jobReqId"),
-                        EVIDENCE_ORG_ENTITY, "jobPostingInfo.jobReqId")
-                    put(ctx, "ats", "workday", EVIDENCE_ORG_ENTITY, "scraper")
+                    # Its detail is fetched AFTER the walk, and only if the
+                    # listing differs from the one already ingested.
+                    pending.append((p, title, ext_path))
 
-                    jobs.append(
-                        RawJob(
-                            source="workday",
-                            external_id=scoped_external_id(
-                                "workday", tenant, req_id),
-                            company=tenant.replace("-", " ").replace("_", " ").title(),
-                            title=title,
-                            location=location,
-                            remote=remote,
-                            url=apply_url,
-                            description=description,
-                            posted_at=posted_dt,
-                            origin="workday",
-                            context=ctx,
-                            geo=geo,
-                        )
-                    )
-                    
                 # Next page — the walk's depth is unchanged (per-page total).
                 try:
                     total = int(data.get("total") or 0)
@@ -326,10 +261,11 @@ class WorkdayScraper:
             log.warning("Workday connection failed for %s: %s", tenant, e)
             self.fetch_complete = False
             self.signature_stable = False
-            if offset != 0:
-                return jobs
-            self.last_error = f"workday unreachable: {type(e).__name__}: {e}"[:300]
-            return None
+            if offset == 0:
+                self.last_error = f"workday unreachable: {type(e).__name__}: {e}"[:300]
+                return None
+            # A later page: the walk ends here, and the postings the earlier
+            # pages listed still get their details below.
 
         # Truncation can land exactly on a page boundary (max_total is a
         # multiple of the page limit, so on an all-tech board it always does):
@@ -351,5 +287,160 @@ class WorkdayScraper:
         if not self.listing_complete:
             self.fetch_complete = False
 
-        log.info("Workday[%s]: %d tech jobs parsed successfully", tenant, len(jobs))
+        if unchanged_since_ingest(self):
+            # The same postings as the poll we already ingested in full. One
+            # Workday poll used to be the listing PLUS a detail request per
+            # posting — up to a hundred — whether or not anything had changed,
+            # and within a day of its refusals being recorded 2,105 of 2,407
+            # boards had been answered 429. The list returned is NOT the board
+            # (the lane reads the signature, sees no change and does no work).
+            self.fetch_complete = False
+            log.info("Workday[%s]: listing unchanged (%d postings) — no detail requests",
+                     tenant, len(self.signature_entries))
+            return []
+
+        # A posting's detail is fetched ONCE (app/discovery/detail_memo.py). The
+        # listing names a posting by its path, and the id its row is stored
+        # under is on the detail — so a known posting is recognised by its URL.
+        poll = detail_memo.Poll("workday")
+        company = tenant.replace("-", " ").replace("_", " ").title()
+        for p, title, ext_path in pending:
+            apply_url = f"https://{domain}/{site}{ext_path}"
+            listed_at = p.get("locationsText")
+            listed_at = listed_at.strip() if isinstance(listed_at, str) else ""
+            fp = None
+            if poll.on:
+                fp = detail_memo.fingerprint(title, listed_at)
+                held_as = detail_memo.alias("workday", apply_url)
+                if held_as and not detail_memo.needs_detail("workday", held_as, fp):
+                    # The pool holds it: a re-sighting, no request.
+                    jobs.append(RawJob(
+                        source="workday", external_id=held_as, company=company,
+                        title=title, location=listed_at,
+                        remote="remote" in listed_at.lower(), url=apply_url,
+                        description="", origin="workday", listing_only=True))
+                    continue
+                if poll.off or poll.n_fetched >= poll.cap or not detail_memo.take("workday"):
+                    # No budget this poll: not emitted, back on the next one.
+                    poll.n_skipped += 1
+                    self.fetch_complete = False
+                    continue
+            _space()
+            # Fetch details
+            path_suffix = ext_path if ext_path.startswith("/job") else f"/job{ext_path}"
+            detail_url = f"https://{domain}/wday/cxs/{tenant}/{site}{path_suffix}"
+            try:
+                dr = httpx.get(detail_url, headers=headers, timeout=15.0)
+                if dr.status_code in (403, 429):
+                    # Told to stop: the next 99 detail requests are how a
+                    # throttle becomes a block. What was parsed is kept, the
+                    # result is partial, and the rest comes on a later poll.
+                    self.fetch_complete = False
+                    log.info("Workday[%s]: detail request refused (%d) — stopping this poll",
+                             tenant, dr.status_code)
+                    poll.failed(stop=True)
+                    break
+                if dr.status_code != 200:
+                    # Posting is live but missing from the parsed list —
+                    # the result is PARTIAL (SmartRecruiters already
+                    # flags this; Workday silently didn't, so a board
+                    # with one flaky detail endpoint could ghost-close
+                    # live postings in the fresh/full lanes).
+                    self.fetch_complete = False
+                    poll.n_skipped += 1
+                    continue
+                detail_data = dr.json()
+            except Exception as e:
+                log.debug("Workday: failed to fetch job details for %s: %s", ext_path, e)
+                self.fetch_complete = False
+                poll.n_skipped += 1
+                continue
+
+            info = detail_data.get("jobPostingInfo", {})
+            description = _strip_html(info.get("jobDescription", ""))
+
+            # `or [None]` — bulletFields can come back as an EMPTY list
+            # (not just missing), and [] [0] raised IndexError, failing
+            # the whole board over one malformed posting.
+            req_id = info.get("jobReqId") or (p.get("bulletFields") or [None])[0] or ext_path.split("_")[-1]
+            location = info.get("location") or p.get("locationsText") or ""  # coerce null → ""
+            remote = "remote" in location.lower()
+            # Both fields, not one-or-the-other: `locationsText` names
+            # EVERY site of a multi-site req ("2 Locations" boards list
+            # them here), and the detail's `location` is the primary.
+            # `remoteType`, when a tenant emits it, is the work mode.
+            sites = []
+            for v in (info.get("location"), p.get("locationsText"),
+                      info.get("additionalLocations")):
+                for part in (v if isinstance(v, list) else [v]):
+                    if isinstance(part, str) and part.strip() and part.strip() not in sites:
+                        sites.append(part.strip())
+            rt = str(info.get("remoteType") or p.get("remoteType") or "").strip().lower()
+            work_mode = ("remote" if "remote" in rt and "hybrid" not in rt else "hybrid" if "hybrid" in rt
+                         else "onsite" if ("site" in rt or "office" in rt) else "")
+            geo = GeoEvidence(
+                sites=sites, sites_field="jobPostingInfo.location+locationsText",
+                work_mode=work_mode, work_mode_field="remoteType" if work_mode else "",
+            ) if (sites or work_mode) else None
+
+            posted = info.get("startDate")
+            posted_dt = None
+            if posted:
+                try:
+                    posted_dt = datetime.strptime(posted, "%Y-%m-%d")
+                except Exception:
+                    posted_dt = None
+
+            # `hiringOrganization` is documented for schema.org job
+            # postings but was NOT confirmed present in a live CXS
+            # response, so it is read defensively and simply absent
+            # when the tenant does not send it. Nothing depends on it.
+            ctx: dict = {}
+            hiring_org = info.get("hiringOrganization")
+            if isinstance(hiring_org, dict):
+                hiring_org = hiring_org.get("name")
+            put(ctx, "hiring_entity", hiring_org, EVIDENCE_ORG_ENTITY,
+                "jobPostingInfo.hiringOrganization.name")
+            # The requisition is kept as its own evidenced field
+            # because `external_id` is no longer the bare req id: a
+            # Workday req id is unique per TENANT, so it is qualified
+            # (job_identity.scoped_external_id) to stop two employers
+            # sharing `R29845` from merging into one posting.
+            put(ctx, "requisition_id", info.get("jobReqId"),
+                EVIDENCE_ORG_ENTITY, "jobPostingInfo.jobReqId")
+            put(ctx, "ats", "workday", EVIDENCE_ORG_ENTITY, "scraper")
+
+            stored_as = scoped_external_id("workday", tenant, req_id)
+            if poll.on:
+                poll.fetched()
+                # Which id this URL is stored under; whether the pool HOLDS
+                # it is recorded by the upsert, not here.
+                detail_memo.set_alias("workday", apply_url, stored_as)
+            jobs.append(
+                RawJob(
+                    source="workday",
+                    # (== stored_as; spelled out because this call is the
+                    # thing test_job_identity guards)
+                    external_id=scoped_external_id(
+                        "workday", tenant, req_id),
+                    company=company,
+                    title=title,
+                    location=location,
+                    remote=remote,
+                    url=apply_url,
+                    description=description,
+                    posted_at=posted_dt,
+                    origin="workday",
+                    context=ctx,
+                    geo=geo,
+                    listing_fp=fp,
+                )
+            )
+
+
+        # A detail the pool does not hold was fetched: ingest this result even
+        # if the listing reads unchanged.
+        self.ingest_required = poll.ingest_required
+        log.info("Workday[%s]: %d tech jobs (%d details fetched, %d waiting)",
+                 tenant, len(jobs), poll.n_fetched, poll.n_skipped)
         return jobs

@@ -59,6 +59,13 @@ _known: Dict[str, Dict[str, Optional[str]]] = {}
 _load_failed_at: Dict[str, float] = {}
 # Ids forgotten once already (see `forget`).
 _refetched: Dict[str, set] = {}
+# Sources whose LISTING does not carry the id a row is stored under. Workday's
+# listing names a posting by its path; the requisition id that becomes the
+# external id is only on the detail record. For these the posting's own URL
+# (which the listing does give, and which is stored on the row) is remembered
+# beside the id it was stored under: source -> {url key -> external id}.
+ALIAS_SOURCES = frozenset({"workday"})
+_alias: Dict[str, Dict[str, str]] = {}
 _LOAD_RETRY_SECONDS = 600.0
 _MAX_PER_SOURCE = 400_000
 
@@ -94,6 +101,28 @@ def max_per_poll() -> int:
     return max(1, int(getattr(settings, "detail_max_per_poll", 25) or 25))
 
 
+def _url_key(url: str) -> str:
+    """A short stable key for a posting URL (the URLs themselves are long, and
+    one is kept per stored posting)."""
+    return hashlib.sha1((url or "").strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def alias(source: str, url: str) -> Optional[str]:
+    """The external id the posting at this URL is stored under, if known."""
+    _table(source)                      # make sure the source is loaded
+    return _alias.get(source, {}).get(_url_key(url))
+
+
+def set_alias(source: str, url: str, external_id: str) -> None:
+    """The adapter read this posting's detail and learned its id. Safe to
+    record at once: knowing the id is not knowing the pool HOLDS the posting —
+    that is still `needs_detail`, which only the upsert can answer."""
+    if url and external_id:
+        table = _alias.setdefault(source, {})
+        if len(table) < _MAX_PER_SOURCE:
+            table[_url_key(url)] = external_id
+
+
 def fingerprint(title: str, location: str) -> str:
     """Listing-phase identity of a posting's content: what the LISTING says."""
     raw = f"{(title or '').strip()}|{(location or '').strip()}"
@@ -109,18 +138,27 @@ def _load(source: str) -> Dict[str, Optional[str]]:
         from app.db.init_db import get_session
         from app.db.models import Job, JobSource
         from app.discovery.pipeline import SHARED_POOL_USER
+        with_url = source in ALIAS_SOURCES
+        cols = (Job.external_id, Job.url) if with_url else (Job.external_id,)
         with get_session() as session:
             rows = session.exec(
-                select(Job.external_id).where(
+                select(*cols).where(
                     Job.user_id == SHARED_POOL_USER,
                     Job.source == JobSource(source),
                     Job.content_hash != EMPTY_CONTENT_HASH,
                     Job.content_hash.is_not(None),
                 ).limit(_MAX_PER_SOURCE)
             ).all()
-        for ext in rows:
+        aliases: Dict[str, str] = {}
+        for row in rows:
+            ext = row[0] if with_url else row
             if ext:
                 table[str(ext)] = None
+                if with_url and row[1]:
+                    aliases[_url_key(row[1])] = str(ext)
+        if with_url:
+            aliases.update(_alias.get(source, {}))   # keep what was learned meanwhile
+            _alias[source] = aliases
         _load_failed_at.pop(source, None)
         log.info("detail memo: %s — %d postings already hold a description", source, len(table))
     except Exception as e:
@@ -276,3 +314,4 @@ def reset() -> None:
         _buckets.clear()
         _load_failed_at.clear()
         _refetched.clear()
+        _alias.clear()

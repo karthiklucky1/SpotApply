@@ -490,3 +490,252 @@ def test_a_new_description_is_ingested_even_when_the_listing_is_unchanged(monkey
     stats, calls = run(ingest_required=True)
     assert stats["changed"] == 1 and len(calls) == 1, (
         "a result carrying a new description was skipped as 'unchanged'")
+
+
+# ── an unchanged listing costs no detail requests (Workday, SmartRecruiters) ──
+# These two pay a request PER POSTING on top of the listing — up to a hundred —
+# and paid it on every poll, changed or not. Within a day of Workday's refusals
+# being recorded at all (2026-11-17), 2,105 of 2,407 boards had been answered
+# 429. The pulse lane already knows what a board's listing looked like when it
+# was last ingested in full (`poll_hash`); it now tells the adapter, which
+# compares its listing first and skips the details when nothing changed.
+
+from app.discovery import smartrecruiters, workday  # noqa: E402
+from app.discovery.base import listing_signature  # noqa: E402
+from app.discovery.pipeline import (  # noqa: E402
+    THROTTLED_BOARD_BACKOFF_HOURS, UNSENT_BOARD_BACKOFF_HOURS, spared_backoff_hours,
+)
+
+
+class _Workday:
+    """A one-page Workday tenant that counts listing POSTs and detail GETs."""
+
+    def __init__(self, n=4, detail_status=200):
+        self.n, self.detail_status = n, detail_status
+        self.posts = self.gets = 0
+
+    def post(self, url, json=None, **kw):
+        self.posts += 1
+        rows = [] if json["offset"] else [
+            {"title": f"Software Engineer {i}",
+             "externalPath": f"/job/Austin/Software-Engineer-{i}_R{i:03d}"} for i in range(self.n)]
+        return _http(payload={"jobPostings": rows, "total": self.n})
+
+    def get(self, url, **kw):
+        self.gets += 1
+        if self.detail_status != 200:
+            return _http(self.detail_status, payload={})
+        return _http(payload={"jobPostingInfo": {
+            "jobReqId": url.rsplit("_", 1)[-1], "jobDescription": "<p>Build things.</p>",
+            "location": "Austin, TX", "startDate": "2026-11-10"}})
+
+
+def _workday(monkeypatch, fake, known=None):
+    monkeypatch.setattr(workday.httpx, "post", fake.post)
+    monkeypatch.setattr(workday.httpx, "get", fake.get)
+    s = workday.WorkdayScraper("acme", "https://acme.wd1.myworkdayjobs.com/External")
+    if known is not None:
+        s.known_signature = known
+    return s
+
+
+def test_workday_fetches_details_when_the_lane_knows_nothing(monkeypatch):
+    """The full pass and the hot lane never say what was ingested: full fetch."""
+    fake = _Workday(4)
+    s = _workday(monkeypatch, fake)
+    jobs = s.fetch()
+    assert len(jobs) == 4 and fake.gets == 4
+    assert all("Build things" in j.description for j in jobs)
+    assert s.fetch_complete is True and s.listing_complete is True
+
+
+def test_an_unchanged_workday_listing_makes_no_detail_request(monkeypatch):
+    fake = _Workday(4)
+    first = _workday(monkeypatch, fake)
+    first.fetch()
+    ingested = listing_signature(first.signature_entries)
+
+    fake = _Workday(4)
+    s = _workday(monkeypatch, fake, known=ingested)
+    assert s.fetch() == []
+    assert fake.gets == 0, f"{fake.gets} detail requests for a board that did not change"
+    assert fake.posts >= 1
+    assert listing_signature(s.signature_entries) == ingested, (
+        "the lane still needs the listing to see that nothing changed")
+    assert s.fetch_complete is False, "an empty list must never claim to be the whole board"
+    assert s.listing_complete is True and len(s.listed_urls) == 4
+
+
+def test_a_changed_workday_listing_is_fetched_in_full(monkeypatch):
+    first = _workday(monkeypatch, _Workday(4))
+    first.fetch()
+    fake = _Workday(5)                                   # one more posting
+    s = _workday(monkeypatch, fake, known=listing_signature(first.signature_entries))
+    assert len(s.fetch()) == 5 and fake.gets == 5
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_refused_workday_detail_stops_the_requests(monkeypatch, status):
+    """It used to `continue` to the next posting: ninety-nine more requests to
+    a site that had just said stop."""
+    fake = _Workday(8, detail_status=status)
+    s = _workday(monkeypatch, fake)
+    assert s.fetch() == []
+    assert fake.gets == 1
+    assert s.fetch_complete is False and len(s.signature_entries) == 8
+
+
+def test_an_unchanged_smartrecruiters_listing_makes_no_detail_request(monkeypatch):
+    calls = {"listing": 0, "detail": 0}
+    listing = {"content": [{"id": str(i), "name": f"Software Engineer {i}", "location": {}}
+                           for i in range(3)], "totalFound": 3}
+
+    def get(url, **kw):
+        if url.endswith("/postings"):
+            calls["listing"] += 1
+            return _http(payload=listing)
+        calls["detail"] += 1
+        return _http(payload={"jobAd": {"sections": {"jobDescription": {"text": "<p>Go.</p>"}}}})
+
+    monkeypatch.setattr(smartrecruiters.httpx, "get", get)
+    s = smartrecruiters.SmartRecruitersScraper("acme")
+    assert len(s.fetch()) == 3 and calls["detail"] == 3
+    ingested = listing_signature(s.signature_entries)
+
+    calls["detail"] = 0
+    s = smartrecruiters.SmartRecruitersScraper("acme")
+    s.known_signature = ingested
+    assert s.fetch() == [] and calls["detail"] == 0
+    assert s.fetch_complete is False and s.listing_complete is True
+    assert s.listed_ids == {"0", "1", "2"}, "absence is still judged against the listing"
+
+    listing["content"].append({"id": "9", "name": "Software Engineer 9", "location": {}})
+    listing["totalFound"] = 4
+    s = smartrecruiters.SmartRecruitersScraper("acme")
+    s.known_signature = ingested
+    assert len(s.fetch()) == 4 and calls["detail"] == 4
+
+
+def test_the_lane_tells_the_adapter_what_it_ingested_and_does_no_work(monkeypatch):
+    with get_session() as s:
+        s.exec(delete(CompanyRegistry).where(CompanyRegistry.slug.like(f"{_P}%")))
+        s.commit()
+    pulse_lane._VOLATILE_SIGS.clear()
+    entries = [(f"{_P}w1", "Engineer"), (f"{_P}w2", "Scientist")]
+    stored = pulse_lane._signature_from_entries(entries)
+    assert stored == listing_signature(entries), "lane and adapters must hash identically"
+    with get_session() as s:
+        s.add(CompanyRegistry(slug=f"{_P}wd", ats=JobSource.WORKDAY, company_name="x",
+                              is_active=True, job_count=2, poll_hash=stored,
+                              next_poll_at=datetime.utcnow() - timedelta(hours=2)))
+        s.commit()
+
+    def mine():
+        with get_session() as s:
+            return s.exec(select(CompanyRegistry).where(
+                CompanyRegistry.slug.like(f"{_P}%"))).all()
+
+    # An adapter that did what Workday now does: saw its listing was the one
+    # already ingested, skipped the details and returned nothing.
+    scraper = SimpleNamespace(fetch=lambda: [], fetch_complete=False,
+                              signature_entries=entries, signature_stable=True)
+    calls: list = []
+    monkeypatch.setattr(pulse_lane, "_due_boards", lambda now, limit: mine()[:limit])
+    monkeypatch.setattr("app.discovery.pipeline.scraper_for", lambda ats, slug, url: scraper)
+    monkeypatch.setattr("app.strategy.hot_lane._active_users", lambda: [])
+    monkeypatch.setattr(pulse_lane, "_watchlist_terms", lambda: set())
+    monkeypatch.setattr("app.discovery.pipeline._upsert",
+                        lambda raw, **kw: calls.append(list(raw)) or 0)
+    stats = pulse_lane.run_pulse_tick()
+    assert scraper.known_signature == stored, "the adapter was not told what was ingested"
+    assert stats["unchanged"] == 1 and stats["fetch_ok"] == 1 and calls == []
+    with get_session() as s:
+        row = s.exec(select(CompanyRegistry).where(CompanyRegistry.slug == f"{_P}wd")).one()
+    assert row.job_count == 2 and row.poll_hash == stored and row.is_active, (
+        "an early exit must not read as an empty board")
+
+
+def test_a_request_we_never_sent_is_retried_in_an_hour_not_six():
+    """join.com's own pace being full is our choice, not the site's answer."""
+    msg = "join: not sent — our own pace for join.com is full (rate limit)"
+    assert spared_backoff_hours(msg) == UNSENT_BOARD_BACKOFF_HOURS == 1
+    assert spared_backoff_hours("join jobs API returned 429") == THROTTLED_BOARD_BACKOFF_HOURS
+
+
+# ── Workday: a known posting is recognised by its URL ────────────────────────
+# Workday's listing names a posting by its path; the requisition id its row is
+# stored under is only on the detail record. So "does the pool hold it?" is
+# asked by URL (detail_memo.alias), and a re-sighting costs no request.
+
+def _stored_workday():
+    with get_session() as s:
+        return s.exec(select(Job).where(Job.user_id == SHARED_POOL_USER,
+                                        Job.source == JobSource.WORKDAY,
+                                        Job.url.like("https://acme.wd1.myworkdayjobs.com/%"))).all()
+
+
+@pytest.fixture
+def _clean_workday():
+    yield
+    with get_session() as s:
+        s.exec(delete(Job).where(Job.source == JobSource.WORKDAY,
+                                 Job.url.like("https://acme.wd1.myworkdayjobs.com/%")))
+        s.commit()
+
+
+def test_workday_fetches_each_detail_once(monkeypatch, budget, _clean_workday):
+    budget("workday=600")
+    fake = _Workday(4)
+    s = _workday(monkeypatch, fake)
+    first = s.fetch()
+    assert fake.gets == 4 and len(first) == 4 and s.ingest_required is True
+    assert all(r.listing_fp and not r.listing_only for r in first)
+    assert _upsert(first, user_id=SHARED_POOL_USER) == 4
+
+    fake = _Workday(5)                                   # one new posting
+    s = _workday(monkeypatch, fake)                      # (no known_signature: a changed board)
+    second = s.fetch()
+    assert fake.gets == 1, f"{fake.gets} detail requests; only the new posting needs one"
+    assert sorted(r.listing_only for r in second) == [False, True, True, True, True]
+    held = {r.external_id for r in second if r.listing_only}
+    assert held == {r.external_id for r in first}, (
+        "a re-sighting must carry the id its row is stored under")
+    assert _upsert(second, user_id=SHARED_POOL_USER) == 1
+    rows = _stored_workday()
+    assert len(rows) == 5 and all("Build things" in r.description for r in rows), (
+        "a listing-only re-sighting blanked a stored description")
+
+
+def test_workday_knows_what_the_pool_holds_after_a_restart(monkeypatch, budget, _clean_workday):
+    """A deploy empties the process's memory. The pool's rows (id + URL) are
+    read back, so a restart does not cost a detail request per stored posting."""
+    budget("workday=600")
+    s = _workday(monkeypatch, _Workday(3))
+    _upsert(s.fetch(), user_id=SHARED_POOL_USER)
+    detail_memo.reset()                                  # the restart
+    fake = _Workday(3)
+    s = _workday(monkeypatch, fake)
+    raw = s.fetch()
+    assert fake.gets == 0 and len(raw) == 3 and all(r.listing_only for r in raw)
+
+
+def test_a_workday_posting_without_budget_waits(monkeypatch, budget):
+    budget("workday=600", per_poll=2)
+    fake = _Workday(5)
+    s = _workday(monkeypatch, fake)
+    raw = s.fetch()
+    assert fake.gets == 2 and len(raw) == 2 and all(r.description for r in raw)
+    assert s.fetch_complete is False and len(s.signature_entries) == 5, (
+        "three postings wait; the lane must not record this listing as ingested")
+
+
+def test_workday_requests_are_spaced(monkeypatch):
+    slept: list = []
+    monkeypatch.setattr(settings, "workday_request_spacing_seconds", 1.0, raising=False)
+    monkeypatch.setattr(workday.time, "sleep", lambda s: slept.append(s))
+    fake = _Workday(3)
+    _workday(monkeypatch, fake).fetch()
+    assert fake.posts + fake.gets >= 4
+    assert len(slept) == fake.posts + fake.gets - 1, (
+        "every request after the first waits its gap")
+    assert set(slept) == {1.0}
