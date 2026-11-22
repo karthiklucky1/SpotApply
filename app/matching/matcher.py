@@ -111,6 +111,43 @@ def _candidate_columns() -> tuple:
         func.substr(Job.description, 1, _retrieval_desc_chars()),
     )
 
+def _unscored_only(q, corpus_cap: int):
+    """Narrow a candidate SELECT to the rows the matching lane may still SCORE:
+    unscored, newest first, capped — and inside the scoring gate.
+
+    The gate is the part this query went without. Retrieval took the newest
+    ``corpus_cap`` unscored rows whatever their age, the matching lane has no
+    expiry sweep of its own, and nothing downstream looked at a date — so a
+    copy routed into a pool between two scoring cycles was ranked, scored and
+    placed however long ago it had been found or published. Production
+    2026-10-29/30: twelve postings held 15 to 46 days, with source dates 30 to
+    330 days old, were delivered 20-186 s after their copies were created
+    (every one carries the ``similarity_score`` only this lane writes), and the
+    next hygiene pass removed all twelve.
+
+    BOTH bounds, from app/common/freshness.py like every other consumer. The
+    known window is the NORMAL one, not a welcome user's wider catch-up window:
+    a catch-up delivery needs evidence the posting is still open and its
+    ``delivered_catchup`` mark, and only the scoring lane does either
+    (``scoring_lane._shortlist_user``). Rows this leaves out are not lost —
+    the sweep stamps them, and the scoring lane serves the catch-up ones.
+    """
+    from app.common.freshness import scoring_gate_expr
+    q = q.where(Job.rerank_score == None)  # noqa: E711
+    gate = scoring_gate_expr(
+        int(getattr(settings, "scoring_max_job_age_days", 0) or 0),
+        int(getattr(settings, "scoring_max_posted_age_days", 0) or 0))
+    if gate is not None:
+        q = q.where(gate)
+    # A copy still waiting on location verification is not a candidate for a
+    # paid score (app/common/eligibility.py). NULL = a row from before the
+    # verdict existed: the legacy path.
+    if getattr(settings, "geo_hold_unresolved", True):
+        from sqlalchemy import or_ as _or
+        q = q.where(_or(Job.eligibility.is_(None), Job.eligibility != "unknown"))
+    return q.order_by(Job.first_seen.desc()).limit(corpus_cap)
+
+
 # Supabase enforces a statement_timeout, so a single UPDATE over thousands of
 # rows gets cancelled ("QueryCanceled … N bound parameter sets"). Commit the
 # embedding_id backfill in small batches so every statement stays fast.
@@ -474,15 +511,7 @@ class Matcher:
             if user_id:
                 q = q.where(Job.user_id == user_id)
             if only_unscored:
-                q = (q.where(Job.rerank_score == None)  # noqa: E711
-                      .order_by(Job.first_seen.desc())
-                      .limit(corpus_cap))
-                # A copy still waiting on location verification is not a
-                # candidate for a paid score (app/common/eligibility.py). NULL
-                # = a row from before the verdict existed: the legacy path.
-                if getattr(settings, "geo_hold_unresolved", True):
-                    from sqlalchemy import or_ as _or
-                    q = q.where(_or(Job.eligibility.is_(None), Job.eligibility != "unknown"))
+                q = _unscored_only(q, corpus_cap)
             jobs = [_Candidate(*row) for row in session.exec(q).all()]
 
         if not jobs:

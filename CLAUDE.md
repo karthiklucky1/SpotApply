@@ -373,7 +373,18 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   latency. All four consumers — scoring gate, render filter, shortlist hygiene,
   description stripper — build from that module, and widening either bound is
   spend-neutral (per-cycle finals/prescores are capped, so a bigger queue changes
-  WHICH jobs the fixed budget buys).
+  WHICH jobs the fixed budget buys). **The expiry sweep is a STAMP, not a gate**
+  (2026-11-21): it runs once at the start of a scoring cycle and the matching
+  lane has none, while the pulse route copies every title-matching posting of a
+  changed board, however old. The scoring queue carried the known bound only,
+  retrieval carried neither and `slate.place()` looked at no date: 17 postings
+  with source dates 30-711 days old (one from 2024-12) reached two boards and
+  hygiene removed each on its next pass — a final, a slot and a count against
+  the day apiece. Every list a scorer reads applies `freshness.scoring_gate_expr`
+  (`_user_queue`, `matcher._unscored_only` — normal window; catch-up is the
+  scoring lane's), and `place()` refuses what hygiene would prune
+  (`held_too_long` / `ancient_posting`; `catchup=True` widens the known window
+  only). Guard: `test_stale_delivery`.
 - **`rerank_score` is overloaded**: it carries real 0–100 verdicts AND the ghost
   (5.0) / age-expiry (8.0) sentinels, so `rerank_score IS NOT NULL` is NOT "was
   scored" (production's "621k scored jobs" was mostly expiry stamps). Lifecycle

@@ -49,6 +49,7 @@ from typing import Optional
 
 from sqlmodel import select
 
+from app.common.freshness import STALE_ANCIENT, STALE_HELD
 from app.config import settings
 from app.db.models import Application, ApplicationStatus, Job
 
@@ -83,7 +84,7 @@ SLATE_CHALLENGER_NOTE = f"{SLATE_REPLACED_MARKER}: a stronger job arrived later 
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | ineligible | unverified_location | aggregator_link | duplicate
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | held_too_long | ancient_posting | ineligible | unverified_location | aggregator_link | duplicate
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
     # The eligibility decision this placement was made under, with the rule /
@@ -102,6 +103,42 @@ OUTCOME_PAUSED = "paused"
 #: `place()` refused because the job's link opens a job board's page, not the
 #: employer's application (settings.board_direct_apply_only).
 OUTCOME_AGGREGATOR_LINK = "aggregator_link"
+
+#: `place()` refused because the board's own freshness window would take the
+#: entry off again on the next hygiene pass (`_outside_board_window`): we have
+#: held the posting longer than the window, or its source dates it past the
+#: posted bound. The names `freshness.stale_reason` returns, by construction.
+OUTCOME_HELD_TOO_LONG = STALE_HELD
+OUTCOME_ANCIENT_POSTING = STALE_ANCIENT
+
+
+def _outside_board_window(job: Job, *, catchup: bool = False) -> str:
+    """'' when the board would KEEP a delivery of this posting made right now,
+    else which freshness bound it is past (an ``OUTCOME_*`` above).
+
+    The rule is shortlist hygiene's, on purpose
+    (``shortlist_hygiene.prune_stale_shortlist``, and the render filter
+    ``server._shortlist_fresh_clause``): a SHORTLISTED entry stays while we
+    have held its posting no longer than ``shortlist_max_age_days`` AND the
+    source's date is within ``shortlist_max_posted_age_days``. A first-hour
+    CATCH-UP delivery — the scoring lane's, which has just confirmed the
+    posting is open and marks the entry ``delivered_catchup`` — is kept up to
+    ``welcome_catchup_days`` of known age instead; nothing loosens the posted
+    bound. ``shortlist_max_age_days`` at 0 turns the whole window off, both
+    bounds, exactly as it does for hygiene.
+
+    Delivery and hygiene deciding this separately is how they came to
+    disagree: nothing here looked at a date, so whatever a lane scored was
+    placed, counted against the day's allowance, and pruned on the next pass.
+    """
+    from app.common.freshness import stale_reason
+    days = int(getattr(settings, "shortlist_max_age_days", 0) or 0)
+    if days <= 0:
+        return ""
+    if catchup:
+        days = max(days, int(getattr(settings, "welcome_catchup_days", 0) or 0))
+    posted_days = int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0)
+    return stale_reason(job, days, posted_days)
 
 
 def _day_start() -> datetime:
@@ -211,12 +248,17 @@ def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
 
 
 def place(session, job: Job, score: float, *, user_id: Optional[str],
-          is_local: bool = False) -> Placement:
+          is_local: bool = False, catchup: bool = False) -> Placement:
     """Decide whether ``job`` reaches the board, and make it so.
 
     The ONLY path that creates a SHORTLISTED application. Callers pass a job
     that has already cleared the score bar; this decides capacity, runs the
     per-company cap, and writes the row. The caller commits.
+
+    ``catchup`` is the scoring lane saying "this is a first-hour catch-up
+    delivery": a posting known longer than the normal window, which it has
+    just confirmed is still open and will mark ``delivered_catchup``. It widens
+    the KNOWN-age window to ``welcome_catchup_days`` and nothing else.
     """
     from app.common.plan_limits import shortlist_daily_limit
     from app.matching.pipeline import _AUTOFILL_SOURCES, _check_and_enforce_company_cap
@@ -251,6 +293,25 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     from app.common.compute_policy import paused_now
     if paused_now(uid_arg):
         return _record(session, job, score, user_id, Placement(False, OUTCOME_PAUSED))
+
+    # ── The board never receives what its own window would remove ───────────
+    # Freshness was every lane's own business — the queue it read from, a
+    # sweep that had (probably) already run — and nothing in the one writer of
+    # a board entry. So when a lane's list let a stale posting through, it was
+    # placed: production 2026-10-29..11-15 delivered 17 postings whose source
+    # dated them 30 to 711 days back (twelve of them also held 15-46 days),
+    # and shortlist hygiene removed every one on its next pass. Each had cost
+    # a final, taken a slot and counted against the day's allowance for a job
+    # the user never saw. Refused here on the SAME rule hygiene prunes by, so
+    # the two cannot disagree again whichever lane is asking. Read from the
+    # row in hand: no query, no network. The score stays on the job.
+    _stale = _outside_board_window(job, catchup=catchup)
+    if _stale:
+        log.info("Slate: refused '%s' — %s", job.title,
+                 "its source dates the posting past the posted-age bound"
+                 if _stale == OUTCOME_ANCIENT_POSTING
+                 else "we have held the posting longer than the board's window")
+        return _record(session, job, score, user_id, Placement(False, _stale))
 
     # ── Dead postings never reach a board ───────────────────────────────────
     # Cached read only: this runs with `session` open and the codebase never
