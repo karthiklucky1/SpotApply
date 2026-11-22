@@ -990,7 +990,9 @@ class Settings(BaseSettings):
     # per-source budget so a first backfill cannot become a burst.
     detail_once_enabled: bool = True                  # DETAIL_ONCE_ENABLED — 0 = these adapters go back to listing-only rows (no description)
     detail_fetch_per_minute: str = "rippling=20,join=20,breezy=30,workday=60"  # DETAIL_FETCH_PER_MINUTE — detail requests a minute per source, process-wide. A source not named here never fetches details. join.com's also wait their turn in its own pace. Workday joined 2026-11-20: it paid a detail request per posting (up to 100) on every poll, and 3,279 of 3,561 boards had been answered 429 in a day.
-    workday_request_spacing_seconds: float = 1.0      # WORKDAY_REQUEST_SPACING_SECONDS — gap between two requests of ONE Workday poll (listing pages, then details). Measured live 2026-11-20: six requests in five seconds were answered, the seventh was a 429. 0 = no gap.
+    workday_request_spacing_seconds: float = 2.0      # WORKDAY_REQUEST_SPACING_SECONDS — least time between two Workday requests from this PROCESS, whichever tenant they are for (app/discovery/pacing.py). Workday limits by address across tenants: a one-second gap inside each poll still left 1,143 of 1,440 polls refused on their first request (2026-11-21). 0 = no pacing.
+    workday_max_pace_wait_seconds: float = 12.0       # WORKDAY_MAX_PACE_WAIT_SECONDS — longest a fetch thread waits for its Workday slot. Past it the request is not sent and the board is retried in an hour.
+    workday_refusal_cooldown_seconds: float = 180.0   # WORKDAY_REFUSAL_COOLDOWN_SECONDS — after Workday answers 403/429, no Workday request is sent for this long. A live check was refused for the rest of a session after one burst: asking the next tenant straight away prolongs it.
     detail_max_per_poll: int = 25                     # DETAIL_MAX_PER_POLL — most details one board may fetch in one poll; the rest come on its next polls
     # ── Open board list refresh (app/discovery/registry.py) ───────────────────
     # The open list grows; the registry only loaded it once, so by 2026-11-15

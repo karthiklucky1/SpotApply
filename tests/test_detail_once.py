@@ -729,13 +729,127 @@ def test_a_workday_posting_without_budget_waits(monkeypatch, budget):
         "three postings wait; the lane must not record this listing as ingested")
 
 
-def test_workday_requests_are_spaced(monkeypatch):
-    slept: list = []
-    monkeypatch.setattr(settings, "workday_request_spacing_seconds", 1.0, raising=False)
-    monkeypatch.setattr(workday.time, "sleep", lambda s: slept.append(s))
+class _FakeClock:
+    def __init__(self):
+        self.now, self.slept = 500.0, []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(round(seconds, 3))
+        self.now += seconds
+
+
+@pytest.fixture
+def workday_pace(monkeypatch):
+    """Turn Workday's shared pace on (off in the suite) with a fake clock."""
+    from app.discovery import pacing
+    monkeypatch.setattr(settings, "workday_request_spacing_seconds", 2.0, raising=False)
+    monkeypatch.setattr(settings, "workday_max_pace_wait_seconds", 12.0, raising=False)
+    monkeypatch.setattr(settings, "workday_refusal_cooldown_seconds", 180.0, raising=False)
+    clock = _FakeClock()
+    monkeypatch.setattr(pacing.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(pacing.time, "sleep", clock.sleep)
+    workday._PACE.reset()
+    yield clock
+    workday._PACE.reset()
+
+
+def test_every_workday_request_shares_one_pace(monkeypatch, workday_pace):
+    """Workday limits by address ACROSS tenants: 1,143 of 1,440 polls were
+    refused on their first request while each poll spaced only its own."""
     fake = _Workday(3)
     _workday(monkeypatch, fake).fetch()
-    assert fake.posts + fake.gets >= 4
-    assert len(slept) == fake.posts + fake.gets - 1, (
-        "every request after the first waits its gap")
-    assert set(slept) == {1.0}
+    n = fake.posts + fake.gets
+    assert n >= 4
+    assert workday_pace.slept == [2.0] * (n - 1), "every request after the first waits its slot"
+    # A SECOND tenant right after: its first request waits too — the pace is the
+    # process's, not the board's.
+    before = len(workday_pace.slept)
+    fake2 = _Workday(1)
+    monkeypatch.setattr(workday.httpx, "post", fake2.post)
+    monkeypatch.setattr(workday.httpx, "get", fake2.get)
+    workday.WorkdayScraper("other", "https://other.wd1.myworkdayjobs.com/External").fetch()
+    assert workday_pace.slept[before] == 2.0
+
+
+def test_a_long_workday_queue_is_not_sent_and_retried_in_an_hour(monkeypatch, workday_pace):
+    from app.discovery.base import BoardNotSentError
+    from app.discovery.pipeline import _is_throttled
+    monkeypatch.setattr(workday_pace, "sleep", lambda s: None)       # the clock never moves
+    from app.discovery import pacing
+    monkeypatch.setattr(pacing.time, "sleep", lambda s: None)
+    fake = _Workday(0)
+    outcomes = []
+    for _ in range(12):
+        s = _workday(monkeypatch, fake)
+        try:
+            s.fetch()
+            outcomes.append("sent")
+        except BoardNotSentError as e:
+            outcomes.append("held")
+            assert _is_throttled(str(e)) is True, "never a strike"
+            assert spared_backoff_hours(str(e)) == UNSENT_BOARD_BACKOFF_HOURS
+    assert outcomes == ["sent"] * 7 + ["held"] * 5, outcomes          # waits of 0..12 s
+    assert fake.posts == 7, "a held request must never reach Workday"
+
+
+def test_a_workday_refusal_pauses_every_tenant(monkeypatch, workday_pace):
+    """After a 429 nobody asks again for a while: asking the next tenant
+    straight away is how a throttle becomes a block."""
+    from app.discovery.base import BoardNotSentError
+
+    class _Refusing(_Workday):
+        def post(self, url, json=None, **kw):
+            self.posts += 1
+            return _http(429, payload={})
+
+    refusing = _Refusing()
+    with pytest.raises(BoardBlockedError):
+        _workday(monkeypatch, refusing).fetch()
+    healthy = _Workday(2)
+    with pytest.raises(BoardNotSentError):
+        _workday(monkeypatch, healthy).fetch()
+    assert healthy.posts == 0, "a request went out during the cool-down"
+    workday_pace.now += 181                                # the cool-down passes
+    assert len(_workday(monkeypatch, healthy).fetch()) == 2
+
+
+def test_a_full_pace_on_a_later_page_keeps_the_first_page(monkeypatch, workday_pace):
+    class _TwoPages(_Workday):
+        def post(self, url, json=None, **kw):
+            self.posts += 1
+            rows = [{"title": f"Software Engineer {json['offset']}-{i}",
+                     "externalPath": f"/job/x/SE_{json['offset']}_{i}"} for i in range(20)]
+            return _http(payload={"jobPostings": rows, "total": 40})
+
+    fake = _TwoPages()
+    s = _workday(monkeypatch, fake)
+    # Let the first page through, then make the queue look full.
+    real_take = workday._PACE.take
+    calls = {"n": 0}
+
+    def take(patience=1.0):
+        calls["n"] += 1
+        return real_take(patience) if calls["n"] == 1 else False
+
+    monkeypatch.setattr(workday._PACE, "take", take)
+    jobs = s.fetch()
+    assert fake.posts == 1 and jobs == [], "page 2 and the details were not sent"
+    assert len(s.signature_entries) == 20 and s.fetch_complete is False
+    assert s.signature_stable is False, "a cut-short listing must not become the baseline"
+
+
+def test_a_poll_under_way_waits_longer_than_a_new_one(monkeypatch, workday_pace):
+    """Giving up on page two throws page one's request away, and the boards
+    that need several pages are the ones with the most postings."""
+    from app.discovery import pacing
+    monkeypatch.setattr(pacing.time, "sleep", lambda s: None)     # the clock never moves
+    for _ in range(7):
+        assert workday._take_turn() is True       # waits of 0..12 s
+    assert workday._take_turn() is False, "a new poll does not join a 14 s queue"
+    assert workday._take_turn(started=True) is True, "a poll under way does"
+    for _ in range(11):
+        assert workday._take_turn(started=True) is True      # up to 36 s
+    assert workday._take_turn(started=True) is False, "but not without limit"

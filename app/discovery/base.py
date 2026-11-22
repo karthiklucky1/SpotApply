@@ -180,6 +180,16 @@ class BoardBlockedError(RuntimeError):
         super().__init__(f"{source}: {BLOCKED_MARKER} ({status}){tail}")
 
 
+class BoardNotSentError(RuntimeError):
+    """We chose NOT to send this request: our own pace for the site was full
+    (app/discovery/pacing.py). The site was never asked, so this is not a
+    failure of anything — the board is simply retried in an hour."""
+
+    def __init__(self, source: str):
+        super().__init__(
+            f"{source}: not sent — our own pace for this site is full (rate limit)")
+
+
 class BoardUnreadableError(RuntimeError):
     """The site answered, but not in a shape this adapter reads.
 

@@ -5,7 +5,6 @@ Bypasses browser automation by hitting the JSON API directly.
 from __future__ import annotations
 
 import logging
-import time
 import re
 from datetime import datetime
 from typing import List, Tuple
@@ -17,6 +16,7 @@ from bs4 import BeautifulSoup
 from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
     BoardBlockedError,
+    BoardNotSentError,
     BoardUnreadableError,
     GeoEvidence,
     RawJob,
@@ -25,26 +25,45 @@ from app.discovery.base import (
 )
 from app.discovery import detail_memo
 from app.discovery.job_identity import scoped_external_id
+from app.discovery.pacing import Pace
 from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
 
-def _space() -> None:
-    """Leave a gap before the next request to this tenant.
-
-    Measured against a live tenant on 2026-11-20: two listing pages and four
-    detail requests in five seconds, and the seventh request was answered 429.
-    Workday counts requests per address over a few seconds, so a poll that
-    fires its requests back to back is throttled by its own first page.
-    """
+def _setting(name: str, default: float) -> float:
     try:
         from app.config import settings
-        gap = float(getattr(settings, "workday_request_spacing_seconds", 1.0) or 0.0)
+        return float(getattr(settings, name, default) or 0.0)
     except Exception:
-        gap = 1.0
-    if gap > 0:
-        time.sleep(gap)
+        return default
+
+
+# ONE pace for every Workday request this process sends, whichever tenant it
+# is for (app/discovery/pacing.py). Workday limits by address ACROSS tenants:
+# spacing the requests of one poll a second apart still left 1,143 of 1,440
+# polls refused on their FIRST request (2026-11-21), because dozens of tenants
+# are polled at once. A live check the day before got six requests through in
+# five seconds and was then refused for the rest of the session.
+_PACE = Pace(lambda: _setting("workday_request_spacing_seconds", 2.0),
+             lambda: _setting("workday_max_pace_wait_seconds", 12.0))
+
+
+# How much longer a poll that has already asked this board something will wait
+# for its next slot than a poll that has not started (pacing.Pace.take).
+_STARTED_POLL_PATIENCE = 3.0
+
+
+def _take_turn(started: bool = False) -> bool:
+    """Wait for the next Workday slot. False = the queue is too long: the
+    request is not sent. ``started``: this poll already spent a request."""
+    return _PACE.take(_STARTED_POLL_PATIENCE if started else 1.0)
+
+
+def _refused() -> None:
+    """Workday answered 403/429: nobody asks again for a while."""
+    _PACE.cool_down(_setting("workday_refusal_cooldown_seconds", 180.0))
+
 
 # Skip the detail fetch for postings nobody on the platform wants. The gate
 # reads the published demand (every user's target roles), so a nurse or
@@ -173,8 +192,16 @@ class WorkdayScraper:
                     "offset": offset,
                     "searchText": ""
                 }
-                if offset:
-                    _space()
+                if not _take_turn(started=offset > 0):
+                    # Our own pace is full. The first page: nothing was sent,
+                    # the board is retried in an hour. A later page: the walk
+                    # ends here and what the earlier pages listed is kept.
+                    self.fetch_complete = False
+                    self.listing_complete = False
+                    self.signature_stable = False
+                    if offset == 0:
+                        raise BoardNotSentError("workday")
+                    break
                 r = httpx.post(url, json=payload, headers=headers, timeout=30.0)
                 if r.status_code != 200:
                     log.warning("Workday fetch failed for %s: HTTP %d", tenant, r.status_code)
@@ -183,10 +210,13 @@ class WorkdayScraper:
                     self.listing_complete = False
                     self.signature_stable = False
                     if offset != 0:
+                        if r.status_code in (403, 429):
+                            _refused()
                         break       # keep what the earlier pages listed
                     if r.status_code in (403, 429):
                         # Refused or throttled: backed off, and a strike only
                         # when the rest of Workday is answering (base.py).
+                        _refused()
                         raise BoardBlockedError("workday", r.status_code)
                     # Not-found is spelled without the status on purpose: the
                     # recorders retire a board on the spot for one, and a
@@ -325,7 +355,11 @@ class WorkdayScraper:
                     poll.n_skipped += 1
                     self.fetch_complete = False
                     continue
-            _space()
+            if not _take_turn(started=True):
+                # Our own pace is full: no more detail requests this poll.
+                poll.failed(stop=True)
+                self.fetch_complete = False
+                break
             # Fetch details
             path_suffix = ext_path if ext_path.startswith("/job") else f"/job{ext_path}"
             detail_url = f"https://{domain}/wday/cxs/{tenant}/{site}{path_suffix}"
@@ -339,6 +373,7 @@ class WorkdayScraper:
                     log.info("Workday[%s]: detail request refused (%d) — stopping this poll",
                              tenant, dr.status_code)
                     poll.failed(stop=True)
+                    _refused()
                     break
                 if dr.status_code != 200:
                     # Posting is live but missing from the parsed list —

@@ -262,7 +262,7 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   Workable's 429s were being stored as empty boards. A refusal backs off
   `REFUSED_BOARD_BACKOFF_HOURS` (24), a throttle 6. join.com throttles BURSTS
   (HTTP 200 + GraphQL "too many requests" is a throttle, not a changed answer):
-  requests are spaced `JOIN_MIN_REQUEST_INTERVAL_SECONDS` (1.0) process-wide, and
+  requests are spaced `JOIN_MIN_REQUEST_INTERVAL_SECONDS` (0.6) process-wide, and
   past `JOIN_MAX_PACE_WAIT_SECONDS` (5) a request is NOT sent and reads as a
   throttle, so join boards never hold the fetch pool. **A description is fetched
   ONCE** (2026-11-17, `discovery/detail_memo.py`): Rippling, JOIN and Breezy list
@@ -285,10 +285,22 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   counted in the registry), round-robin across systems, each with `next_poll_at`
   spread over `OPEN_DATASET_SPREAD_HOURS` — a never-scheduled board is polled FIRST,
   so a batch with no schedule takes every slot from the boards that are posting.
-  Still open: Rippling still refuses production; Workday answers 429 to most boards
-  (floor 60 min since 11-17; its N+1 detail fetch per poll is the real cost, as is
-  SmartRecruiters' and BambooHR's — they are not on the fetch-once path yet); The
-  Muse 403s every run; the Greenhouse/Lever keyword searches time out at 45 s
+  **An unchanged board costs ONE listing** (2026-11-20): the pulse lane hands the
+  adapter the hash it already ingested (`scraper.known_signature`), and Workday /
+  SmartRecruiters stop after the listing when it is the same
+  (`base.unchanged_since_ingest`: `[]` + `fetch_complete=False` — that list is NOT
+  the board). Workday is on fetch-once too, known by posting URL
+  (`detail_memo.alias`), since its id is only on the detail. **A site that limits
+  by ADDRESS gets ONE pace for the whole process** (2026-11-21,
+  `discovery/pacing.py`): with each poll spacing only its own requests, 1,143 of
+  1,440 Workday polls were still refused on their FIRST request. `workday._PACE`:
+  `WORKDAY_REQUEST_SPACING_SECONDS` (2.0) between any two Workday requests, any
+  tenant; a wait past `WORKDAY_MAX_PACE_WAIT_SECONDS` (12) is NOT sent —
+  `BoardNotSentError`, no strike, retried in `UNSENT_BOARD_BACKOFF_HOURS` (1); a
+  403/429 holds EVERY tenant `WORKDAY_REFUSAL_COOLDOWN_SECONDS` (180). Off in the
+  suite (conftest).
+  Still open: Rippling still refuses production; BambooHR still asks one detail per
+  posting per poll (not on the fetch-once path); The Muse 403s every run; the Greenhouse/Lever keyword searches time out at 45 s
   (redundant with the board lanes); the registry `last_error` is not cleared by a
   later success, so read `failure_count`. Guards: `test_board_outages`,
   `test_join_contract`, `test_detail_once`, `test_open_list_refresh`.
