@@ -852,7 +852,14 @@ def _years_gap_settled(job: Job, profile) -> bool:
     from app.tailoring.requirements import minimum_years_required
     req = minimum_years_required(job.description or "",
                                  degree_level=_degree_level(getattr(profile, "degree", "") or ""))
-    return req is None or req[0] - cand < 2
+    if req is not None and req[0] - cand >= 2:
+        return False
+    # The same holds for a level the final check would cap on the title or the
+    # pay band (app/common/level.py): overruling Tier-1 there buys a final that
+    # is held under the bar the moment it comes back.
+    from app.common import level as _level
+    return not _level.judge(profile, getattr(job, "title", "") or "", job.description or "",
+                            getattr(job, "salary_text", "") or "")
 
 
 def _overrule_cleared_blocker(score: float, reason: str, job: Job, profile) -> Tuple[float, str]:
@@ -1131,7 +1138,8 @@ def _entry_level(title: str, description: str) -> bool:
 
 
 def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
-                           description: str = "", title: str = "") -> Tuple[float, str, List[str], dict]:
+                           description: str = "", title: str = "",
+                           salary_text: str = "") -> Tuple[float, str, List[str], dict]:
     """Hold a parsed verdict to facts we already hold, before it is stored:
     the work_auth factor to the user's visa status (work_auth.py) and years
     figures to what the resume can show. Never raises.
@@ -1142,10 +1150,14 @@ def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
         BLOCKER_OVERALL_CAP. On 2026-10-28 a posting requiring "U.S.
         Citizenship with eligibility for DoD Secret clearance" came back
         work_auth 10, overall 72, and reached an F-1 OPT user's board;
-      * it states 2+ more years than the resume shows ("6+ years", "minimum
-        of 7 years"), read as written by `minimum_years_required` →
+      * it is above the person's level (`app/common/level.py`): it states 2+
+        more years than the resume shows ("6+ years", "minimum of 7 years",
+        read as written by `minimum_years_required`), or states none and its
+        title is a level out of reach (Senior under 4 years, Lead under 5,
+        Staff+ under 6), or its pay starts at a senior band →
         STRETCH_OVERALL_CAP. The rubric's own band calls that a stretch, yet
-        "7+ years, advanced PHP" for a 4-year Python developer came back 72;
+        "7+ years, advanced PHP" for a 4-year Python developer came back 72,
+        and a $347K role came back 80 for a new graduate;
       * it is an entry-level role (0–2 years, Junior, Associate, Engineer I)
         and the resume shows 4+ years → STRETCH_OVERALL_CAP too. "Junior AI
         Engineer, 0–2 years" came back 92, "Excellent match".
@@ -1171,16 +1183,18 @@ def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
             if refusal is not None and score > BLOCKER_OVERALL_CAP and needs_sponsorship(profile):
                 score = BLOCKER_OVERALL_CAP
                 concerns = [f'Posting rules this out: "{refusal.sentence[:90]}"'] + list(concerns)[:2]
-            cand = int(getattr(profile, "years_experience", 0) or 0)
-            if cand > 0 and score > STRETCH_OVERALL_CAP:
-                from app.matching.filters.rule_filter import _degree_level
-                from app.tailoring.requirements import minimum_years_required
-                req = minimum_years_required(
-                    description, degree_level=_degree_level(getattr(profile, "degree", "") or ""))
-                if req and req[0] - cand >= 2:
+            # Above the person's level — by the posting's stated years, its
+            # title's level word or its pay floor: ONE decision, the same one
+            # the rule filter drops the out-of-reach cases on before any paid
+            # call (app/common/level.py). It answers for someone with no paid
+            # work yet too; this cap used to skip every profile showing 0.
+            from app.common import level as _level
+            if score > STRETCH_OVERALL_CAP:
+                above = _level.judge(profile, title, description, salary_text)
+                if above:
                     score = STRETCH_OVERALL_CAP
-                    concerns = ([f"Posting asks {req[0]:g}+ years; resume shows about {cand}"]
-                                + list(concerns)[:2])
+                    concerns = [above.concern] + list(concerns)[:2]
+            cand = int(_level.known_years(profile) or 0)
             if cand >= 4 and score > STRETCH_OVERALL_CAP and _entry_level(title, description):
                 score = STRETCH_OVERALL_CAP
                 concerns = ([f"Entry-level role; below your ~{cand} years"] + list(concerns)[:2])
@@ -1736,7 +1750,8 @@ class Reranker:
                     # only when the posting itself refuses this user.
                     result = reconcile_with_profile(result, self._profile,
                                                     getattr(job, "description", "") or "",
-                                                    title=getattr(job, "title", "") or "")
+                                                    title=getattr(job, "title", "") or "",
+                                                    salary_text=getattr(job, "salary_text", "") or "")
                     # The verdict feeds the adaptive budget's marginal-yield
                     # test. Recorded AFTER the parse (a score is needed) but the
                     # spend above is recorded BEFORE it — an unparseable

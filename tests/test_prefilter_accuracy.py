@@ -373,7 +373,10 @@ def test_what_is_left_alone():
     assert _final("5+ years of experience in software engineering.")[0] == 72.0
     # A senior associate, an associate principal and an "I/II" opening are not entry roles.
     assert _final("Consulting delivery.", "AI Consulting Engineer - Senior Associate")[0] == 72.0
-    assert _final("Lead .NET work.", "Associate Principal Engineer - Senior .NET")[0] == 72.0
+    # (For someone principal-level is in reach of: at 4 years the title is held
+    # for the opposite reason, tests/test_experience_level.py.)
+    assert _final("Lead .NET work.", "Associate Principal Engineer - Senior .NET",
+                  years_experience=8)[0] == 72.0
     assert _final("Build APIs.", "Software Engineer I/II")[0] == 72.0
     assert _final("0-3 years of experience.", "Software Engineer", score=82.0)[0] == 82.0
     # A minimum a 4-year engineer meets is never "below level".

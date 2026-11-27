@@ -495,37 +495,46 @@ class RuleFilter:
                     score_override=12,
                 )
 
-        # 3. Experience Gap Filter — only active when resume-extracted years are
-        #    known (>0). Skipped for new users/students until resume is parsed.
-        #    Gap is +4 to allow stretch roles. The requirement is read AS
-        #    WRITTEN (tailoring/requirements.py): a range by its lower bound, a
-        #    degree ladder by the candidate's rung, never a preference or the
-        #    employer's own history — a bare "N years" scan read "6–8 years" as
-        #    8 and "has over 50 years of experience in aviation" as a requirement.
-        if self.cand_years > 0:
-            _exp_cutoff = self.cand_years + (2 if self.profile is None else 4)
-            from app.tailoring.requirements import minimum_years_required
-            _req = minimum_years_required(job.description, degree_level=_degree_level(self.user_degree))
-            if _req and _req[0] >= _exp_cutoff:
-                return FilterResult(
-                    passed=False,
-                    reason=(f"Experience pre-filtered: requires {_req[0]:g}+ years (candidate has "
-                            f"{self.cand_years}) — \"{_req[1][:120]}\""),
-                    score_override=15
-                )
-
-        # 4. Senior/staff titles — only filtered for non-senior candidates.
-        #    "Member of Technical Staff" is the ordinary engineer title at many
-        #    AI labs, not a staff-level role.
-        if self.block_senior_titles:
-            _title_for_level = re.sub(r"\b(?:member of )?technical staff\b", " ", title_low)
-            for t in STAFF_TITLES:
-                if _title_for_level.startswith(t) or f" {t}" in _title_for_level:
+        # 3+4. Experience level — ONE decision (app/common/level.py), from the
+        #    posting's stated years (read AS WRITTEN, tailoring/requirements.py:
+        #    a range by its lower bound, a degree ladder by the candidate's
+        #    rung, never a preference or the employer's own history), then the
+        #    title's level word. Only what is OUT OF REACH is dropped here; a
+        #    one-level stretch is scored and held under the bar by the final
+        #    check. It also decides what "0 years" means: a resume we have read
+        #    that shows no paid work is a new graduate, and this gate used to
+        #    skip them entirely — a posting asking 5+ years, or a Senior title,
+        #    went to the scorer for someone who had not started working.
+        if self.profile is not None:
+            from app.common import level as _level
+            _lv = _level.judge(self.profile, job.title, job.description,
+                               getattr(job, "salary_text", "") or "")
+            if _lv.code == _level.OUT_OF_REACH:
+                return FilterResult(passed=False, reason=_lv.reason, score_override=15)
+        else:
+            # Legacy single-user run (no profile): the original 3-year default,
+            # a +2 gap, and the bare staff-title list.
+            if self.cand_years > 0:
+                from app.tailoring.requirements import minimum_years_required
+                _req = minimum_years_required(job.description, degree_level=_degree_level(self.user_degree))
+                if _req and _req[0] >= self.cand_years + 2:
                     return FilterResult(
                         passed=False,
-                        reason=f"Title pre-filtered: '{job.title}' is a senior/staff-level role",
+                        reason=(f"Experience pre-filtered: requires {_req[0]:g}+ years (candidate has "
+                                f"{self.cand_years}) — \"{_req[1][:120]}\""),
                         score_override=15
                     )
+            if self.block_senior_titles:
+                # "Member of Technical Staff" is the ordinary engineer title at
+                # many AI labs, not a staff-level role.
+                _title_for_level = re.sub(r"\b(?:member of )?technical staff\b", " ", title_low)
+                for t in STAFF_TITLES:
+                    if _title_for_level.startswith(t) or f" {t}" in _title_for_level:
+                        return FilterResult(
+                            passed=False,
+                            reason=f"Title pre-filtered: '{job.title}' is a senior/staff-level role",
+                            score_override=15
+                        )
 
         # 5. Salary Range Filter — only enforce a bound the user expressed, and
         #    ONLY when the posting's currency matches the user's band currency

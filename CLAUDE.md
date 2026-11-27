@@ -926,7 +926,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   when the POSTING refuses a user who needs sponsorship — the model scored a
   citizens+clearance job work_auth 10, overall 72. The model's own low factor never
   caps. The Tier-2 prompt states home city, relocation and today's date. Guard:
-  `test_match_quality_blockers`.
+  `test_match_quality_blockers`. **Refusals are matched by STRUCTURE** (2026-11-24):
+  the reader still knew 27 of 50 refusal wordings in one pool ("will not provide
+  sponsorship … or participate in STEM OPT" reached an OPT board at 88) — now the
+  verb negated / not offered / not available / "without … sponsorship" / people who
+  need it not wanted / OPT-CPT-H-1B named, with hedges ("for every role",
+  "guarantee") and "without regard to" as cancellers. A false hit drops an eligible
+  job unscored: add the look-alike to `test_sponsorship_wordings` with the pattern.
   `ead_end_date` must be plausible (`work_auth.plausible_end_date`: 2 years back to
   7 ahead; ProfileUpdate refuses others, forms blank them) and the OPT clock needs
   one — it used to start from the status alone and read a 2002 date as "expired
@@ -963,6 +969,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   Tier-2 prompt and form answers read it. Guard: `test_work_style`. A kept Tier-1
   verdict (prescore on a queued row) is REUSED by every lane, never re-bought;
   `realign.forget_kept_prescores` clears them on resume/role/job-type change.
+- **Experience level is ONE decision** (2026-11-24, `app/common/level.py`): 31 of 35
+  profiles had 0-4 years, and every years rule skipped a profile showing 0 — which
+  is what a new graduate's resume says (a $347K role was delivered at 80 to one).
+  `known_years`: 0 on a READ resume = not worked yet; 0 on an empty profile =
+  unknown (only the Staff+ title rule applies, as before). Evidence in order: the
+  posting's STATED years govern (2+ short = stretch, 4+ = out of reach); with none
+  stated the TITLE's level word — Senior from 4 years, Lead from 5,
+  Staff/Principal/Director/VP from 6 (`LEVEL_*_MIN_YEARS`; one short = stretch,
+  further = out of reach; a level the person's own target roles or current title
+  name comes a year sooner); with neither, pay STARTING at
+  `LEVEL_SENIOR_PAY_FLOOR_USD` (300k) is a stretch below senior. OUT OF REACH is
+  stamped free by RuleFilter; STRETCH is scored, then held at `STRETCH_OVERALL_CAP`.
+  Not level words: Technical Staff, Staff Accountant/Nurse, Senior Living, Lead
+  Generation, Shift Lead. Guard: `test_experience_level`.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
   allied health, education, HR, sales and legal. The title filter's junk list
