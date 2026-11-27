@@ -724,7 +724,7 @@ def _recheck_shortlisted_against_posting(session, user_id: str | None, profile) 
     app_owner = (Application.user_id == user_id) if user_id else Application.user_id.is_(None)
     rows = session.exec(
         select(Job).options(load_only(Job.id, Job.title, Job.description, Job.rerank_score,
-                                      Job.rerank_reasoning))
+                                      Job.rerank_reasoning, Job.salary_text))
         .where(owner, Job.rerank_score.isnot(None),  # type: ignore[union-attr]
                Job.id.in_(select(Application.job_id).where(
                    app_owner, Application.status == ApplicationStatus.SHORTLISTED)))
@@ -734,7 +734,8 @@ def _recheck_shortlisted_against_posting(session, user_id: str | None, profile) 
     for job in rows:
         old = float(job.rerank_score)
         new, _r, concerns, _b = reconcile_with_profile(
-            (old, "", [], {}), profile, job.description or "", title=job.title or "")
+            (old, "", [], {}), profile, job.description or "", title=job.title or "",
+            salary_text=job.salary_text or "")
         if new >= old or not concerns:
             continue
         reasoning = job.rerank_reasoning or ""

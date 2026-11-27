@@ -194,9 +194,73 @@ def found_jobs_expr(now: Optional[datetime] = None):
                          now, for_render=True, index_friendly=True)
 
 
-def is_fresh(job, known_days: int, posted_days: int,
-             now: Optional[datetime] = None) -> bool:
-    """Python mirror of :func:`is_fresh_expr` — same rule, for loaded rows."""
+def scoring_gate_expr(known_days: int, posted_days: int,
+                      now: Optional[datetime] = None):
+    """SQL predicate over UNSCORED rows: this one is still worth a score.
+
+    The exact complement of the two expiry passes
+    (``scoring_lane._expire_stale_unscored``): inside the known window, AND not
+    dated by its source past the posted bound. Every list a scorer reads its
+    candidates from applies it — the scoring lane's queue and the matching
+    lane's retrieval — so a row the sweep WOULD expire is never offered to a
+    scorer, whether or not the sweep has reached it yet.
+
+    That last part is the point. The sweep is a bounded, best-effort stamp at
+    the START of a scoring cycle; the queue is read later in that cycle (after
+    location verification, which makes network calls), and the matching lane
+    never ran the sweep at all. The queue checked the known bound only and
+    retrieval checked neither, so a copy that landed in between was scored and
+    delivered on whatever its source date said. Production 2026-10-29..11-15:
+    17 postings reached two boards with source dates 30 to 711 days old (one
+    published 2024-12-03), every one removed by the next hygiene pass — a
+    final, a board slot and a count against the day's allowance each.
+
+    A row with NO source date is judged on known age alone, exactly as the
+    sweep judges it: only a date the source actually gave can call a posting
+    ancient. (``is_fresh_expr`` falls back to ``first_seen`` there, which is
+    right for a render window and wrong for a queue: with the known leg off it
+    would hide old undated rows the sweep never stamps, and they would wait
+    unscored forever.)
+
+    The known leg is spelled :func:`known_on_or_after_expr` — the same rows as
+    ``known_ref() >= cutoff``, as a RANGE on ``first_seen``. Both readers ask
+    for one owner's unscored rows, which ``ix_job_unscored (user_id,
+    first_seen) WHERE rerank_score IS NULL`` holds; the coalesce form can use
+    only its ``user_id`` prefix, so every unscored row the owner has is heap-
+    fetched to test the bound. Production EXPLAIN, one owner with ~12.6k
+    unscored rows (2026-11-21): 12.9k estimated cost for the coalesce form
+    against 4.1k for the range (a BitmapOr of the fresh range and the
+    ``first_seen IS NULL`` rows), for the queue and for retrieval alike.
+
+    ``known_days <= 0`` or ``posted_days <= 0`` disables that leg; both off
+    returns None.
+    """
+    now = now or datetime.utcnow()
+    clauses = []
+    if known_days and known_days > 0:
+        clauses.append(known_on_or_after_expr(now - timedelta(days=known_days)))
+    if posted_days and posted_days > 0:
+        clauses.append(Job.posted_at.is_(None)
+                       | (Job.posted_at >= now - timedelta(days=posted_days)))
+    if not clauses:
+        return None
+    out = clauses[0]
+    for c in clauses[1:]:
+        out = out & c
+    return out
+
+
+#: Which bound a posting is past (:func:`stale_reason`). The known bound first,
+#: as in the expiry sweep: a posting past both is reported as held too long.
+STALE_HELD = "held_too_long"        # WE have had it longer than the known window
+STALE_ANCIENT = "ancient_posting"   # the SOURCE dates it past the posted bound
+
+
+def stale_reason(job, known_days: int, posted_days: int,
+                 now: Optional[datetime] = None) -> str:
+    """Python mirror of :func:`is_fresh_expr` for a loaded row (or anything with
+    ``first_seen`` / ``discovered_at`` / ``posted_at``): '' while both bounds
+    hold, else which one the posting is past."""
     now = now or datetime.utcnow()
 
     def _naive(dt):
@@ -211,12 +275,18 @@ def is_fresh(job, known_days: int, posted_days: int,
     known = first_seen or discovered
     if known_days and known_days > 0:
         if known is None or known < now - timedelta(days=known_days):
-            return False
+            return STALE_HELD
     if posted_days and posted_days > 0:
         post = posted or first_seen or discovered
         if post is not None and post < now - timedelta(days=posted_days):
-            return False
-    return True
+            return STALE_ANCIENT
+    return ""
+
+
+def is_fresh(job, known_days: int, posted_days: int,
+             now: Optional[datetime] = None) -> bool:
+    """Python mirror of :func:`is_fresh_expr` — same rule, for loaded rows."""
+    return not stale_reason(job, known_days, posted_days, now)
 
 
 # ── Scoring-metric predicates ────────────────────────────────────────────────

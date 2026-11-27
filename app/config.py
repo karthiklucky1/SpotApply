@@ -688,6 +688,22 @@ class Settings(BaseSettings):
     # Keep <= shortlist_max_posted_age_days (tests/test_settings_defaults.py).
     scoring_max_posted_age_days: int = 30
     shortlist_max_posted_age_days: int = 30  # SHORTLIST_MAX_POSTED_AGE_DAYS — the render/prune counterpart of the above. The board shows a job while BOTH bounds hold: we found it within shortlist_max_age_days AND the source's date is within this. Must stay >= scoring_max_posted_age_days or we pay for finals the board then hides.
+    # ── Experience level (app/common/level.py) ───────────────────────────────
+    # The fewest years of experience at which a posting of each TITLE level is
+    # in reach, used only when the posting states no years of its own (a stated
+    # number always governs). One year short is a stretch (scored, held under
+    # the board's bar); further short is not scored at all. A person whose own
+    # target roles or current title name the level gets it a year sooner
+    # (senior, lead). Staff covers Staff / Principal / Director / VP / Head of —
+    # the same 6 the rule filter has always used.
+    level_senior_min_years: int = 4      # LEVEL_SENIOR_MIN_YEARS
+    level_lead_min_years: int = 5        # LEVEL_LEAD_MIN_YEARS
+    level_staff_min_years: int = 6       # LEVEL_STAFF_MIN_YEARS
+    # A posting with no stated years and no level word whose pay STARTS here is
+    # a senior-level role: held under the bar for someone below the senior
+    # threshold above. 0 disables. Set high on purpose — it exists for the
+    # $347K role scored 80 for a new graduate, not to second-guess ordinary pay.
+    level_senior_pay_floor_usd: int = 300000   # LEVEL_SENIOR_PAY_FLOOR_USD
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     # When a company is at the cap and a NEW job scores clearly higher than a
     # cap-holding application that is still just SHORTLISTED (untouched — not

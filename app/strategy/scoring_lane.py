@@ -343,24 +343,42 @@ def _user_queue(user_id: Optional[str], cap: int,
         # post-filtering only if the deferred set is pathologically large.
         if deferred and len(deferred) <= 2000:
             q = q.where(Job.id.notin_(deferred))
-        # Cheap insurance, and NOT a new age rule: this is the same KNOWN bound
-        # the scoring gate already applies, built from app/common/freshness.py
-        # like every other consumer (never a hand-rolled date expression — see
+        # NOT a new age rule: these are the same TWO bounds the expiry sweep
+        # stamps on, built from app/common/freshness.py like every other
+        # consumer (never a hand-rolled date expression — see
         # tests/test_expiry_semantics.py). `_expire_stale_unscored` normally
-        # stamps these rows out of the queue anyway, so it should match nothing.
-        # It earns its keep when that sweep stalls: its failure path is a
-        # log.warning, and sorting by `coalesce(prescore, ...)` means the LIMIT
-        # can no longer stop the walk early, so an unbounded backlog would turn
-        # this 90-second query into a full sort of the user's whole unscored
-        # corpus. Both hotspot incidents recorded in this file started there.
+        # stamps these rows out of the queue anyway, so this should match
+        # nothing — and it must still be here, on BOTH bounds, because the
+        # sweep is not a gate. It runs once at the start of a cycle, stops
+        # early by design, and this queue is read later (after location
+        # verification); `score_user_now` reads it with no sweep at all.
+        #
+        # The queue used to carry the KNOWN bound only. A copy the pulse lane
+        # routed in after the sweep had passed — found this week, published
+        # last year — was therefore scored and delivered: production
+        # 2026-11-13..15, five postings with source dates 92 to 711 days old
+        # reached a board 13-21 s after their copies were created, and the next
+        # hygiene pass took each one off again (tests/test_stale_delivery.py).
+        #
+        # The known leg also bounds the walk when the sweep stalls: its failure
+        # path is a log.warning, and sorting by `coalesce(prescore, ...)` means
+        # the LIMIT can no longer stop the walk early, so an unbounded backlog
+        # would turn this 90-second query into a full sort of the user's whole
+        # unscored corpus. Both hotspot incidents recorded in this file started
+        # there. It is a RANGE on `first_seen` (freshness.known_on_or_after_expr)
+        # so the partial index serves it: the coalesce spelling used here before
+        # bounded the sort but still heap-fetched every unscored row the owner
+        # had.
         # The user's own window: 14 days while their first hour is open
         # (welcome.scoring_window_days), else the normal 5.
         from app.strategy.welcome import scoring_window_days
         _known = scoring_window_days(user_id)
         _base = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
-        from app.common.freshness import known_ref
-        if _known > 0:
-            q = q.where(known_ref() >= datetime.utcnow() - timedelta(days=_known))
+        from app.common.freshness import known_ref, scoring_gate_expr
+        _gate = scoring_gate_expr(
+            _known, int(getattr(settings, "scoring_max_posted_age_days", 0) or 0))
+        if _gate is not None:
+            q = q.where(_gate)
         if _known > _base > 0:
             # Catch-up window: the FRESH postings (normal window) come first,
             # then the older ones — each by promise, newest first.
@@ -941,8 +959,11 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             # ONE placement path (app/strategy/slate.py): capacity, the company
             # cap and the challenger rule. This loop is score-ordered, so once
             # the slate refuses a job for being below today's cutoff, nothing
-            # after it can qualify either.
-            res = _slate.place(session, job, score, user_id=uid, is_local=is_local)
+            # after it can qualify either. `catchup` tells the slate's own
+            # freshness check that this posting is older than the normal window
+            # on purpose (confirmed open just above, marked just below).
+            res = _slate.place(session, job, score, user_id=uid, is_local=is_local,
+                               catchup=jid in catchup_ids)
             session.commit()
             if not res.created:
                 if res.outcome == "dead" and _pair:
@@ -1303,8 +1324,10 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
     wall-clock slice (`max_seconds`), checked between batches, and a per-
     statement ceiling so one pathological scan cannot eat the slice either.
     Stopping early is NORMAL and reported as `stopped` — the rows it did not
-    reach are still excluded from `_user_queue` by the same freshness
-    expression, so an unfinished sweep costs nothing but a later stamp.
+    reach are still excluded from `_user_queue` (and from the matching lane's
+    retrieval) by the same two bounds, `freshness.scoring_gate_expr`, so an
+    unfinished sweep costs nothing but a later stamp. That is what makes this
+    a STAMP and not a gate: nothing may rely on it having run.
     """
     from datetime import timedelta
 
