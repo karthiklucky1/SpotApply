@@ -704,6 +704,14 @@ class Settings(BaseSettings):
     # threshold above. 0 disables. Set high on purpose — it exists for the
     # $347K role scored 80 for a new graduate, not to second-guess ordinary pay.
     level_senior_pay_floor_usd: int = 300000   # LEVEL_SENIOR_PAY_FLOOR_USD
+    # A posting needs this many readable characters of description before it
+    # is judged (app/common/posting_text.too_thin). Under it there is a title
+    # and at most a line: the free pre-filter stamps it before any model is
+    # asked, and the board refuses it. 2026-11-20: a posting stored with NO
+    # description was scored 78 from its title and delivered. Set low on
+    # purpose: a short but real posting (a few sentences) still gets read.
+    # 0 disables the rule.
+    min_posting_chars: int = 200               # MIN_POSTING_CHARS
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     # When a company is at the cap and a NEW job scores clearly higher than a
     # cap-holding application that is still just SHORTLISTED (untouched — not

@@ -1573,6 +1573,12 @@ class Reranker:
         # prescreen must not reject on nothing: 60 = bottom of the genuine
         # band = advances to Tier-2, whose contract handles degenerate input
         # explicitly. Deterministic, free, unfoolable — and it saves the call.
+        #
+        # Since 2026-11-27 a posting this empty does not get here: the
+        # pre-filter above stamps anything under `min_posting_chars` as not
+        # judged (app/common/posting_text.py), because Tier-2 took the 60 and
+        # called a bare title a strong match (78, delivered). This guard is
+        # what is left when that rule is switched off (MIN_POSTING_CHARS=0).
         if len((job.description or "").strip()) < 40:
             return 60.0, "no description"
         # The user's Tier-1 daily cap (app/matching/tier1_budget.py). A refusal

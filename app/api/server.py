@@ -48,7 +48,7 @@ from app.db.models import (
 )
 from app.discovery.pipeline import run_discovery
 from app.matching.pipeline import run_matching
-from app.strategy.slate import SLATE_CHALLENGER_NOTE
+from app.strategy.slate import SLATE_CHALLENGER_NOTE, SLATE_REPOST_NOTE
 from app.api.demo import PublicDemoRequest
 
 # ── Error tracking (Sentry) — dormant until SENTRY_DSN is set ──────────────────
@@ -4011,10 +4011,12 @@ _JOB_LIST_COLS = (
     # timestamp, so no egress concern — the ban is on `description` and whole
     # -entity selects.
     Application.tailored_at.label("app_tailored_at"),
-    # True when a stronger job later replaced this entry on the board — the
-    # row stays a strong match the user can still apply to. A boolean computed
-    # in SQL, so `notes` itself never leaves the database.
-    Application.notes.contains(SLATE_CHALLENGER_NOTE, autoescape=True).label("app_replaced"),
+    # True when another job later took this entry's place on the board — a
+    # stronger one, or an employer's posting with the title of a recruiting
+    # board's copy. The row stays a strong match the user can still apply to.
+    # A boolean computed in SQL, so `notes` itself never leaves the database.
+    (Application.notes.contains(SLATE_CHALLENGER_NOTE, autoescape=True)
+     | Application.notes.contains(SLATE_REPOST_NOTE, autoescape=True)).label("app_replaced"),
 )
 
 
@@ -4036,7 +4038,10 @@ def _not_on_board_cond():
     take a slot (replace-only, founder 2026-10-30), a company-cap refusal, or an
     entry a stronger job replaced. A user's own dismissal is not listed (that is
     their opinion), nor an aggregator copy replaced by the employer's posting
-    (the same role, already on the board). Expects the Application outer join.
+    (the same role, already on the board). A recruiting board's copy that gave
+    way to an employer's posting with the same title IS listed: the title is
+    all that matched, so it may be another opening. Expects the Application
+    outer join.
     """
     from sqlalchemy import and_ as _and, or_ as _or
     return _and(
@@ -4045,7 +4050,8 @@ def _not_on_board_cond():
         _or(
             Application.id.is_(None),
             _and(Application.status == ApplicationStatus.SKIPPED,
-                 Application.notes.contains(SLATE_CHALLENGER_NOTE, autoescape=True)),
+                 _or(Application.notes.contains(SLATE_CHALLENGER_NOTE, autoescape=True),
+                     Application.notes.contains(SLATE_REPOST_NOTE, autoescape=True))),
         ),
     )
 
@@ -4961,7 +4967,7 @@ def dashboard(request: Request, all_submitted: bool = False):
     # SHORTLISTED copy of a role that is already shown is not rendered. A copy
     # the user opened work on (tailored, filled) always renders.
     def _collapse_same_role(items):
-        from app.strategy.slate import role_key, same_role
+        from app.strategy.slate import role_key, same_role, titled_apart
         shown: dict = {}
         # Invested rows claim the role first, then best-first sort order.
         order = sorted(range(len(items)),
@@ -4969,13 +4975,15 @@ def dashboard(request: Request, all_submitted: bool = False):
         drop = set()
         for i in order:
             app_model, job_model = items[i]
-            key = role_key(job_model.company, job_model.title)
+            key = role_key(job_model.company, job_model.title, job_model.location)
             if key is None:
                 continue
             if app_model.status == ApplicationStatus.SHORTLISTED and any(
                     same_role(job_model.source, job_model.location, job_model.remote,
                               job_model.content_hash, o.source, o.location, o.remote,
-                              o.content_hash)
+                              o.content_hash,
+                              apart=titled_apart(job_model.title, job_model.location,
+                                                 o.title, o.location))
                     for o in shown.get(key, ())):
                 drop.add(i)
                 continue

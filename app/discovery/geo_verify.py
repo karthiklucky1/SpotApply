@@ -58,7 +58,11 @@ log = logging.getLogger(__name__)
 #: Bumped when extraction rules change so stored rows can be told apart.
 #: 2 (2026-09-18): sub-national restrictions are kept as areas; a model's
 #: quote must support each claim; a conflict is retained through verification.
-VERIFIER_VERSION = 3
+#: 4 (2026-11-27): an unstated work mode is read from more on-site wordings
+#: ("Based on-site at …", "Ability to work on-site at …", a "Work location:
+#: On-site" line), and a NEGATED remote statement ("not a remote position") is
+#: no longer stored as remote.
+VERIFIER_VERSION = 4
 #: 3 (2026-09-26 audit, finding 2): an explicit attendance requirement in the
 #: description ("3 days a week in our San Francisco office") overrides a
 #: structured "remote"/TELECOMMUTE work mode, and the office it names is kept
@@ -352,6 +356,64 @@ _DESC_WORK_MODE_RES = (
 )
 
 
+# On-site said in the ways a posting actually says it. Audit of delivered jobs,
+# 2026-11-20: "Based on-site at HMA headquarters in Fountain Valley,
+# California", "Ability to work on-site at HMA headquarters" and "Working
+# on-site at HMA headquarters" (three sentences of one posting) matched none of
+# the three on-site patterns above, the mode stayed unstated, and the job was
+# delivered at 78 to someone who had picked remote work only.
+#
+# Read LAST, after every pattern above, and never part of `_ATTENDANCE_RES`:
+# they fill a mode nothing else states, and never overturn a structured
+# "remote" (a remote role that asks for an on-site week says some of these).
+# Each pairs on-site with being BASED there, with a named place, or with a
+# label line; a visit "as needed" or "quarterly" is left out. The two with a
+# capital letter in them are compiled case-sensitive on purpose: "work on-site
+# at client locations" names no place.
+_SOMETIMES = (r"(?![^.\n]{0,60}\b(?:as|when|if|where)\s+(?:needed|required|necessary|requested)\b)"
+              r"(?![^.\n]{0,60}\b(?:occasional\w*|periodic\w*|quarterly|annual\w*|monthly|"
+              r"once\s+(?:a|per|every)|twice\s+(?:a|per)|times?\s+(?:a|per)\s+(?:month|quarter|year)|"
+              r"up\s+to|for\s+(?:team|company|client|customer|on-?boarding|training|meetings?|"
+              r"events?|off-?sites?|workshops?)|client|customer)\b)")
+_DESC_ONSITE_LAST_RES = (
+    re.compile(r"\bbased\s+(?:full[- ]time\s+)?(?:on-?site|in[- ]office|in[- ]person)\b" + _SOMETIMES,
+               re.I),
+    re.compile(r"\b(?:ability|able|willing(?:ness)?|must(?:\s+be\s+able)?|need(?:ed|s)?)\s+to\s+work\s+"
+               r"(?:full[- ]time\s+)?(?:on-?site|in[- ]person|in\s+(?:the|our)\s+office)\b" + _SOMETIMES,
+               re.I),
+    re.compile(r"\b[Ww]ork(?:ing|s)?\s+(?:[Ff]ull[- ][Tt]ime\s+)?(?:[Oo]n-?[Ss]ite|[Ii]n[- ][Pp]erson)\s+"
+               r"(?:at|in|from)\s+(?:our\s+|the\s+)?[A-Z][A-Za-z]" + _SOMETIMES),
+    re.compile(r"\b(?:this\s+is|is)\s+an?\s+(?:full[- ]time[,\s]+)?(?:fully\s+|100\s*%\s+)?"
+               r"(?:on-?site|in[- ]office|in[- ]person|office-based)\b" + _SOMETIMES, re.I),
+    re.compile(r"\b(?:work\s*(?:place|site)?|workplace|location|position|role|job)\s*"
+               r"(?:type|arrangement|model|setting|environment|style|location)?\s*[:\-–]\s*"
+               r"(?:fully\s+|100\s*%\s+)?(?:on-?site|in[- ]office|in[- ]person)\b"
+               r"(?!\s*(?:/|,|\||or|and|&)\s*(?:remote|hybrid))", re.I),
+    re.compile(r"\b(?:role|position|job)\s+is\s+100\s*%\s+(?:on-?site|in[- ]office|in[- ]person)\b", re.I),
+)
+
+# "This is not a remote position" matched the REMOTE pattern "remote position"
+# and was stored as a remote role. A remote statement with a negation that
+# GOVERNS it says the opposite: "not a remote", "not fully remote",
+# "non-remote", "isn't a remote". Only small words may stand between the two,
+# so a "no" about something else ("no dress code; work from home Fridays")
+# negates nothing.
+_NEGATED_BEFORE_RE = re.compile(
+    r"\b(?:not|no|non|never|isn['’]t|aren['’]t|cannot|can['’]t|won['’]t)\b[\s-]*"
+    r"(?:(?:a|an|the|be|being|is|currently|yet|eligible\s+for|open\s+to|offered\s+as|"
+    r"available\s+as|considered|fully|100\s*%|entirely|permanently|strictly)\b[\s-]*){0,4}$", re.I)
+_NO_REMOTE_RE = re.compile(
+    r"\bremote\s+(?:work|working|option)s?\s+(?:is|are)\s+not\s+"
+    r"(?:available|offered|an\s+option|permitted|possible|supported)\b"
+    r"|\bno\s+remote\s+(?:work|option|working)\b"
+    r"|\bnot\s+eligible\s+for\s+remote\b"
+    r"|\b(?:does|do)\s+not\s+(?:offer|allow|support|permit)\s+remote\b", re.I)
+#: The word "hybrid" about the work week, not about a cloud or an engine.
+_HYBRID_WORD_RE = re.compile(
+    r"\bhybrid\b(?!\s+(?:cloud|multi-?cloud|infrastructure|architecture|deployments?|apps?|"
+    r"mobile|search|retrieval|engine|vehicles?|systems?|platforms?|storage|network\w*))", re.I)
+
+
 def work_mode_from_description(description: str) -> str:
     """The posting's stated working arrangement, or "" when it does not say.
 
@@ -362,9 +424,24 @@ def work_mode_from_description(description: str) -> str:
     text = (description or "").strip()
     if not text:
         return ""
+    not_remote = False
     for mode, rx in _DESC_WORK_MODE_RES:
-        if rx.search(text):
+        if mode != "remote":
+            if rx.search(text):
+                return mode
+            continue
+        for m in rx.finditer(text):
+            if _NEGATED_BEFORE_RE.search(text[max(0, m.start() - 60):m.start()]):
+                not_remote = True          # "not a remote role": keep reading
+                continue
             return mode
+    if not_remote or _NO_REMOTE_RE.search(text):
+        # Not remote. Hybrid when the posting uses the word for the work week
+        # ("not fully remote: we are hybrid"), on-site otherwise.
+        return "hybrid" if _HYBRID_WORD_RE.search(text) else "onsite"
+    for rx in _DESC_ONSITE_LAST_RES:
+        if rx.search(text):
+            return "onsite"
     return ""
 
 

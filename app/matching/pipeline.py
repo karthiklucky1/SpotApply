@@ -668,7 +668,10 @@ def _reopen_misjudged_prefilter_stamps(user_id: str | None, profile) -> int:
                     Job.id, Job.source, Job.external_id, Job.title, Job.company, Job.location,
                     Job.remote, Job.description, Job.eligibility, Job.eligibility_reason,
                     Job.rerank_score, Job.rerank_reasoning, Job.scored_at, Job.prescore,
-                    Job.prescored_at))
+                    Job.prescored_at,
+                    # read by the rule filter's level check (app/common/level.py):
+                    # not loaded here, it was one SELECT per row
+                    Job.salary_text))
                 .where(owner, Job.rerank_score.isnot(None),  # type: ignore[union-attr]
                        Job.is_closed == False,  # noqa: E712
                        or_(*[Job.rerank_reasoning.like(p) for p in _PREFILTER_FIX_PREFIXES]),
@@ -776,17 +779,16 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
         ).all()
         applied_ids = {r[0] if isinstance(r, tuple) else r for r in applied_rows}
         applied_ids.discard(None)
+        # The candidates, as IDS ONLY, best first. This used to load up to 500
+        # partly loaded Job rows here and walk them — and the loop below commits
+        # after every job, which EXPIRES every row the session holds. The next
+        # row's first attribute read (`job.id`, for the already-applied check)
+        # then re-fetched its WHOLE row, description included: after the first
+        # refused candidate of a pass, one full-row SELECT for every row still
+        # in the list, delivered ones too, per user, every five minutes — the
+        # read the `load_only` was there to avoid. An id cannot expire.
         q = (
-            select(Job)
-            # Load only the columns this loop actually uses — deferring the job
-            # description and the big JSON blobs (rerank_reasoning/breakdown/
-            # hire_probability_signals) keeps this per-pass, up-to-500-row query
-            # from streaming megabytes out of Postgres every matching pass.
-            .options(load_only(
-                Job.id, Job.url, Job.source, Job.company, Job.title,
-                Job.rerank_score, Job.user_id, Job.external_id,
-                Job.eligibility, Job.eligibility_reason,
-            ))
+            select(Job.id)
             .where(
                 Job.is_closed == False,  # noqa: E712
                 Job.user_id == user_id,
@@ -815,22 +817,38 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                                for_render=True)
         if _fresh is not None:
             q = q.where(_fresh)
-        for job in session.exec(q).all():
-            if job.id in applied_ids:
+        candidate_ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(q).all()]
+        for jid in candidate_ids:
+            if jid in applied_ids:
                 continue
+            # The one job in hand, with only the columns `place()` and this
+            # loop use — never the description or the big JSON blobs. `place()`
+            # reads the few other short columns it needs with its row lock
+            # (slate._PLACE_READS), and nothing here touches the row after the
+            # commit below: an expired row is re-fetched whole on first touch.
+            job = session.exec(
+                select(Job).options(load_only(
+                    Job.id, Job.url, Job.source, Job.company, Job.title,
+                    Job.rerank_score, Job.user_id, Job.external_id,
+                    Job.eligibility, Job.eligibility_reason,
+                )).where(Job.id == jid)
+            ).first()
+            if job is None or job.rerank_score is None \
+                    or job.rerank_score < settings.shortlist_score_threshold:
+                continue                  # gone, or re-judged since the list was read
+            title, company, scored = job.title, job.company, job.rerank_score
             # ONE placement path (app/strategy/slate.py): capacity, the company
             # cap and the challenger rule all live there, so this backstop can
             # no longer disagree with the two scoring lanes about what "the
             # board is full" means.
-            res = _slate.place(session, job, job.rerank_score, user_id=user_id)
+            res = _slate.place(session, job, scored, user_id=user_id)
             session.commit()
             if not res.created:
                 if res.outcome == "below_cutoff":
                     # The slate is full and this job does not beat it. Nothing
                     # further down this score-ordered list will either.
                     log.info("Re-shortlist: slate full and '%s' (%d) is below the "
-                             "cutoff (%.0f) — stopping.", job.title,
-                             job.rerank_score, res.cutoff or 0.0)
+                             "cutoff (%.0f) — stopping.", title, scored, res.cutoff or 0.0)
                     break
                 if res.outcome == _slate.OUTCOME_PAUSED:
                     # Paused since this pass began: the slate refuses every one
@@ -838,10 +856,10 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                     # Resume's pass re-offers the same list.
                     break
                 continue
-            shortlisted.append(job.id)
+            shortlisted.append(jid)
             today_count += 1
             log.info("Job '%s' @ '%s' already scored (%d) — %s. Shortlisted.",
-                     job.title, job.company, job.rerank_score, res.outcome)
+                     title, company, scored, res.outcome)
     return shortlisted, today_count
 
 

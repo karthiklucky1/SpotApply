@@ -71,7 +71,10 @@ REGION_KEYS = tuple(_REGION_MEMBERS.keys())
 #:   2 — 2026-09-26 audit: relocation DESTINATIONS bind (not just the flag); a
 #:       known on-site/hybrid role with no home location on file is held; a
 #:       hybrid/on-site role with no physical site is held, never "not near".
-RULES_VERSION = 2
+#:   3 — 2026-11-27: a posting with a place and NO stated work mode is held
+#:       for a user whose chosen work styles leave out on-site
+#:       (`work_style_unresolved`); it was eligible.
+RULES_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -454,6 +457,25 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     # Workday shape this branch exists for, and treating it as "no place"
     # admitted it for a user who will not move (match review, 2026-09-26).
     placed = physical or [s for s in geo.sites if not _is_remote_site(s)]
+
+    # The user's work-style choice, when the posting states no mode at all.
+    # The rule above only binds a STATED mode, so for someone who picked remote
+    # work an office posting that never says "on-site" passed: it said nothing
+    # they had excluded. Audit 2026-11-20: "Process Admin", Fountain Valley CA,
+    # on-site in three sentences of its text and in no field, delivered at 78
+    # to a remote-only profile. A posting with a place and no word about
+    # remote is an office job far more often than not, but that is a guess —
+    # so, like the commute case below, it is HELD and the verifier reads the
+    # page and the description. Only when the user left on-site work out: an
+    # unstated mode costs nothing to someone who takes any.
+    if not geo.work_mode and placed and wanted and "onsite" not in wanted:
+        names = {"remote": "remote", "hybrid": "hybrid", "onsite": "on-site"}
+        return Decision(UNKNOWN, "work_style_unresolved",
+                        f"Located in {_fmt_places(_specific_sites(placed)[:2])}; the posting "
+                        f"does not say whether it is on-site or remote, and you asked for "
+                        f"{' or '.join(names[m] for m in wanted)} work — pending verification"
+                        + area_note)
+
     if not geo.work_mode and placed and not will_move:
         if home_area_matches(placed, prefs.home_location) is False:
             where = _fmt_places(placed[:2])

@@ -43,6 +43,7 @@ a SHORTLISTED application.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -84,7 +85,7 @@ SLATE_CHALLENGER_NOTE = f"{SLATE_REPLACED_MARKER}: a stronger job arrived later 
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | held_too_long | ancient_posting | ineligible | unverified_location | aggregator_link | duplicate
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | held_too_long | ancient_posting | ineligible | unverified_location | thin_posting | aggregator_link | duplicate | reposted_role
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
     # The eligibility decision this placement was made under, with the rule /
@@ -110,6 +111,43 @@ OUTCOME_AGGREGATOR_LINK = "aggregator_link"
 #: posted bound. The names `freshness.stale_reason` returns, by construction.
 OUTCOME_HELD_TOO_LONG = STALE_HELD
 OUTCOME_ANCIENT_POSTING = STALE_ANCIENT
+
+#: `place()` refused because the posting has too little description for its
+#: score to mean anything (`posting_text.too_thin`, settings.min_posting_chars).
+OUTCOME_THIN_POSTING = "thin_posting"
+
+
+#: The short columns `place()` reads off the job besides the ones every caller
+#: loads: the freshness check's three dates, and the role check's location,
+#: remote flag and text hash. Read with the row lock, not one by one.
+_PLACE_READS = ("first_seen", "discovered_at", "posted_at", "location", "remote", "content_hash")
+
+
+def _loaded(job, name: str) -> bool:
+    """False when ``job`` is a partly loaded row and reading ``name`` would
+    send a SELECT for it. Anything that is not such a row counts as loaded."""
+    try:
+        from sqlalchemy import inspect as _inspect
+        return name not in _inspect(job).unloaded
+    except Exception:
+        return True
+
+
+def _fill_unloaded(job, locked) -> None:
+    """Put what the lock statement read onto a partly loaded row, as loaded
+    values (nothing is marked changed). A value the caller already holds is
+    left alone: it may have set it in this session."""
+    if locked is None:
+        return
+    try:
+        from sqlalchemy import inspect as _inspect
+        from sqlalchemy.orm.attributes import set_committed_value
+        unloaded = _inspect(job).unloaded
+        for name, value in zip(_PLACE_READS, tuple(locked)[1:]):
+            if name in unloaded:
+                set_committed_value(job, name, value)
+    except Exception as e:                    # the reads below still work, one SELECT each
+        log.debug("Slate: could not fill job %s from its lock read: %s", getattr(job, "id", None), e)
 
 
 def _outside_board_window(job: Job, *, catchup: bool = False) -> str:
@@ -277,7 +315,16 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     # single-writer anyway), the second placer waits for the first to commit
     # and then sees its row. The job's own copy is per user, so job_id alone
     # identifies (user, posting).
-    session.exec(select(Job.id).where(Job.id == job.id).with_for_update())
+    #
+    # The same statement brings back the few short columns the checks below
+    # read (`_PLACE_READS`). The re-shortlist backstop hands over rows loaded
+    # WITHOUT them (`load_only`, to keep its 500-row read small), and an
+    # attribute that was not loaded is fetched on first touch, one SELECT each:
+    # three dates for the freshness check and the location for the role key,
+    # on every re-offer of every pass. Asked for here they cost no round trip.
+    locked = session.exec(select(Job.id, *[getattr(Job, c) for c in _PLACE_READS])
+                          .where(Job.id == job.id).with_for_update()).first()
+    _fill_unloaded(job, locked)
     if session.exec(select(Application.id).where(Application.job_id == job.id)
                     .limit(1)).first() is not None:
         return _record(session, job, score, user_id, Placement(False, "exists"))
@@ -304,7 +351,8 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     # a final, taken a slot and counted against the day's allowance for a job
     # the user never saw. Refused here on the SAME rule hygiene prunes by, so
     # the two cannot disagree again whichever lane is asking. Read from the
-    # row in hand: no query, no network. The score stays on the job.
+    # row in hand (its dates came with the lock above): no query, no network.
+    # The score stays on the job.
     _stale = _outside_board_window(job, catchup=catchup)
     if _stale:
         log.info("Slate: refused '%s' — %s", job.title,
@@ -312,6 +360,22 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
                  if _stale == OUTCOME_ANCIENT_POSTING
                  else "we have held the posting longer than the board's window")
         return _record(session, job, score, user_id, Placement(False, _stale))
+
+    # ── A posting nobody could have read is not a match ─────────────────────
+    # With no description (or a line of one) the score came from the title:
+    # every cap that keeps a score honest reads the posting's words. The free
+    # pre-filter now stamps such a row before any model is asked; this is the
+    # same rule at the last door, for any lane that reaches here another way
+    # (app/common/posting_text.py). ONLY when the text is already in hand: the
+    # lanes that have just scored a job hold its description, and the
+    # re-shortlist backstop deliberately does not — touching it there would
+    # fetch a whole description per re-offer, every five minutes, which is the
+    # egress this codebase has been over quota for. The score stays on the job.
+    from app.common.posting_text import too_thin
+    if _loaded(job, "description") and too_thin(getattr(job, "description", "")):
+        log.info("Slate: refused '%s' — too little posting text to judge a match from",
+                 job.title)
+        return _record(session, job, score, user_id, Placement(False, OUTCOME_THIN_POSTING))
 
     # ── Dead postings never reach a board ───────────────────────────────────
     # Cached read only: this runs with `session` open and the codebase never
@@ -410,18 +474,36 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     # The same role arrives through several doors (LinkedIn, SerpAPI, the
     # employer's ATS; old and new identity forms). Production 2026-09-26: 182
     # shortlisted rows were 176 distinct roles, one delivered three times.
-    dup, dup_source = _duplicate_on_record(session, job, uid_arg)
-    if dup is not None:
-        if _replaceable_by_first_party(dup, dup_source, job):
-            dup.status = ApplicationStatus.SKIPPED
-            dup.notes = ((dup.notes or "") + f"\n{SLATE_REPLACED_MARKER}: replaced by the "
-                         f"employer's own posting of the same role.").strip()
-            session.add(dup)
-            log.info("Slate: '%s' — the employer's posting replaced an aggregator copy (app %s)",
-                     job.title, dup.id)
-        else:
-            return _record(session, job, score, user_id,
-                           Placement(False, "duplicate", eligibility=_elig_meta))
+    #
+    # The same role is also one title under several spellings — a city or
+    # "| Remote" added to it — and one opening under two names when a
+    # recruiting board republishes it (`_role_on_record`). The board's copy is
+    # the one that yields: it is refused while an employer's role with that
+    # title is on record, and an unopened one gives way when the employer's
+    # posting arrives. A copy the user opened or acted on is never touched,
+    # and never costs the employer's posting its place.
+    on_record = _role_on_record(session, job, uid_arg)
+    if on_record is not None:
+        if on_record.kind == EMPLOYER_ROLE:
+            log.info("Slate: refused '%s' — a recruiting board's copy; a role with this "
+                     "title from an employer is already on record (app %s)",
+                     job.title, on_record.app_id)
+            return _refuse(OUTCOME_REPOSTED_ROLE)
+        gives_way = on_record.untouched and (
+            on_record.kind == REPOSTER_COPY or _first_party_replaces(on_record.source, job))
+        earlier = session.get(Application, on_record.app_id) if gives_way else None
+        if earlier is not None:
+            earlier.status = ApplicationStatus.SKIPPED
+            earlier.notes = ((earlier.notes or "") + "\n" + (
+                SLATE_REPOST_NOTE if on_record.kind == REPOSTER_COPY else
+                f"{SLATE_REPLACED_MARKER}: replaced by the employer's own posting of the "
+                f"same role.")).strip()
+            session.add(earlier)
+            log.info("Slate: '%s' — the employer's posting replaced %s (app %s)", job.title,
+                     "a recruiting board's copy" if on_record.kind == REPOSTER_COPY
+                     else "an aggregator copy", earlier.id)
+        elif on_record.kind == SAME_ROLE:
+            return _refuse("duplicate")
 
     cap = shortlist_daily_limit(user_id)
     entries = todays_entries(session, user_id)
@@ -497,17 +579,179 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
 
 
 # Statuses that mean "this role is already in front of the user, or was acted
-# on". A SKIPPED row is a dismissal or our own housekeeping — it does not stop a
-# better copy of the same role arriving later.
+# on". A SKIPPED row that is our own housekeeping (a challenger, the company
+# cap, the freshness window) does not stop a better copy of the same role
+# arriving later; a SKIPPED row the USER dismissed does (`_role_on_record`).
 _ACTIVE_STATUSES = (ApplicationStatus.SHORTLISTED,) + PROTECTED_STATUSES
 
 #: How far back a delivered role blocks a repeat of itself.
 DUPLICATE_LOOKBACK_DAYS = 40
 
+#: The most rows one placement reads to look for the role, newest first. The
+#: read is narrowed in SQL to this employer's rows (and a recruiting board's,
+#: `_role_on_record`), so this is a ceiling, not the usual size.
+DUPLICATE_SCAN_LIMIT = 200
+
+#: `place()` refused a recruiting board's copy (apply_link.REPOSTER_BOARDS)
+#: because a role with the same title, from an employer, is already on record.
+#: Not "duplicate": such a posting does not name its employer, so nothing can
+#: show it is the same opening. The copy keeps its score and stays in All Jobs.
+OUTCOME_REPOSTED_ROLE = "reposted_role"
+
+#: The note on a recruiting board's copy that gave way to an employer's posting
+#: with the same title. All Jobs' "Strong match · not on board" lists it.
+SLATE_REPOST_NOTE = (f"{SLATE_REPLACED_MARKER}: an employer's own posting with the same "
+                     "title arrived; this copy came from a recruiting board")
+
 
 def _norm_key(text: str) -> str:
-    import re as _re
-    return _re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+# ── What a title says about the ROLE, apart from where and how ──────────────
+# Production 2026-11-03, one board: "Virtual Assistant - Houston" at 78 beside
+# "Virtual Assistant - Detroit" at 82 (one remote role, posted once per city,
+# the city in each title), and "Scheduling & Operations Assistant | Remote"
+# beside "Scheduling & Operations Assistant". The role key compared titles
+# WHOLE, so a city or the word Remote made each copy its own role and
+# `same_role` — which would have said yes, both were remote — was never asked.
+#
+# A title is read in PARTS (split at " - ", a dash, a bar, a slash, a comma,
+# brackets). A part is left out of the key only when it says HOW the work is
+# done ("Remote", "Work From Home", "Hybrid") or WHERE, and where is believed
+# only from the row's own location: the part is a place the location names,
+# or the country or US state the location is in. "Software Engineer -
+# Payments" keeps both parts; so does "… - Houston" on a row located elsewhere.
+# The FIRST part kept is never a place: "Mobile - Software Engineer" in
+# Mobile, AL is a team. What is left is spelled one way ("Sr" as "Senior",
+# "&" and "and" as nothing). Two rows with one key are still ONE role only if
+# `same_role` agrees, so two on-site jobs in two cities stay two.
+_TITLE_PART_RE = re.compile(r"\s+-+\s*|\s*-+\s+|[–—|/;:,()\[\]{}•·]+")
+_LOCATION_PART_RE = re.compile(r"[,;/|()\[\]•·]+|\s+(?:or|and)\s+|\s+[-–—]\s+", re.IGNORECASE)
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_SPELLING = {"sr": "senior", "snr": "senior", "jr": "junior", "and": ""}
+
+_HOW_WORDS = frozenset({"remote", "remotely", "hybrid", "onsite", "wfh", "telecommute",
+                        "telework", "anywhere", "virtual"})
+_HOW_PHRASES = ("work from home", "working from home", "work at home", "home based",
+                "on site", "in office", "in person")
+#: Words that may stand beside a work mode in a part that still names no role
+#: ("100% Remote", "Remote in the US", "Fully Remote Position"). Never enough
+#: on their own: "US" alone is a place, decided by the location.
+_HOW_FILLER = frozenset({"100", "fully", "full", "first", "friendly", "eligible", "optional",
+                         "ok", "only", "position", "role", "opportunity", "based", "work",
+                         "working", "from", "at", "home", "in", "the", "within", "or", "and",
+                         "us", "usa", "u", "s", "united", "states", "nationwide", "site",
+                         "on", "office", "person", "time"})
+_US_KEYS = frozenset({"us", "usa", "unitedstates", "unitedstatesofamerica"})
+#: Words beside a place that add nothing to it: "(US Only)", "Based in Texas".
+_WHERE_FILLER = frozenset({"only", "based", "in", "the", "within", "area", "metro"})
+#: A title or a location is read this far and no further: a real one is a line,
+#: and the part-splitting pattern is not meant for a page of white space.
+_MAX_TITLE_CHARS = 300
+_MAX_LOCATION_CHARS = 400
+
+
+def _says_how(words: list) -> bool:
+    if any(w not in _HOW_WORDS and w not in _HOW_FILLER for w in words):
+        return False
+    return any(w in _HOW_WORDS for w in words) or any(p in " ".join(words) for p in _HOW_PHRASES)
+
+
+class _Where:
+    """What a row's own location states. Read only when a title has a part
+    that might be a place, and each fact only when that part asks for it: the
+    country and the state cost a pass of `geo`'s patterns over the location,
+    and most parts ("Enterprise", "Payments") are settled by the names alone.
+    """
+
+    def __init__(self, location):
+        self._location = str(location or "")[:_MAX_LOCATION_CHARS]
+        self._names: Optional[frozenset] = None
+        self._state: Optional[str] = None
+        self._in_us: Optional[bool] = None
+
+    def says(self, part: str, key: str) -> bool:
+        if not self._location or not key:
+            return False
+        if self._names is None:
+            names = set()
+            for piece in _LOCATION_PART_RE.split(self._location):
+                names.add(_norm_key(piece))
+                names.update(_norm_key(p) for p in re.split(r"[-–—]", piece))
+            self._names = frozenset(n for n in names if len(n) >= 3)
+        if key in self._names:
+            return True
+        try:
+            if key in _US_KEYS:
+                if self._in_us is None:
+                    from app.common import geo
+                    self._in_us = geo.detect_country(self._location) == "united states"
+                return self._in_us
+            code = _state_names().get(key)
+            if code is None and len(key) == 2 and part.strip().isupper():
+                code = key
+            if code is None:
+                return False
+            if self._state is None:
+                from app.common import geo
+                self._state = geo.detect_us_state(self._location) or ""
+            return code == self._state
+        except Exception:                     # a title key must never fail on a location
+            return False
+
+
+_STATE_NAMES: dict = {}
+
+
+def _state_names() -> dict:
+    """US state name (letters only) -> its two-letter code."""
+    if not _STATE_NAMES:
+        from app.common import geo
+        _STATE_NAMES.update({_norm_key(label): code for code, label in geo.US_STATE_LABELS.items()})
+    return _STATE_NAMES
+
+
+def _spelled(words) -> str:
+    return "".join(_SPELLING.get(w, w) for w in words)
+
+
+def _read_title(title, location="") -> tuple:
+    """(the role the title names, the places the title itself named)."""
+    text = str(title or "")[:_MAX_TITLE_CHARS]
+    whole = _spelled(_WORD_RE.findall(text.lower()))
+    parts = [p for p in _TITLE_PART_RE.split(text) if p and p.strip()]
+    if len(parts) < 2:
+        return whole, frozenset()
+    where = _Where(location)
+    kept: list = []
+    places: list = []
+    for part in parts:
+        words = _WORD_RE.findall(part.lower())
+        if not words or _says_how(words):
+            continue
+        place = "".join(w for w in words if w not in _WHERE_FILLER)
+        if kept and where.says(part, place):
+            places.append(place)
+            continue
+        kept.append(_spelled(words))
+    if not kept:
+        return whole, frozenset()
+    return "".join(kept), frozenset(places)
+
+
+def title_key(title, location="") -> str:
+    """The role a title names, without the parts that only say where or how."""
+    return _read_title(title, location)[0]
+
+
+def titled_apart(title_a, location_a, title_b, location_b) -> bool:
+    """Each title names its OWN place, and they are different places: "Store
+    Manager - Houston" and "Store Manager - Detroit". The country alone
+    ("(US)" on both, or on one) is not a place apart."""
+    a = _read_title(title_a, location_a)[1] - _US_KEYS
+    b = _read_title(title_b, location_b)[1] - _US_KEYS
+    return bool(a) and bool(b) and a.isdisjoint(b)
 
 
 #: sha256 of an empty description: two postings with NO text are not the same
@@ -515,15 +759,19 @@ def _norm_key(text: str) -> str:
 _EMPTY_TEXT_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def role_key(company, title) -> Optional[tuple]:
+def role_key(company, title, location="") -> Optional[tuple]:
     """(company, title) normalised, or None when either is blank (blank
-    companies are never grouped: aggregator rows often have none)."""
-    c, t = (company or "").strip().lower(), _norm_key(title)
+    companies are never grouped: aggregator rows often have none). The
+    company is compared by its letters and digits, so "Freddie Mac" from one
+    door and "Freddiemac" (an ATS slug) from another are one employer; the
+    title by `title_key`, which reads ``location`` to tell a place from a team.
+    """
+    c, t = _norm_key(company), title_key(title, location)
     return (c, t) if (c and t) else None
 
 
 def same_role(source_a, location_a, remote_a, hash_a,
-              source_b, location_b, remote_b, hash_b) -> bool:
+              source_b, location_b, remote_b, hash_b, *, apart: bool = False) -> bool:
     """Two postings with the same company and normalised title: ONE role?
 
     Another door (an aggregator and the ATS) -> yes. Within ONE source the same
@@ -536,9 +784,14 @@ def same_role(source_a, location_a, remote_a, hash_a,
         identical text, both on the board at 72 and 78);
       * both remote: the city on a remote posting is not where the work is,
         so it cannot tell two requisitions apart for the person applying.
+
+    ``apart`` (`titled_apart`): each title named its own, different place. The
+    titles only compare equal because `title_key` left those places out, so
+    "another door" proves nothing — an ATS row "… - Houston" and a search
+    result "… - Detroit" are two jobs unless the evidence above says one.
     """
     sa, sb = getattr(source_a, "value", source_a), getattr(source_b, "value", source_b)
-    if sa != sb:
+    if sa != sb and not apart:
         return True
     if _norm_key(location_a) == _norm_key(location_b):
         return True
@@ -547,38 +800,136 @@ def same_role(source_a, location_a, remote_a, hash_a,
     return bool(remote_a) and bool(remote_b)
 
 
-def _duplicate_on_record(session, job: Job, uid_arg: Optional[str]):
-    """(Application, its job's source) for the user's active application to
-    the SAME role (same company, same title after normalisation, `same_role`),
-    else (None, None). Bounded: one indexed read of the user's recent active
-    applications at this company."""
+#: The longest spelling `_any_spelling` writes out in full. A longer name is
+#: matched by its start; the comparison in Python is the exact one.
+_MAX_SPELLED_CHARS = 80
+
+
+def _any_spelling(key: str, *, whole: bool = True) -> str:
+    """A pattern for a LOWER-CASED column that matches ``key``'s letters and
+    digits however they are spaced or punctuated: "freddiemac" finds "freddie
+    mac" and "freddie-mac". The same decision as `_norm_key` equality, for
+    SQL. Character classes only, and no flags, so Postgres (`~`) and SQLite
+    (SQLAlchemy's REGEXP) read it the same way. ``whole`` = the entire value
+    is the key; otherwise the key may sit anywhere in it."""
+    gap = "[^a-z0-9]*"
+    letters = key[:_MAX_SPELLED_CHARS]
+    body = gap.join(letters)
+    if not whole:
+        return body
+    return "^" + gap + body + (gap + "$" if len(key) <= _MAX_SPELLED_CHARS else "")
+
+
+def _anchor_words(title, title_key_) -> list:
+    """Up to the two longest words of ``title`` that are in its role key as
+    written: a title with the same key has those letters in a row too. Used
+    only to narrow a read; empty when no word is long enough to narrow by."""
+    words = {w for w in _WORD_RE.findall(str(title or "")[:_MAX_TITLE_CHARS].lower())
+             if len(w) >= 4 and w not in _SPELLING and w not in _SPELLING.values()
+             and w not in _HOW_WORDS and w in title_key_}
+    return sorted(words, key=lambda w: (-len(w), w))[:2]
+
+
+#: What `_role_on_record` found.
+SAME_ROLE = "same_role"                  # this role, at this employer
+EMPLOYER_ROLE = "employer_role"          # an employer's role with this title; the job in hand is a recruiting board's copy
+REPOSTER_COPY = "reposter_copy"          # a recruiting board's copy with this title; the job in hand is an employer's
+
+
+@dataclass
+class _OnRecord:
+    """The user's earlier application this job would repeat."""
+    kind: str
+    app_id: int
+    source: object
+    untouched: bool                      # SHORTLISTED and never opened: it may give way
+
+
+def _role_on_record(session, job: Job, uid_arg: Optional[str]) -> Optional[_OnRecord]:
+    """The user's application on record for the SAME role as ``job``, or None.
+
+    On record: active (`_ACTIVE_STATUSES`), or dismissed by the user — they
+    said no to the role, so another copy of it (the next city, another door)
+    is the same job coming back. Our own housekeeping skips never count.
+
+    SAME_ROLE needs the same employer, the same title (`title_key`) and
+    `same_role`. A recruiting board (`apply_link.REPOSTER_BOARDS`) is the one
+    case judged across employers, because its posting does not name the
+    employer it is for: the same title on record from an employer, or the
+    board's copy on record when the employer's posting arrives. ``place()``
+    makes the board's copy the one that yields, either way — title alone is
+    not proof, so it never costs an employer's posting its place.
+
+    Bounded: ONE read, narrowed in SQL to the rows that could be the role —
+    this employer's (by `_any_spelling`: the old filter compared the
+    lower-cased NAME, which is why "Freddie Mac" and "Freddiemac" were two
+    employers), plus a recruiting board's copies when the job in hand is an
+    employer's, or titles sharing this one's longest word when the job in
+    hand is a board's copy. The read is paid on every placement, a refused
+    re-offer included, so it stays as small as the same-company read it
+    replaced. The comparison itself is made here, on what comes back.
+    """
     from datetime import timedelta
-    from sqlalchemy import func
-    key = role_key(job.company, job.title)
+
+    from sqlalchemy import and_, func, or_
+
+    from app.common.apply_link import REPOSTER_BOARDS, reposter_board
+    from app.matching.preference_learning import USER_DISMISS_MARKER
+    key = role_key(job.company, job.title, job.location)
     if key is None:
-        return None, None
-    company = (job.company or "").strip()
-    q = (select(Application, Job.title, Job.source, Job.location, Job.remote, Job.content_hash)
+        return None
+    board = reposter_board(job.company, job.url)
+    company = func.lower(Job.company)
+    could_be = [company.regexp_match(_any_spelling(key[0]))]
+    if board:
+        anchors = _anchor_words(job.title, key[1])
+        if anchors:
+            title = func.lower(Job.title)
+            could_be.append(and_(*[title.regexp_match(_any_spelling(w, whole=False))
+                                   for w in anchors]))
+        else:
+            could_be = []                 # nothing to narrow by: the limit bounds it
+    else:
+        for name in sorted(REPOSTER_BOARDS):
+            could_be.append(company.regexp_match(_any_spelling(name)))
+            could_be.append(func.lower(Job.url).like(f"%/{name}/%"))
+    q = (select(Application.id, Application.status, Application.viewed_at,
+                Job.company, Job.title, Job.source, Job.location, Job.remote,
+                Job.content_hash, Job.url)
          .join(Job, Job.id == Application.job_id)
-         .where(Application.status.in_(_ACTIVE_STATUSES),
-                Application.created_at >= datetime.utcnow() - timedelta(days=DUPLICATE_LOOKBACK_DAYS),
-                func.lower(Job.company) == company.lower(),
-                Application.job_id != job.id))
+         .where(Application.created_at >= datetime.utcnow() - timedelta(days=DUPLICATE_LOOKBACK_DAYS),
+                Application.job_id != job.id,
+                or_(Application.status.in_(_ACTIVE_STATUSES),
+                    and_(Application.status == ApplicationStatus.SKIPPED,
+                         Application.notes.contains(USER_DISMISS_MARKER, autoescape=True)))))
+    if could_be:
+        q = q.where(or_(*could_be))
     q = q.where(Application.user_id == uid_arg) if uid_arg else q.where(Application.user_id.is_(None))
-    for app_row, title, source, location, remote, chash in session.exec(q.limit(50)).all():
-        if _norm_key(title) != key[1]:
+    rows = session.exec(q.order_by(Application.created_at.desc()).limit(DUPLICATE_SCAN_LIMIT)).all()
+
+    across = None
+    for app_id, status, viewed_at, company_name, title, source, location, remote, chash, url in rows:
+        employer = _norm_key(company_name)
+        if not employer:
             continue
-        if same_role(source, location, remote, chash,
-                     job.source, job.location, job.remote, job.content_hash):
-            return app_row, source
-    return None, None
+        untouched = status == ApplicationStatus.SHORTLISTED and viewed_at is None
+        if employer == key[0]:
+            if title_key(title, location) == key[1] and same_role(
+                    source, location, remote, chash,
+                    job.source, job.location, job.remote, job.content_hash,
+                    apart=titled_apart(title, location, job.title, job.location)):
+                return _OnRecord(SAME_ROLE, app_id, source, untouched)
+            continue
+        if across is not None or bool(board) == bool(reposter_board(company_name, url)):
+            continue                     # two employers, or two boards: never compared
+        if title_key(title, location) == key[1]:
+            across = _OnRecord(EMPLOYER_ROLE if board else REPOSTER_COPY, app_id, source, untouched)
+    return across
 
 
-def _replaceable_by_first_party(existing: Application, existing_source, job: Job) -> bool:
-    """An untouched aggregator copy gives way to the employer's own posting."""
+def _first_party_replaces(existing_source, job: Job) -> bool:
+    """The employer's own posting against an aggregator's copy of the role."""
     from app.matching.filters.constants import source_quality
-    if existing.status != ApplicationStatus.SHORTLISTED or existing.viewed_at is not None:
-        return False
     return source_quality(job.source) >= 1.0 > source_quality(existing_source)
 
 

@@ -57,6 +57,9 @@ AGGREGATOR_DOMAINS: frozenset[str] = frozenset({
     "internentry.com", "interninsider.me", "startuphakk.com", "tallo.com", "remote.co",
     "icanapply.uk", "huntukvisasponsors.com", "civiljobs.co.uk", "geckojobs.co.uk",
     "revopscareers.com",
+    # Audit of delivered jobs, 2026-11-20: a board entry whose link opened a
+    # niche job board's listing page
+    "dataanalyst.com",
 })
 
 #: Brands with one site per country. Matched only as the name right before the
@@ -96,6 +99,42 @@ def aggregator_host(url_or_host: str) -> str | None:
 def is_aggregator_url(url_or_host: str) -> bool:
     """True when the link opens a job board's page, not the employer's form."""
     return aggregator_host(url_or_host) is not None
+
+
+#: Job boards that publish OTHER employers' openings as postings on their own
+#: ATS board. The link opens a real form (jobs.lever.co/jobgether/…), so the
+#: host rule above cannot see them and they are not refused: the form fills.
+#: But the application goes to the board, which passes a shortlist on to an
+#: employer its posting usually does not name, and the same opening can sit in
+#: the pool under the employer's own name. The audit of 2026-11-20 found one
+#: title on one board twice, once from each. Named by the board with spaces
+#: and punctuation removed, which is both its ATS slug and the company name
+#: the adapters derive from it. The slate (`_role_on_record`) reads this.
+REPOSTER_BOARDS: frozenset[str] = frozenset({"jobgether"})
+
+#: ATS hosts where the first part of the path is the board's slug.
+_BOARD_SLUG_HOSTS = frozenset({
+    "jobs.lever.co", "jobs.eu.lever.co", "apply.workable.com", "jobs.ashbyhq.com",
+    "boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.smartrecruiters.com",
+})
+
+
+def reposter_board(company: str = "", url: str = "") -> str | None:
+    """The reposting job board behind this posting ("jobgether"), or None when
+    the posting is an employer's own. Decided by the company name the row
+    carries, or by the board slug in an ATS link."""
+    name = re.sub(r"[^a-z0-9]+", "", (company or "").lower())
+    if name in REPOSTER_BOARDS:
+        return name
+    if url and _host(url) in _BOARD_SLUG_HOSTS:
+        try:
+            slug = (urlparse(url.strip().lower()).path or "").strip("/").split("/", 1)[0]
+        except ValueError:
+            return None
+        slug = re.sub(r"[^a-z0-9]+", "", slug)
+        if slug in REPOSTER_BOARDS:
+            return slug
+    return None
 
 
 def url_regex() -> str:

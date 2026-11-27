@@ -607,6 +607,46 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `url_regex`) and SerpAPI's link ranker. A user's one Auto-Fill opened a jobicy
   page while Deepgram's own Ashby posting sat in the pool. `BOARD_DIRECT_APPLY_ONLY=0`
   restores them. Guard: `test_aggregator_links`.
+- **One role, one board entry** (2026-11-27, `slate._role_on_record`, inside
+  `place()`): the check only compared rows whose company and WHOLE title matched, so
+  "Virtual Assistant - Houston" / "- Detroit" (one remote role, a city in each
+  title) and "… | Remote" beside the plain title were each on one board twice.
+  `title_key(title, location)` leaves out the parts of a title that say HOW
+  ("Remote", "Work From Home") or WHERE — where only when the row's OWN location
+  names it, and never the first part ("Mobile - Software Engineer" is a team);
+  "Software Engineer - Payments" keeps both. One key is still one role only if
+  `same_role` agrees (another source, same location, same text, or both remote), so
+  two on-site jobs in two cities stay two. The company is compared by letters and
+  digits ("Freddie Mac" = "Freddiemac", an ATS slug). A role the USER dismissed
+  blocks its next copy; our own housekeeping skips never do. A recruiting board
+  that republishes other employers' openings (`apply_link.REPOSTER_BOARDS`:
+  Jobgether, on its own Lever board, so the link rule cannot see it) is the one
+  case judged across companies, by title alone: its copy is refused
+  (`reposted_role`) while an employer's role with that title is on record, and an
+  unopened copy gives way when the employer's arrives (`SLATE_REPOST_NOTE`, still
+  listed under "not on board"). It never costs an employer's posting its place.
+  Two titles that each name their OWN city (`titled_apart`) are not made one by
+  arriving through two sources. ONE read per placement, narrowed in SQL to the
+  rows that could be the role (`_any_spelling`: a regex on the lower-cased
+  column, no flags, same on Postgres and SQLite). **`place()` is called with
+  PARTLY LOADED rows** (the re-shortlist backstop's `load_only`, re-offering every
+  refused job each 5-minute pass): an unloaded attribute is one SELECT per touch,
+  so `place()` reads its short columns WITH the row lock (`_PLACE_READS`) and
+  never touches an unloaded description; and the backstop walks job IDS, loading
+  each candidate's short columns on its turn (it walked 500 rows and committed
+  per job: a commit EXPIRES every loaded row, so each row after the first refused
+  candidate, delivered ones too, was re-read WHOLE, description included, every
+  pass). Never read a row after the commit in that loop, and a new read of
+  `job.<column>` in `place()` belongs in `_PLACE_READS`. Guard: `test_same_role_once`.
+- **A posting with almost no text is not judged** (2026-11-27,
+  `posting_text.too_thin`, `MIN_POSTING_CHARS` 200 readable characters, 0 = off): a
+  Breezy row with NO description was advanced at 60 ("no description") and scored
+  78 from its title. RuleFilter now stamps it first ("Posting text filtered: …",
+  no model asked, no Tier-1 unit) and `place()` refuses one whose text it already
+  holds (`thin_posting`; never fetched for the check). Not re-opened if text
+  arrives later; feeds that store a snippet (Jooble) will mostly read "not
+  judged". OFF in the suite (conftest: fixtures use one-letter descriptions).
+  Guard: `test_thin_postings`.
 - **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
   weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
   displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.
@@ -901,8 +941,8 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   routed 2 jobs into a pool 14 s after Pause (2026-10-09). Adoption and
   `dispatch_fresh_alerts` refuse a paused user themselves. Journey
   metrics (`analytics/journey.py`) come from ACTION routes only, salted key.
-  Dedup: same company + normalised title within 40 d is one role (`slate.py`).
-  Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.
+  Dedup: same company + the same role title within 40 d is one role ("One role,
+  one board entry" above). Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.
 - **Audit 2026-09-25** (`docs/AUDIT_2026_09_25.md` — fixed vs still open):
   `slate.place()` RE-DECIDES eligibility at delivery (`geo_verify.current_decision`,
   versions in the placement event) — never trust the stamp alone; relocation
@@ -977,8 +1017,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   regions `namer`/`amer` include the US. Guard: `test_adzuna_and_regions`.
   **Work style is the user's** (`UserProfile.work_modes`, "remote,hybrid,onsite", "" = all;
   both profile screens, Remote = `remote_ok` kept in step): a posting whose STATED mode
-  is not picked is ineligible (`work_mode_not_wanted`), an unstated one is not; the
-  Tier-2 prompt and form answers read it. Guard: `test_work_style`. A kept Tier-1
+  is not picked is ineligible (`work_mode_not_wanted`); the
+  Tier-2 prompt and form answers read it. Guard: `test_work_style`. **A mode nobody
+  stated** (2026-11-27): an office job that said "on-site" only in its text reached
+  a remote-only board at 78. `geo_verify.work_mode_from_description` now reads
+  "Based on-site at …", "Ability to work on-site at …", a "Work location: On-site"
+  line (last, never overturning a structured remote; a visit "as needed" is not
+  on-site) and no longer stores "not a remote position" as remote; and a posting
+  with a place and NO mode is HELD (`work_style_unresolved`, verifier) for a user
+  whose styles leave out on-site, eligible for everyone else. `RULES_VERSION` 3,
+  `VERIFIER_VERSION` 4. Guard: `test_onsite_in_text`. A kept Tier-1
   verdict (prescore on a queued row) is REUSED by every lane, never re-bought;
   `realign.forget_kept_prescores` clears them on resume/role/job-type change.
 - **Experience level is ONE decision** (2026-11-24, `app/common/level.py`): 31 of 35

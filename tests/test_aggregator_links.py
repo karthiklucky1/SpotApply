@@ -42,6 +42,7 @@ AGGREGATOR = [
     "https://www.adzuna.co.uk/jobs/details/5942868858?utm_campaign=google_jobs_apply",
     "https://www.adzuna.com.au/jobs/details/1",
     "https://jooble.org/desc/123",
+    "https://www.dataanalyst.com/jobs/unis-data-analyst-buena-park",
     "https://uk.linkedin.com/jobs/view/123",
     "https://www.linkedin.com/jobs/view/123",
     "https://de.indeed.com/viewjob?jk=1",

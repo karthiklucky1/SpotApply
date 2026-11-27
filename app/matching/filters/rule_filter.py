@@ -89,6 +89,11 @@ class FilterResult:
     score_override: Optional[int] = None
 
 
+#: The stamp on a posting with too little text to judge. A rule rejection like
+#: any other (the reason says which): it leaves the unscored queue at no cost.
+THIN_POSTING_SCORE = 10
+
+
 def _safe_int(value, default: int) -> int:
     try:
         return int(value)
@@ -354,6 +359,13 @@ class RuleFilter:
         return any(n in self.user_skills for n in needles)
 
     def filter(self, job: Job) -> FilterResult:
+        # A posting with too little text is not judged at all: not rejected as
+        # a misfit, and not matched from its title (app/common/posting_text.py).
+        # First, because every rule below reads the description.
+        from app.common.posting_text import thin_reason, too_thin
+        if too_thin(getattr(job, "description", "")):
+            return FilterResult(passed=False, reason=thin_reason(job.description),
+                                score_override=THIN_POSTING_SCORE)
         desc_low = job.description.lower()
         title_low = job.title.lower()
         loc_low = (job.location or "").lower()

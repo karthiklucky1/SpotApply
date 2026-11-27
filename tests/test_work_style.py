@@ -4,14 +4,17 @@ A user ticked "hybrid" and found no such option on their profile (2026-10-29):
 the product had only "Include remote jobs", so hybrid and on-site were never a
 preference anyone could state, and the form-filling default came from a shared
 file. `UserProfile.work_modes` ("remote,hybrid,onsite"; "" = all) is now the
-choice: a posting whose STATED work mode is not in it is ineligible; one that
-states none is not decided by it.
+choice: a posting whose STATED work mode is not in it is ineligible. One that
+states none is eligible for someone who takes on-site work, and HELD for
+verification for someone who left on-site out (2026-11-27: it used to pass for
+everyone, and an office job that never said "on-site" reached a remote-only
+board; tests/test_onsite_in_text.py).
 """
 from __future__ import annotations
 
 import pytest
 
-from app.common.eligibility import ELIGIBLE, INELIGIBLE, Geography, decide
+from app.common.eligibility import ELIGIBLE, INELIGIBLE, UNKNOWN, Geography, decide
 from app.common.tenant_prefs import canonical_work_modes, geo_prefs, work_modes
 
 
@@ -40,19 +43,21 @@ def test_work_styles_are_stored_in_one_spelling(raw, canon):
 
 
 @pytest.mark.parametrize("modes,remote,hybrid,onsite,unstated", [
-    ("hybrid", INELIGIBLE, ELIGIBLE, INELIGIBLE, ELIGIBLE),
-    ("remote,hybrid", ELIGIBLE, ELIGIBLE, INELIGIBLE, ELIGIBLE),
+    ("hybrid", INELIGIBLE, ELIGIBLE, INELIGIBLE, UNKNOWN),
+    ("remote,hybrid", ELIGIBLE, ELIGIBLE, INELIGIBLE, UNKNOWN),
     ("onsite", INELIGIBLE, INELIGIBLE, ELIGIBLE, ELIGIBLE),
     ("", ELIGIBLE, ELIGIBLE, ELIGIBLE, ELIGIBLE),
 ])
-def test_the_gate_honours_the_stated_mode_only(modes, remote, hybrid, onsite, unstated):
+def test_the_gate_honours_the_stated_mode(modes, remote, hybrid, onsite, unstated):
     prefs = geo_prefs(_P(work_modes=modes))
     assert decide(_geo("remote"), prefs).status == remote
     assert decide(_geo("hybrid"), prefs).status == hybrid
     assert decide(_geo("onsite"), prefs).status == onsite
+    # No stated mode is never "not wanted": it is held when on-site was left
+    # out of the choice, and passes otherwise.
     got = decide(_geo(""), prefs)
-    assert got.status != INELIGIBLE or got.code != "work_mode_not_wanted"
-    assert unstated == ELIGIBLE
+    assert got.status == unstated and got.code != "work_mode_not_wanted"
+    assert (got.code == "work_style_unresolved") == (unstated == UNKNOWN)
 
 
 def test_the_reason_says_what_was_asked_for():

@@ -118,3 +118,50 @@ def clean_posting(text: str) -> str:
     """``text`` minus the sentences addressed to an AI tool. Cheap when there
     are none (one scan, the input returned as is)."""
     return clean_posting_with_report(text)[0]
+
+
+# ── Is there a posting to read at all? ───────────────────────────────────────
+# Audit of delivered jobs, 2026-11-20: a Breezy posting stored with NO
+# description was on a board at 78. The cheap pass advanced it at 60 ("no
+# description": it must not REJECT on nothing), and the final scorer, asked to
+# judge a title, called it a strong match. Not rejecting on nothing was right;
+# calling nothing a match is the same mistake the other way. Every cap that
+# keeps a score honest reads the posting's words (the years it asks for, a
+# sponsorship refusal, the work mode), so with no words nothing holds it.
+#
+# So a posting with too little text is not judged: the free pre-filter stamps
+# it with this reason before any model is asked (RuleFilter), and the board's
+# one writer refuses it (`slate.place`), which also covers rows scored before
+# this rule. ONE definition, here.
+
+_TAG_RE = re.compile(r"<[^>]{0,200}>|&[a-z#0-9]{1,8};", re.IGNORECASE)
+#: How much of a long description is measured: enough to pass any real
+#: posting, and constant work on a 50 KB one.
+_MEASURED_CHARS = 4000
+
+
+def visible_chars(text) -> int:
+    """Characters of a posting a person would read: no markup, a run of white
+    space as one. Measured on the first few thousand characters only."""
+    head = str(text or "")[:_MEASURED_CHARS]
+    if "<" in head or "&" in head:
+        head = _TAG_RE.sub(" ", head)
+    return len(" ".join(head.split()))
+
+
+def too_thin(text, minimum=None) -> bool:
+    """True when a posting has too little text to be judged against a resume
+    (``settings.min_posting_chars``; 0 turns the rule off)."""
+    if minimum is None:
+        from app.config import settings
+        minimum = int(getattr(settings, "min_posting_chars", 0) or 0)
+    return minimum > 0 and visible_chars(text) < minimum
+
+
+def thin_reason(text) -> str:
+    """The pre-filter's reason for a posting that is `too_thin`."""
+    n = visible_chars(text)
+    if n == 0:
+        return "Posting text filtered: no description to judge the match from"
+    return (f"Posting text filtered: only {n} characters of description, "
+            "too little to judge the match from")

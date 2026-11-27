@@ -44,6 +44,11 @@ os.environ.setdefault("DETAIL_FETCH_PER_MINUTE", "")
 # Every Workday request shares one pace in production (app/discovery/pacing.py);
 # off in the suite — a mocked request must not sleep. The pacing tests turn it on.
 os.environ.setdefault("WORKDAY_REQUEST_SPACING_SECONDS", "0")
+# A posting needs a few sentences of description before it is judged or placed
+# (app/common/posting_text.py). Hundreds of fixtures here use a one-letter
+# description on purpose, so the rule is off in the suite; test_thin_postings
+# turns it on and pins the production default.
+os.environ.setdefault("MIN_POSTING_CHARS", "0")
 
 import importlib.util
 import sys
