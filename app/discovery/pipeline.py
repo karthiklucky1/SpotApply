@@ -1196,10 +1196,18 @@ THROTTLED_BOARD_BACKOFF_HOURS = 6
 # polite retry, and the first board that answers puts its site back to normal.
 REFUSED_BOARD_BACKOFF_HOURS = 24
 
+# …and after a request we chose NOT to send (an adapter's own pace was full:
+# app/discovery/join.py). The site was never asked, so there is nothing to
+# wait out: six hours here turned our own politeness into a quarter-day delay
+# for 7,988 join.com boards in eight hours.
+UNSENT_BOARD_BACKOFF_HOURS = 1
+
 
 def spared_backoff_hours(error: str) -> int:
     """Hours to back a spared board off: a refusal waits a day, a throttle six."""
     e = (error or "").lower()
+    if "not sent" in e:
+        return UNSENT_BOARD_BACKOFF_HOURS
     throttle = "429" in e or "too many requests" in e or "rate limit" in e
     return REFUSED_BOARD_BACKOFF_HOURS if (BLOCKED_MARKER in e and not throttle) \
         else THROTTLED_BOARD_BACKOFF_HOURS

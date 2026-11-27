@@ -1005,7 +1005,10 @@ class Settings(BaseSettings):
     # ONCE per posting (a re-sighting only refreshes last_seen), paid from a
     # per-source budget so a first backfill cannot become a burst.
     detail_once_enabled: bool = True                  # DETAIL_ONCE_ENABLED — 0 = these adapters go back to listing-only rows (no description)
-    detail_fetch_per_minute: str = "rippling=20,join=20,breezy=30"  # DETAIL_FETCH_PER_MINUTE — detail requests a minute per source, process-wide. A source not named here never fetches details. join.com's also wait their turn in its one-a-second pace.
+    detail_fetch_per_minute: str = "rippling=20,join=20,breezy=30,workday=60"  # DETAIL_FETCH_PER_MINUTE — detail requests a minute per source, process-wide. A source not named here never fetches details. join.com's also wait their turn in its own pace. Workday joined 2026-11-20: it paid a detail request per posting (up to 100) on every poll, and 3,279 of 3,561 boards had been answered 429 in a day.
+    workday_request_spacing_seconds: float = 2.0      # WORKDAY_REQUEST_SPACING_SECONDS — least time between two Workday requests from this PROCESS, whichever tenant they are for (app/discovery/pacing.py). Workday limits by address across tenants: a one-second gap inside each poll still left 1,143 of 1,440 polls refused on their first request (2026-11-21). 0 = no pacing.
+    workday_max_pace_wait_seconds: float = 12.0       # WORKDAY_MAX_PACE_WAIT_SECONDS — longest a fetch thread waits for its Workday slot. Past it the request is not sent and the board is retried in an hour.
+    workday_refusal_cooldown_seconds: float = 180.0   # WORKDAY_REFUSAL_COOLDOWN_SECONDS — after Workday answers 403/429, no Workday request is sent for this long. A live check was refused for the rest of a session after one burst: asking the next tenant straight away prolongs it.
     detail_max_per_poll: int = 25                     # DETAIL_MAX_PER_POLL — most details one board may fetch in one poll; the rest come on its next polls
     # ── Open board list refresh (app/discovery/registry.py) ───────────────────
     # The open list grows; the registry only loaded it once, so by 2026-11-15
@@ -1015,7 +1018,11 @@ class Settings(BaseSettings):
     # of them would take every slot in the polling lane for hours.
     open_dataset_max_new_per_run: int = 4000          # OPEN_DATASET_MAX_NEW_PER_RUN — 0 = never add boards on a schedule (the admin route still can)
     open_dataset_spread_hours: int = 24               # OPEN_DATASET_SPREAD_HOURS — window the first polls of newly added boards are spread over
-    join_min_request_interval_seconds: float = 1.0  # JOIN_MIN_REQUEST_INTERVAL_SECONDS — least time between two requests this process sends join.com. join.com limits by address and throttles a BURST ("You are doing too many requests to publicJobs"): the pulse lane's thread pool sent a tick's join boards together, and about half of all join polls were throttled at an AVERAGE of three requests a minute. 0 = no pacing.
+    # 0.6 s since 2026-11-17 (was 1.0): at one a second real throttles fell from
+    # about half of all polls to 35 boards in eight hours, but our OWN pace then
+    # held back 7,988 boards — listings, first-time company pages and one
+    # description per new posting all share it.
+    join_min_request_interval_seconds: float = 0.6  # JOIN_MIN_REQUEST_INTERVAL_SECONDS — least time between two requests this process sends join.com. join.com limits by address and throttles a BURST ("You are doing too many requests to publicJobs"): the pulse lane's thread pool sent a tick's join boards together, and about half of all join polls were throttled at an AVERAGE of three requests a minute. 0 = no pacing.
     join_max_pace_wait_seconds: float = 5.0         # JOIN_MAX_PACE_WAIT_SECONDS — longest a fetch thread waits for its join.com slot. Past it the request is not sent and the board is backed off like a throttle, so join boards can never hold the tick's fetch pool.
     join_page_size: int = 0              # JOIN_PAGE_SIZE — NO LONGER READ (2026-11-14). It sized pages for join.com's REST jobs API (5 a page), which join.com removed; the adapter now lists through the site's GraphQL query at 100 a page (app/discovery/join.py). The field stays only so an environment that still sets JOIN_PAGE_SIZE keeps booting.
 

@@ -41,6 +41,9 @@ os.environ.setdefault("JOIN_MIN_REQUEST_INTERVAL_SECONDS", "0")
 # per-source budget (app/discovery/detail_memo.py). No budget in the suite, so
 # those adapters behave as plain listing readers unless a test turns it on.
 os.environ.setdefault("DETAIL_FETCH_PER_MINUTE", "")
+# Every Workday request shares one pace in production (app/discovery/pacing.py);
+# off in the suite — a mocked request must not sleep. The pacing tests turn it on.
+os.environ.setdefault("WORKDAY_REQUEST_SPACING_SECONDS", "0")
 
 import importlib.util
 import sys
@@ -192,6 +195,8 @@ def _reset_process_globals():
         _join._reset_pace()
         from app.discovery import detail_memo as _dm
         _dm.reset()
+        from app.discovery import workday as _wd
+        _wd._PACE.reset()
     except ImportError:
         pass
 

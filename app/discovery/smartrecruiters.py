@@ -20,6 +20,7 @@ from app.discovery.base import (
     BoardBlockedError,
     GeoEvidence,
     RawJob,
+    unchanged_since_ingest,
 )
 from app.discovery.hiring_context import put
 
@@ -174,6 +175,14 @@ class SmartRecruitersScraper:
             if p.get("id") and not _is_obvious_non_tech(p.get("name", ""))
         ]
         self.signature_stable = True
+
+        if unchanged_since_ingest(self):
+            # Same postings as the poll we already ingested in full: every
+            # detail request below would re-read text we hold. The list
+            # returned is NOT the board (the lane reads the signature, sees
+            # no change and does no work), so it never claims to be whole.
+            self.fetch_complete = False
+            return []
 
         for p in postings:
             title = p.get("name", "")
